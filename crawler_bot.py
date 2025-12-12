@@ -1,0 +1,523 @@
+import sys
+import os
+import time
+import logging
+import io
+import shutil
+import re
+import mimetypes  # Thư viện để nhận diện file
+from datetime import datetime, timedelta
+from sqlalchemy.orm import Session
+from sqlalchemy import text 
+
+# Import kết nối và model
+from database import SessionLocal, engine
+import models
+
+# Import MinIO Client
+from minio_client import MinIOHandler
+
+# Selenium
+from selenium import webdriver
+from selenium.webdriver.edge.service import Service
+from selenium.webdriver.edge.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger   
+
+# Setup Logging
+try:
+    if sys.stdout.encoding.lower() != 'utf-8':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+except:
+    pass
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("PC1_Bot")
+
+class MuasamcongDBBot:
+    def __init__(self):
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.download_dir = os.path.join(self.base_dir, "downloads")
+        self.driver_path = os.path.join(self.base_dir, "msedgedriver.exe")
+        
+        # --- Khởi tạo MinIO ---
+        self.minio = MinIOHandler()
+
+        if not os.path.exists(self.download_dir):
+            os.makedirs(self.download_dir)
+            
+        try:
+            self.db: Session = SessionLocal()
+            self.db.execute(text("SELECT 1")) 
+            logger.info("-> Kết nối Database thành công!")
+        except Exception as e:
+            logger.error(f"-> LỖI KẾT NỐI DATABASE: {e}")
+            sys.exit(1) 
+        
+        self.edge_options = Options()
+        self.edge_options.add_argument("--window-size=1920,1080")
+        self.edge_options.add_argument("--disable-notifications")
+        self.edge_options.add_argument("--disable-popup-blocking")
+        
+        self.prefs = {
+            "download.default_directory": self.download_dir,
+            "download.prompt_for_download": False,
+            "plugins.always_open_pdf_externally": True
+        }
+        self.edge_options.add_experimental_option("prefs", self.prefs)
+
+    def start_driver(self):
+        if not os.path.exists(self.driver_path):
+            logger.error("Không tìm thấy msedgedriver.exe")
+            return None
+        return webdriver.Edge(service=Service(self.driver_path), options=self.edge_options)
+
+    # ---------------------------------------------------------
+    # HELPER FUNCTIONS
+    # ---------------------------------------------------------
+    def parse_date(self, date_str):
+        if not date_str: return None
+        date_str = date_str.strip()
+        try:
+            return datetime.strptime(date_str, "%d/%m/%Y %H:%M")
+        except:
+            try:
+                return datetime.strptime(date_str, "%d/%m/%Y")
+            except:
+                return None
+
+    def clean_money(self, money_str):
+        if not money_str: return 0.0
+        s = str(money_str).lower().strip()
+        if "miễn phí" in s or "không" in s:
+            return 0.0
+        if isinstance(money_str, (int, float)): return float(money_str)
+        clean_str = re.sub(r'[^\d]', '', s)
+        try:
+            return float(clean_str)
+        except:
+            return 0.0
+        
+    def get_info_by_label(self, driver, label_patterns):
+        if isinstance(label_patterns, str):
+            label_patterns = [label_patterns]
+        for label in label_patterns:
+            xpaths = [
+                f"//div[contains(text(), '{label}')]/following-sibling::div",
+                f"//div[contains(@class,'row')]//div[contains(text(), '{label}')]/../following-sibling::div",
+                f"//td[contains(text(), '{label}')]/following-sibling::td", 
+                f"//*[contains(text(), '{label}')]/parent::*/following-sibling::*"
+            ]
+            for xp in xpaths:
+                try:
+                    elements = driver.find_elements(By.XPATH, xp)
+                    for el in elements:
+                        txt = el.text.strip()
+                        if txt and txt != label and len(txt) > 1:
+                            return txt
+                except:
+                    continue
+        return None
+
+    def scroll_and_find_click(self, driver, xpaths, step=400, max_attempts=20):
+        if isinstance(xpaths, str): xpaths = [xpaths]
+        logger.info(f"-> Đang quét dọc trang để tìm phần tử...")
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(1)
+        for i in range(max_attempts):
+            for xp in xpaths:
+                try:
+                    element = driver.find_element(By.XPATH, xp)
+                    if element.is_displayed():
+                        driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", element)
+                        time.sleep(1)
+                        try:
+                            element.click()
+                            return True
+                        except:
+                            try:
+                                driver.execute_script("arguments[0].click();", element)
+                                return True
+                            except:
+                                ActionChains(driver).move_to_element(element).click().perform()
+                                return True
+                except:
+                    pass
+            driver.execute_script(f"window.scrollBy(0, {step});")
+            time.sleep(0.5) 
+            new_height = driver.execute_script("return window.scrollY")
+            total_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height + driver.execute_script("return window.innerHeight") >= total_height:
+                break
+        return False
+
+    # ---------------------------------------------------------
+    # DATABASE ACTIONS
+    # ---------------------------------------------------------
+    def save_package_to_db(self, data):
+        try:
+            pkg = self.db.query(models.BiddingPackage).filter(models.BiddingPackage.ma_tbmt == data['ma_tbmt']).first()
+            if not pkg:
+                logger.info(f"-> [DB] INSERT NEW TBMT: {data['ma_tbmt']}")
+                pkg = models.BiddingPackage(**data)
+                self.db.add(pkg)
+            else:
+                logger.info(f"-> [DB] UPDATE TBMT: {data['ma_tbmt']}")
+                for key, value in data.items():
+                    if value is not None:
+                        setattr(pkg, key, value)
+            self.db.commit()
+            return pkg.hsmt_id
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Lỗi lưu TBMT: {e}")
+            return None
+
+    def update_file_path(self, ma_tbmt, file_path, file_name):
+        try:
+            pkg = self.db.query(models.BiddingPackage).filter_by(ma_tbmt=ma_tbmt).first()
+            if pkg:
+                new_file = models.BiddingPackageFile(
+                    hsmt_id=pkg.hsmt_id, 
+                    file_name=file_name, 
+                    file_type="HSMT/Webform", 
+                    file_path=file_path 
+                )
+                self.db.add(new_file)
+                self.db.commit()
+        except Exception as e:
+            logger.error(f"Lỗi update file: {e}")
+            
+    def fill_react_datepicker(self, driver, xpath, date_str):
+        try:
+            element = driver.find_element(By.XPATH, xpath)
+            element.send_keys(Keys.CONTROL + "a")
+            element.send_keys(Keys.DELETE)
+            time.sleep(0.5)
+            element.send_keys(date_str)
+            element.send_keys(Keys.ENTER)
+            time.sleep(0.5)
+        except Exception as e:
+            logger.warning(f"Không điền được ngày {date_str}: {e}")
+
+    def execute_rule_search(self, rule: models.CrawlRule):
+        logger.info(f">>> BẮT ĐẦU CHẠY RULE: {rule.rule_name}")
+        driver = self.start_driver()
+        if not driver: return
+
+        try:
+            url_search = "https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?render=index"
+            driver.get(url_search)
+            time.sleep(5) 
+
+            # Advanced Search
+            try:
+                btn_advanced = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'Tìm kiếm nâng cao')]"))
+                )
+                driver.execute_script("arguments[0].click();", btn_advanced)
+                time.sleep(2)
+            except:
+                logger.warning("-> Không tìm thấy nút 'Tìm kiếm nâng cao' hoặc đã mở sẵn.")
+
+            # Keyword
+            if rule.keywords_include:
+                keywords = rule.keywords_include
+                if isinstance(keywords, list) and len(keywords) > 0:
+                    kw_str = keywords[0]
+                    try:
+                        inp_keyword = WebDriverWait(driver, 10).until(
+                            EC.visibility_of_element_located((By.XPATH, "//input[contains(@placeholder, 'TBMT') or contains(@placeholder, 'Tên gói thầu')]"))
+                        )
+                        inp_keyword.send_keys(Keys.CONTROL + "a")
+                        inp_keyword.send_keys(Keys.DELETE)
+                        inp_keyword.send_keys(kw_str)
+                        logger.info(f"-> Đã điền từ khóa: {kw_str}")
+                    except Exception as e:
+                        logger.error(f"-> Không tìm thấy ô nhập từ khóa: {e}")
+
+            # Business Field
+            if rule.business_field:
+                try:
+                    driver.execute_script("window.scrollTo(0, 0);")
+                    time.sleep(1)
+                    lbl_xpath = f"//label[contains(text(), '{rule.business_field}')]"
+                    chk_element = driver.find_element(By.XPATH, lbl_xpath)
+                    driver.execute_script("arguments[0].click();", chk_element)
+                except:
+                    logger.warning(f"-> Không chọn được lĩnh vực: {rule.business_field}")
+
+            # Budget
+            if rule.min_budget or rule.max_budget:
+                try:
+                    inputs_price = driver.find_elements(By.XPATH, "//div[contains(text(), 'Giá gói thầu')]/..//input")
+                    if not inputs_price:
+                         inputs_price = driver.find_elements(By.XPATH, "//input[contains(@class, 'ant-input-number-input')]")
+
+                    if len(inputs_price) >= 2:
+                        if rule.min_budget: inputs_price[0].send_keys(str(int(rule.min_budget)))
+                        if rule.max_budget: inputs_price[1].send_keys(str(int(rule.max_budget)))
+                except Exception as e:
+                    logger.warning(f"-> Lỗi điền giá: {e}")
+
+            # Date
+            try:
+                now = datetime.now()
+                from_date = (now - timedelta(days=30)).strftime("%d/%m/%Y")
+                to_date = now.strftime("%d/%m/%Y")
+                date_inputs = driver.find_elements(By.XPATH, "//input[contains(@placeholder, 'dd/mm/yyyy')]")
+                if len(date_inputs) >= 2:
+                    self.fill_react_datepicker(driver, "(//input[contains(@placeholder, 'dd/mm/yyyy')])[1]", from_date)
+                    self.fill_react_datepicker(driver, "(//input[contains(@placeholder, 'dd/mm/yyyy')])[2]", to_date)
+            except Exception as e:
+                logger.warning(f"-> Lỗi điền ngày: {e}")
+
+            # Search Button
+            try:
+                btn_search = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Tìm kiếm')] | //span[contains(text(), 'Tìm kiếm')]/.."))
+                )
+                driver.execute_script("arguments[0].click();", btn_search)
+                logger.info("-> Đã nhấn nút Tìm kiếm...")
+                time.sleep(5)
+            except:
+                logger.error("-> Không nhấn được nút Tìm kiếm")
+                return
+
+            # Pagination 50
+            try:
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(1)
+                dropdown = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'pagination')]//div[contains(@class, 'select')]"))
+                )
+                dropdown.click()
+                time.sleep(1)
+                opt_50 = driver.find_element(By.XPATH, "//div[contains(@title, '50') or contains(text(), '50')]")
+                opt_50.click()
+                time.sleep(5)
+            except:
+                logger.warning("-> Không chỉnh được số bản ghi (dùng mặc định).")
+
+            # Get Links
+            list_packages = []
+            try:
+                elements = driver.find_elements(By.XPATH, "//a[contains(@href, 'notify-contractor') and not(contains(@href, '#'))]")
+                seen = set()
+                for el in elements:
+                    u = el.get_attribute("href")
+                    if u and u not in seen:
+                        seen.add(u)
+                        list_packages.append(u)
+                logger.info(f"-> Tìm thấy {len(list_packages)} gói thầu.")
+            except Exception as e:
+                logger.error(f"-> Lỗi quét danh sách: {e}")
+
+            driver.quit() 
+
+            # Crawl Detail
+            for idx, pkg_url in enumerate(list_packages):
+                logger.info(f"=== PROCESSING {idx+1}/{len(list_packages)}: {pkg_url} ===")
+                self.process_package(pkg_url)
+
+        except Exception as e:
+            logger.error(f"Lỗi fatal trong execute_rule_search: {e}")
+            if driver: driver.quit()
+
+    # ---------------------------------------------------------
+    # MAIN LOGIC
+    # ---------------------------------------------------------
+    def process_package(self, url):
+        driver = self.start_driver()
+        if not driver: return
+
+        try:
+            logger.info(f"--- Đang truy cập TBMT: {url} ---")
+            driver.get(url)
+            driver.execute_script("document.body.style.zoom='70%'")
+            
+            def wait_element(xpath, timeout=20):
+                return WebDriverWait(driver, timeout).until(EC.presence_of_element_located((By.XPATH, xpath)))
+
+            wait_element("//div[contains(text(), 'Thông tin gói thầu')]")
+            time.sleep(2)
+
+            def get_txt(lbl): return self.get_info_by_label(driver, lbl)
+
+            # BƯỚC 1: LẤY THÔNG TIN
+            ma_tbmt = get_txt("Mã E-TBMT") or get_txt("Mã TBMT")
+            raw_khlcnt = get_txt("Mã KHLCNT")
+            ma_khlcnt = raw_khlcnt.strip() if raw_khlcnt else None
+            
+            if not ma_tbmt:
+                logger.error("❌ Không lấy được Mã TBMT. Dừng.")
+                return 
+
+            tbmt_data = {
+                "ma_tbmt": ma_tbmt,
+                "duong_dan_goi_thau": driver.current_url,
+                "phien_ban_thay_doi": get_txt("Phiên bản thay đổi"),
+                "ngay_dang_tai": self.parse_date(get_txt("Ngày đăng tải")),
+                "ma_khlcnt": ma_khlcnt,
+                "phan_loai_khlcnt": get_txt("Phân loại KHLCNT"),
+                "ten_du_an": get_txt("Tên dự toán mua sắm") or get_txt("Tên dự án"),
+                "quy_trinh_ap_dung": get_txt("Quy trình áp dụng"),
+                "ten_goi_thau": get_txt("Tên gói thầu"),
+                "chu_dau_tu": get_txt("Chủ đầu tư") or get_txt("Bên mời thầu"),
+                "chi_tiet_nguon_von": get_txt("Chi tiết nguồn vốn"),
+                "linh_vuc": get_txt("Lĩnh vực"),
+                "hinh_thuc_lua_chon_nha_thau": get_txt("Hình thức LCNT") or get_txt("Hình thức lựa chọn nhà thầu"),
+                "loai_hop_dong": get_txt("Loại hợp đồng"),
+                "trong_nuoc_hoac_quoc_te": get_txt("Trong nước/Quốc tế") or get_txt("Trong nước/ Quốc tế"),
+                "phuong_thuc_lua_chon_nha_thau": get_txt("Phương thức lựa chọn nhà thầu"),
+                "thoi_gian_thuc_hien_goi_thau": get_txt("Thời gian thực hiện gói thầu"),
+                "goi_thau_co_nhieu_phan_lo": get_txt("Gói thầu có nhiều phần/lô"),
+                "hinh_thuc_du_thau": get_txt("Hình thức dự thầu"),
+                "dia_diem_phat_hanh_e_hsmt": get_txt("Địa điểm phát hành e-HSMT") or get_txt("Địa điểm phát hành HSMT"),
+                "chi_phi_nop": self.clean_money(get_txt(["Chi phí nộp e-HSDT", "Giá bán HSMT", "Chi phí nộp hồ sơ"])),
+                "dia_diem_nhan_e_hsdt": get_txt("Địa điểm nhận e-HSDT") or get_txt("Địa điểm nhận HSDT"),
+                "dia_diem_thuc_hien_goi_thau": get_txt("Địa điểm thực hiện gói thầu"),
+                "thoi_diem_dong_thau": self.parse_date(get_txt("Thời điểm đóng thầu") or get_txt("Thời điểm kết thúc chào giá trực tuyến")),
+                "thoi_diem_mo_thau": self.parse_date(get_txt("Thời điểm mở thầu") or get_txt("Thời điểm bắt đầu chào giá trực tuyến")),
+                "dia_diem_mo_thau": get_txt("Địa điểm mở thầu"),
+                "hieu_luc_hsdt": get_txt("Hiệu lực HSDT") or get_txt("Hiệu lực hồ sơ dự thầu"),
+                "so_tien_dam_bao_du_thau": self.clean_money(get_txt("Số tiền bảo đảm dự thầu") or get_txt("Số tiền đảm bảo dự thầu")),
+                "hinh_thuc_dam_bao_du_thau": get_txt("Hình thức đảm bảo dự thầu"),
+                "loai_cong_trinh": get_txt("Loại công trình"),
+                "so_quyet_dinh_phe_duyet": get_txt("Số quyết định phê duyệt"),
+                "ngay_phe_duyet": self.parse_date(get_txt("Ngày phê duyệt")),
+                "co_quan_ban_hanh_quyet_dinh": get_txt("Cơ quan ban hành quyết định"),
+                "quyet_dinh_phe_duyet": get_txt("Nội dung quyết định phê duyệt") or get_txt("Quyết định phê duyệt"),
+                "trang_thai": models.PackageStatus.INTERESTED
+            }
+
+            hsmt_id = self.save_package_to_db(tbmt_data)
+            if not hsmt_id: return
+            logger.info(f"-> Đã lưu TBMT vào DB với HSMT_ID: {hsmt_id}")
+
+            # BƯỚC 3: TẢI WEBFORM & UPLOAD MINIO
+            # (Đã sửa lỗi cú pháp try/except ở đây)
+            try:
+                logger.info("-> Bắt đầu bước tải HSMT...")
+                driver.execute_script("window.scrollTo(0, 0)")
+                
+                # Click Tab HSMT
+                tab_hsmt = wait_element("//*[contains(text(), 'Hồ sơ mời thầu')]", timeout=15)
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", tab_hsmt)
+                time.sleep(1)
+                driver.execute_script("arguments[0].click();", tab_hsmt)
+                time.sleep(5)
+                
+                # Click Nút Tải
+                webform_xpath = "//*[contains(text(), 'Tải tất cả biểu mẫu webform')]"
+                btn_webform = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, webform_xpath)))
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_webform)
+                time.sleep(1)
+                driver.execute_script("arguments[0].click();", btn_webform)
+                
+                # Xử lý Viewer
+                time.sleep(5)
+                if len(driver.window_handles) > 1:
+                    driver.switch_to.window(driver.window_handles[-1])
+                    try:
+                        btn_download = WebDriverWait(driver, 30).until(
+                            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Tải về')] | //span[contains(text(), 'Tải về')] | //*[text()='Tải về']"))
+                        )
+                        driver.execute_script("arguments[0].click();", btn_download)
+                        logger.info("-> Đang đợi file tải về...")
+                        
+                        # Chờ File
+                        timeout = 90
+                        elapsed = 0
+                        downloaded_file = None
+                        while elapsed < timeout:
+                            files = [f for f in os.listdir(self.download_dir) if not f.endswith('.crdownload') and not f.endswith('.tmp')]
+                            if files:
+                                downloaded_file = files[0]
+                                break
+                            time.sleep(1)
+                            elapsed += 1
+                        
+                        # Upload MinIO
+                        if downloaded_file:
+                            full_local_path = os.path.join(self.download_dir, downloaded_file)
+                            
+                            # Tạo tên và đoán loại file
+                            safe_ma_tbmt = ma_tbmt.replace('/', '_')
+                            object_name = f"{safe_ma_tbmt}/{downloaded_file}"
+                            mime_type, _ = mimetypes.guess_type(full_local_path)
+                            if not mime_type: mime_type = "application/octet-stream"
+
+                            logger.info(f"-> Đang upload MinIO: {object_name}")
+                            minio_url = self.minio.upload_file(full_local_path, object_name, mime_type)
+                            
+                            if minio_url:
+                                logger.info(f"-> Upload Xong: {minio_url}")
+                                self.update_file_path(ma_tbmt, minio_url, downloaded_file)
+                                try: os.remove(full_local_path)
+                                except: pass
+                            else:
+                                logger.error("-> Upload thất bại!")
+                        else:
+                            logger.warning("-> Timeout: Không thấy file tải về.")
+                        
+                    except Exception as e:
+                        logger.error(f"-> Lỗi trong tab Viewer: {e}")
+                else:
+                    logger.warning("-> Không thấy tab Viewer bật lên.")
+                    
+            except Exception as e:
+                logger.error(f"-> Lỗi trong quá trình tải file: {e}")
+
+        except Exception as e:
+            logger.error(f"Lỗi chung xử lý gói thầu: {e}")
+        finally:
+            driver.quit()
+            
+def run_scheduler_system():
+    bot = MuasamcongDBBot()
+    scheduler = BackgroundScheduler()
+    db = SessionLocal()
+    
+    schedules = db.query(models.CrawlSchedule).filter(models.CrawlSchedule.is_active == True).all()
+    logger.info(f"-> Tìm thấy {len(schedules)} lịch chạy trong DB.")
+    
+    for sched in schedules:
+        try:
+            def job_wrapper():
+                logger.info(f"⏰ ĐẾN GIỜ CHẠY SCHEDULE ID: {sched.id}")
+                with SessionLocal() as session:
+                    rules = session.query(models.CrawlRule).all()
+                    for rule in rules:
+                        bot.execute_rule_search(rule)
+            
+            parts = sched.cron_expression.split()
+            if len(parts) == 5:
+                scheduler.add_job(
+                    job_wrapper, 
+                    CronTrigger(minute=parts[0], hour=parts[1], day=parts[2], month=parts[3], day_of_week=parts[4]),
+                    id=f"sched_{sched.id}",
+                    replace_existing=True
+                )
+            else:
+                logger.warning(f"Cron không hợp lệ: {sched.cron_expression}")
+        except Exception as e:
+            logger.error(f"Lỗi đăng ký lịch {sched.id}: {e}")
+            
+    db.close()
+    scheduler.start()
+    logger.info(">>> SCHEDULER ĐANG CHẠY. NHẤN CTRL+C ĐỂ DỪNG.")
+    
+    try:
+        while True: time.sleep(2)
+    except (KeyboardInterrupt, SystemExit):
+        scheduler.shutdown()
+            
+if __name__ == "__main__":
+    run_scheduler_system()
