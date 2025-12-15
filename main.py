@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.orm import Session
+from contextlib import asynccontextmanager
 import models
 from database import engine, get_db
 from routers import auth, bidding # <--- 1. Import thêm router bidding
@@ -8,10 +9,30 @@ from routers import bidding, auth, crawler
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+from crawler_bot import start_scheduler_service
 # 1. Tự động tạo các bảng trong Database nếu chưa tồn tại
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="PC1 Bidding Management System")
+# 2. Định nghĩa Lifespan (Vòng đời ứng dụng)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- Code chạy KHI KHỞI ĐỘNG App ---
+    print("--- STARTING CRAWLER SCHEDULER ---")
+    scheduler = start_scheduler_service() # Khởi động Bot
+    
+    yield # App sẽ chạy ở đây
+    
+    # --- Code chạy KHI TẮT App ---
+    print("--- STOPPING CRAWLER SCHEDULER ---")
+    if scheduler:
+        scheduler.shutdown()
+
+# 3. Gắn lifespan vào FastAPI
+app = FastAPI(
+    title="PC1 Bidding Management System",
+    lifespan=lifespan # <--- Gắn vào đây
+)
+
 
 app.include_router(auth.router)
 app.include_router(bidding.router) # <--- 2. Đăng ký router bidding vào app

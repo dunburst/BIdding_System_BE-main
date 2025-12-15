@@ -1,7 +1,8 @@
 # schemas/crawler.py
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Optional, List, Any
 from decimal import Decimal
+from datetime import datetime
 
 # --- SCHEMAS CHO CRAWL SCHEDULE (Giữ nguyên) ---
 class CrawlScheduleBase(BaseModel):
@@ -67,3 +68,24 @@ class CrawlRuleResponse(CrawlRuleBase):
 
     class Config:
         from_attributes = True
+        
+class CrawlLogBase(BaseModel):
+    rule_id: Optional[int] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    status: str
+    packages_found: int = 0
+    error_message: Optional[str] = None
+    
+class CrawlLogResponse(CrawlLogBase):
+    id: int
+    
+    # Để hiển thị tên Rule thay vì chỉ hiện ID (Optional - cho Frontend dễ nhìn)
+    rule_name: Optional[str] = None 
+    
+    model_config = ConfigDict(from_attributes=True)
+
+# Nếu bạn muốn API trả về kèm cả thông tin chi tiết của Rule bên trong Log
+# Bạn có thể dùng class này (Advanced)
+class CrawlLogWithRuleResponse(CrawlLogResponse):
+    rule: Optional["CrawlRuleResponse"] = None

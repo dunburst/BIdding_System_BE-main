@@ -9,6 +9,7 @@ import mimetypes
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import text 
+from pytz import timezone
 
 # Import kết nối và model
 from database import SessionLocal, engine
@@ -32,9 +33,13 @@ from apscheduler.triggers.cron import CronTrigger
 
 # Setup Logging - Đảm bảo log ra Unicode không bị lỗi
 try:
-    sys.stdout.reconfigure(encoding='utf-8')
-except:
-    pass
+    # Python 3.7+ hỗ trợ reconfigure
+    # Thêm # type: ignore để Pylance không báo lỗi đỏ
+    sys.stdout.reconfigure(encoding='utf-8') # type: ignore
+except AttributeError:
+    # Fallback cho Python cũ hơn hoặc môi trường đặc biệt
+    if hasattr(sys.stdout, 'buffer'):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("PC1_Bot")
@@ -76,6 +81,38 @@ class MuasamcongDBBot:
             logger.error("Không tìm thấy msedgedriver.exe")
             return None
         return webdriver.Edge(service=Service(self.driver_path), options=self.edge_options)
+    
+    
+    def create_crawl_log(self, rule_id):
+        """Tạo log mới với trạng thái RUNNING"""
+        try:
+            log = models.CrawlLog(
+                rule_id=rule_id,
+                start_time=datetime.now(),
+                status="RUNNING",
+                packages_found=0
+            )
+            self.db.add(log)
+            self.db.commit()
+            self.db.refresh(log)
+            return log.id
+        except Exception as e:
+            logger.error(f"Lỗi tạo log: {e}")
+            return None
+
+    def update_crawl_log(self, log_id, status, count=0, error=None):
+        """Cập nhật log khi chạy xong"""
+        try:
+            if not log_id: return
+            log = self.db.query(models.CrawlLog).filter_by(id=log_id).first()
+            if log:
+                log.end_time = datetime.now()
+                log.status = status
+                log.packages_found = count
+                log.error_message = str(error) if error else None
+                self.db.commit()
+        except Exception as e:
+            logger.error(f"Lỗi update log: {e}")
 
     # ---------------------------------------------------------
     # HELPER FUNCTIONS
@@ -102,15 +139,31 @@ class MuasamcongDBBot:
 
     def clean_money(self, money_str):
         if not money_str: return 0.0
-        s = str(money_str).lower().strip()
-        if "miễn phí" in s or "không" in s:
+        s = str(money_str).strip().lower()
+        
+        # 1. Chỉ trả về 0 nếu chuỗi THỰC SỰ chỉ có chữ "không" hoặc "miễn phí"
+        # Tránh bắt nhầm chữ "không" nằm giữa câu văn dài
+        if s in ["không", "miễn phí", "0", "không có", "miễn phí."]:
             return 0.0
-        if isinstance(money_str, (int, float)): return float(money_str)
-        clean_str = re.sub(r'[^\d]', '', s)
-        try:
-            return float(clean_str)
-        except:
-            return 0.0
+            
+        # 2. Dùng Regex để chỉ lấy cụm số tiền ĐẦU TIÊN tìm thấy
+        # (Thường số tiền nằm ngay đầu dòng: "117.400.000 VND...")
+        # Pattern này tìm các con số liền nhau, có thể ngăn cách bởi dấu chấm
+        import re
+        match = re.search(r"^([\d\.]+)", s) 
+        # Lưu ý: Dấu ^ ở đầu để chắc chắn lấy số ở đầu dòng, tránh lấy nhầm số nghị định phía sau
+        
+        if match:
+            # Lấy chuỗi số tìm được (VD: "117.400.000")
+            num_str = match.group(1)
+            # Xóa dấu chấm phân cách hàng nghìn đi để thành số thuần (117400000)
+            clean_str = num_str.replace('.', '').replace(',', '')
+            try:
+                return float(clean_str)
+            except:
+                return 0.0
+                
+        return 0.0
         
     def get_info_by_label(self, driver, label_patterns):
         if isinstance(label_patterns, str):
@@ -196,8 +249,12 @@ class MuasamcongDBBot:
 
     def execute_rule_search(self, rule: models.CrawlRule):
         logger.info(f">>> BẮT ĐẦU CHẠY RULE: {rule.rule_name}")
+        log_id = self.create_crawl_log(rule.id)
+        
         driver = self.start_driver()
-        if not driver: return
+        if not driver: 
+            self.update_crawl_log(log_id, "FAILED", error="Không khởi động được Driver")
+            return
 
         try:
             url_search = "https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?render=index"
@@ -310,12 +367,21 @@ class MuasamcongDBBot:
             driver.quit() 
 
             # Crawl Detail
+            success_count = 0
             for idx, pkg_url in enumerate(list_packages):
                 logger.info(f"=== PROCESSING {idx+1}/{len(list_packages)}: {pkg_url} ===")
-                self.process_package(pkg_url)
+                # Bạn có thể sửa process_package để trả về True/False
+                try:
+                    self.process_package(pkg_url)
+                    success_count += 1
+                except Exception as e:
+                    logger.error(f"Lỗi gói {pkg_url}: {e}")
+                
+            self.update_crawl_log(log_id, "SUCCESS", count=success_count)
 
         except Exception as e:
             logger.error(f"Lỗi fatal trong execute_rule_search: {e}")
+            self.update_crawl_log(log_id, "FAILED", error=str(e))
             if driver: driver.quit()
 
     # ---------------------------------------------------------
@@ -477,44 +543,87 @@ class MuasamcongDBBot:
         finally:
             driver.quit()
             
-def run_scheduler_system():
-    bot = MuasamcongDBBot()
-    scheduler = BackgroundScheduler()
-    db = SessionLocal()
-    
-    schedules = db.query(models.CrawlSchedule).filter(models.CrawlSchedule.is_active == True).all()
-    logger.info(f"-> Tìm thấy {len(schedules)} lịch chạy trong DB.")
-    
-    for sched in schedules:
-        try:
-            def job_wrapper():
-                logger.info(f"⏰ ĐẾN GIỜ CHẠY SCHEDULE ID: {sched.id}")
-                with SessionLocal() as session:
-                    rules = session.query(models.CrawlRule).all()
-                    for rule in rules:
-                        bot.execute_rule_search(rule)
-            
-            parts = sched.cron_expression.split()
-            if len(parts) == 5:
-                scheduler.add_job(
-                    job_wrapper, 
-                    CronTrigger(minute=parts[0], hour=parts[1], day=parts[2], month=parts[3], day_of_week=parts[4]),
-                    id=f"sched_{sched.id}",
-                    replace_existing=True
-                )
-            else:
-                logger.warning(f"Cron không hợp lệ: {sched.cron_expression}")
-        except Exception as e:
-            logger.error(f"Lỗi đăng ký lịch {sched.id}: {e}")
-            
-    db.close()
-    scheduler.start()
-    logger.info(">>> SCHEDULER ĐANG CHẠY. NHẤN CTRL+C ĐỂ DỪNG.")
-    
+# Biến toàn cục để lưu scheduler
+global_scheduler = None
+
+def load_jobs_from_db(scheduler):
+    """Hàm này xóa hết job cũ và nạp lại job mới từ Database"""
     try:
-        while True: time.sleep(2)
-    except (KeyboardInterrupt, SystemExit):
-        scheduler.shutdown()
+        # 1. Xóa sạch các job cũ đang chạy để tránh trùng lặp
+        scheduler.remove_all_jobs()
+        logger.info("-> [Reload] Đã xóa các lịch trình cũ.")
+
+        # 2. Kết nối DB lấy lịch mới
+        with SessionLocal() as db:
+            schedules = db.query(models.CrawlSchedule).filter(models.CrawlSchedule.is_active == True).all()
+            logger.info(f"-> [Reload] Tìm thấy {len(schedules)} lịch active trong DB.")
+            
+            for sched in schedules:
+                # --- JOB WRAPPER (Giữ nguyên logic cũ) ---
+                def job_wrapper(s_id=sched.id): 
+                    logger.info(f"⏰ [Auto] ĐẾN GIỜ CHẠY SCHEDULE ID: {s_id}")
+                    try:
+                        bot = MuasamcongDBBot() 
+                        with SessionLocal() as session:
+                            rules = session.query(models.CrawlRule).all()
+                            for rule in rules:
+                                bot.execute_rule_search(rule)
+                    except Exception as e:
+                        logger.error(f"❌ Lỗi Job {s_id}: {e}")
+
+                # --- ADD JOB ---
+                parts = sched.cron_expression.split()
+                if len(parts) == 5:
+                    trigger = CronTrigger(
+                        minute=parts[0], hour=parts[1], day=parts[2], month=parts[3], day_of_week=parts[4],
+                        timezone="Asia/Ho_Chi_Minh"
+                    )
+                    scheduler.add_job(
+                        job_wrapper, 
+                        trigger, 
+                        id=f"sched_{sched.id}", 
+                        replace_existing=True
+                    )
+                    logger.info(f"   + Đã nạp lịch ID {sched.id}: {sched.cron_expression}")
+
+        # In ra lịch trình mới để kiểm tra
+        print("\n--- LỊCH TRÌNH ĐÃ CẬP NHẬT ---")
+        scheduler.print_jobs()
+        print("------------------------------\n")
+
+    except Exception as e:
+        logger.error(f"Lỗi khi nạp lại Job: {e}")
+
+def start_scheduler_service():
+    """Hàm khởi động ban đầu"""
+    global global_scheduler
+    
+    # Khởi tạo Scheduler nếu chưa có
+    if global_scheduler is None:
+        global_scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
+        global_scheduler.start()
+        logger.info(">>> SCHEDULER STARTED <<<")
+    
+    # Gọi hàm nạp job lần đầu
+    load_jobs_from_db(global_scheduler)
+    
+    return global_scheduler
+
+def reload_scheduler():
+    """Hàm này được gọi từ API để làm mới lịch"""
+    global global_scheduler
+    if global_scheduler and global_scheduler.running:
+        load_jobs_from_db(global_scheduler)
+        return True
+    return False
+
+def run_scheduler_system():
+    scheduler = start_scheduler_service()
+    if scheduler:
+        try:
+            while True: time.sleep(2)
+        except (KeyboardInterrupt, SystemExit):
+            scheduler.shutdown()
             
 if __name__ == "__main__":
     run_scheduler_system()

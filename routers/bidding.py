@@ -2,56 +2,59 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
-from database import get_db # Hàm lấy DB session (bạn tự định nghĩa trong database.py)
-from schemas import bidding as schemas
-from cruds import bidding as crud_bidding
+from database import get_db
 from models import PackageStatus
-
-from schemas.base import BaseResponse
-from schemas.bidding import BiddingPackageResponse, BiddingFileResponse
-import cruds.bidding as bidding_crud
-
-router = APIRouter(
-    prefix="/packages",
-    tags=["Bidding Packages"]
-)
-
-@router.post("/", response_model=schemas.BiddingPackageResponse)
-def create_package(package: schemas.BiddingPackageCreate, db: Session = Depends(get_db)):
-    db_package = crud_bidding.get_package_by_ma_tbmt(db, ma_tbmt=package.ma_tbmt)
-    if db_package:
-        raise HTTPException(status_code=400, detail="Mã TBMT đã tồn tại")
-    return crud_bidding.create_package(db=db, package=package)
-
-
-@router.put("/{hsmt_id}", response_model=schemas.BiddingPackageResponse)
-def update_package(hsmt_id: int, package_in: schemas.BiddingPackageUpdate, db: Session = Depends(get_db)):
-    db_package = crud_bidding.update_package(db, hsmt_id, package_in)
-    if db_package is None:
-        raise HTTPException(status_code=404, detail="Không tìm thấy gói thầu để cập nhật")
-    return db_package
-
-@router.delete("/{hsmt_id}")
-def delete_package(hsmt_id: int, db: Session = Depends(get_db)):
-    db_package = crud_bidding.delete_package(db, hsmt_id)
-    if db_package is None:
-        raise HTTPException(status_code=404, detail="Không tìm thấy gói thầu")
-    return {"message": "Đã xóa thành công"}
-
+from schemas.base import BaseResponse # Giả sử bạn có class bọc response chuẩn
+from schemas import bidding as schemas
+from cruds import bidding as crud_bidding # Thống nhất dùng tên này
 
 router = APIRouter(
     prefix="/bidding-packages",
     tags=["Bidding Packages"]
 )
 
-# --- API 1: Get All Bidding Packages ---
-@router.get("/", response_model=BaseResponse[List[BiddingPackageResponse]])
-def get_all_packages(
-    skip: int = 0, 
-    limit: int = 100, 
+# ==========================================
+# 1. TẠO MỚI (CREATE)
+# ==========================================
+@router.post("/", response_model=BaseResponse[schemas.BiddingPackageResponse])
+def create_package(
+    package: schemas.BiddingPackageBase, # Hoặc BiddingPackageCreate nếu bạn tách riêng
     db: Session = Depends(get_db)
 ):
-    packages = bidding_crud.get_all_bidding_packages(db, skip=skip, limit=limit)
+    # 1. Check trùng mã TBMT
+    db_package = crud_bidding.get_package_by_ma_tbmt(db, ma_tbmt=package.ma_tbmt)
+    if db_package:
+        raise HTTPException(status_code=400, detail=f"Mã TBMT '{package.ma_tbmt}' đã tồn tại")
+    
+    # 2. Tạo mới
+    new_package = crud_bidding.create_package(db=db, package=package)
+    
+    return BaseResponse(
+        success=True,
+        status=201,
+        message="Tạo gói thầu thành công",
+        data=new_package
+    )
+
+# ==========================================
+# 2. LẤY DANH SÁCH (GET LIST - CÓ FILTER & SEARCH)
+# ==========================================
+@router.get("/", response_model=BaseResponse[List[schemas.BiddingPackageResponse]])
+def get_packages(
+    skip: int = Query(0, ge=0), 
+    limit: int = Query(100, ge=1),
+    search: Optional[str] = Query(None, description="Tìm theo tên gói, mã TBMT, dự án"),
+    status: Optional[PackageStatus] = Query(None, description="Lọc theo trạng thái"),
+    db: Session = Depends(get_db)
+):
+    # Gọi hàm CRUD mới đã viết ở bước trước (có order_by, filter, search)
+    packages = crud_bidding.get_packages(
+        db, 
+        skip=skip, 
+        limit=limit, 
+        search_query=search, 
+        status=status
+    )
     
     return BaseResponse(
         success=True,
@@ -60,36 +63,75 @@ def get_all_packages(
         data=packages
     )
 
-# --- API 2: Get Bidding Package Detail by ID ---
-@router.get("/{hsmt_id}", response_model=BaseResponse[BiddingPackageResponse])
+# ==========================================
+# 3. LẤY CHI TIẾT (GET DETAIL)
+# ==========================================
+@router.get("/{hsmt_id}", response_model=BaseResponse[schemas.BiddingPackageResponse])
 def get_package_detail(hsmt_id: int, db: Session = Depends(get_db)):
-    package = bidding_crud.get_bidding_package_by_id(db, hsmt_id=hsmt_id)
+    package = crud_bidding.get_package(db, hsmt_id=hsmt_id)
     
     if not package:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy gói thầu với ID {hsmt_id}"
+            detail=f"Không tìm thấy gói thầu ID {hsmt_id}"
         )
         
     return BaseResponse(
         success=True,
         status=200,
-        message="Lấy thông tin gói thầu thành công",
+        message="Lấy chi tiết gói thầu thành công",
         data=package
     )
 
-# --- API 3: Get Files by Bidding Package ID ---
-@router.get("/{hsmt_id}/files", response_model=BaseResponse[List[BiddingFileResponse]])
-def get_package_files(hsmt_id: int, db: Session = Depends(get_db)):
-    # Kiểm tra xem gói thầu có tồn tại không trước
-    package = bidding_crud.get_bidding_package_by_id(db, hsmt_id=hsmt_id)
-    if not package:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy gói thầu với ID {hsmt_id}"
-        )
+# ==========================================
+# 4. CẬP NHẬT (UPDATE)
+# ==========================================
+@router.put("/{hsmt_id}", response_model=BaseResponse[schemas.BiddingPackageResponse])
+def update_package(
+    hsmt_id: int, 
+    package_in: schemas.BiddingPackageUpdate, 
+    db: Session = Depends(get_db)
+):
+    db_package = crud_bidding.update_package(db, hsmt_id, package_in)
+    
+    if db_package is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy gói thầu để cập nhật")
         
-    files = bidding_crud.get_files_by_package_id(db, hsmt_id=hsmt_id)
+    return BaseResponse(
+        success=True,
+        status=200,
+        message="Cập nhật gói thầu thành công",
+        data=db_package
+    )
+
+# ==========================================
+# 5. XÓA (DELETE)
+# ==========================================
+@router.delete("/{hsmt_id}", response_model=BaseResponse)
+def delete_package(hsmt_id: int, db: Session = Depends(get_db)):
+    is_deleted = crud_bidding.delete_package(db, hsmt_id)
+    
+    if not is_deleted:
+        raise HTTPException(status_code=404, detail="Không tìm thấy gói thầu để xóa")
+        
+    return BaseResponse(
+        success=True,
+        status=200,
+        message="Đã xóa gói thầu thành công",
+        data=None
+    )
+
+# ==========================================
+# 6. LẤY FILE ĐÍNH KÈM
+# ==========================================
+@router.get("/{hsmt_id}/files", response_model=BaseResponse[List[schemas.BiddingFileResponse]]) # Giả sử bạn có schema này
+def get_package_files(hsmt_id: int, db: Session = Depends(get_db)):
+    # Check tồn tại trước
+    package = crud_bidding.get_package(db, hsmt_id=hsmt_id)
+    if not package:
+        raise HTTPException(status_code=404, detail="Không tìm thấy gói thầu")
+        
+    files = crud_bidding.get_files_by_package_id(db, hsmt_id=hsmt_id)
     
     return BaseResponse(
         success=True,

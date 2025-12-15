@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
+from crawler_bot import reload_scheduler
 
 from database import get_db
 from schemas.base import BaseResponse
@@ -32,6 +33,8 @@ def create_schedule(schedule: CrawlScheduleCreate, db: Session = Depends(get_db)
 @router.put("/schedules/{id}", response_model=BaseResponse[CrawlScheduleResponse])
 def update_schedule(id: int, schedule: CrawlScheduleUpdate, db: Session = Depends(get_db)):
     data = crawler_crud.update_schedule(db, id, schedule)
+    # 2. TỰ ĐỘNG RELOAD BOT (Thêm dòng này)
+    reload_scheduler() 
     if not data:
         raise HTTPException(status_code=404, detail="Không tìm thấy lịch trình")
     return BaseResponse(success=True, status=200, message="Cập nhật thành công", data=data)
