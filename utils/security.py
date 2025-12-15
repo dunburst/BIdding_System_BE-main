@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from cruds.user import get_user_by_email
 from models import User
 
 load_dotenv() # Load biến từ file .env
@@ -61,7 +60,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
             
     except JWTError:
         raise credentials_exception
-    
+    from cruds.user import get_user_by_email
     # Tìm user trong DB
     user = get_user_by_email(db, email=email)
     if user is None:

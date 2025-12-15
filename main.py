@@ -3,7 +3,7 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy.orm import Session
 import models
 from database import engine, get_db
-from routers import auth, bidding # <--- 1. Import thêm router bidding
+from routers import auth, bidding, crawl
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -12,9 +12,9 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="PC1 Bidding Management System")
 
-# Đăng ký các router
 app.include_router(auth.router)
-app.include_router(bidding.router) # <--- 2. Đăng ký router bidding vào app
+app.include_router(bidding.router)
+app.include_router(crawl.router)
 
 # API Test kết nối
 @app.get("/")
@@ -35,7 +35,6 @@ app.add_middleware(
     allow_methods=["*"],  # Cho phép tất cả các method (POST, GET, PUT, DELETE...)
     allow_headers=["*"],  # Cho phép tất cả các header (Authorization, Content-Type...)
 )
-
 @app.exception_handler(HTTPException)
 async def custom_http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
@@ -74,7 +73,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "errors": errors_dict # Trả về object lỗi chi tiết
         },
     )
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

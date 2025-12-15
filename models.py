@@ -43,7 +43,24 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(100))
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.ENGINEER, nullable=False)
     status: Mapped[bool] = mapped_column(Boolean, default=True)
+    
+    audit_logs = relationship("AuditLog", back_populates="user")
 
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id"))
+    action: Mapped[str] = mapped_column(Unicode(255))
+    entity_table: Mapped[str] = mapped_column(String(100))
+    entity_id: Mapped[Optional[int]] = mapped_column(Integer)
+    old_value: Mapped[Optional[dict]] = mapped_column(JSON) # Hỗ trợ lưu JSON log
+    new_value: Mapped[Optional[dict]] = mapped_column(JSON)
+    ip_address: Mapped[Optional[str]] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["User"] = relationship(back_populates="audit_logs")
+    
 class CrawlSchedule(Base):
     __tablename__ = "crawl_schedules"
 
@@ -68,10 +85,10 @@ class CrawlRule(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     
     # Tên luật (VD: "Săn gói thầu Trạm biến áp > 100 tỷ")
-    rule_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    rule_name: Mapped[str] = mapped_column(UnicodeText(255), nullable=False)
     
     # Lĩnh vực (Mới thêm vào)
-    business_field: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    business_field: Mapped[Optional[str]] = mapped_column(UnicodeText(100), nullable=True)
     
     # Mảng từ khóa BẮT BUỘC (Lưu dưới dạng JSON List trong DB)
     keywords_include: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=True)
@@ -96,6 +113,7 @@ class BiddingPackage(Base):
     __tablename__ = "bidding_packages"
     
     hsmt_id : Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[Optional[int]] = mapped_column(ForeignKey("bidding_project.id"))
     #thông tin cơ bản
     ma_tbmt:Mapped[str] = mapped_column(String(50), unique=True, index=True) # Mã TBMT để check trùng 
     phien_ban_thay_doi: Mapped[str] = mapped_column(String(10), default='00')
@@ -144,6 +162,15 @@ class BiddingPackage(Base):
     
     created_at:Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     
+    # 1. Quan hệ n-1 với Dự án (Project)
+    project: Mapped["BiddingProject"] = relationship(back_populates="packages")
+    
+    # 2. Quan hệ 1-n với File đính kèm
+    files: Mapped[List["BiddingPackageFile"]] = relationship(back_populates="package", cascade="all, delete-orphan")
+    
+    # 3. Quan hệ 1-n với Nhà thầu tham gia (TenderContractor)
+    contractors: Mapped[List["TenderContractor"]] = relationship(back_populates="package", cascade="all, delete-orphan")
+    
 class BiddingPackageFile(Base): # [cite: 183]
     __tablename__ = "bidding_package_files"
     
@@ -153,13 +180,129 @@ class BiddingPackageFile(Base): # [cite: 183]
     file_type: Mapped[str] = mapped_column(String(100)) # HSMT, Phụ lục, Bản vẽ...
     upload_date: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     file_path: Mapped[str] = mapped_column(String(500)) # Đường dẫn lưu trữ file
+    package: Mapped["BiddingPackage"] = relationship(back_populates="files")
+
+
+# ==========================================
+# GROUP 2: TEMPLATES (Mẫu dự án/công việc)
+# ==========================================
+
+class BiddingProjectTemplate(Base):
+    __tablename__ = "bidding_project_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    template_name: Mapped[str] = mapped_column(Unicode(255), nullable=False)
+    template_file: Mapped[Optional[str]] = mapped_column(Unicode(500))
+
+
+class BiddingTaskTemplate(Base):
+    __tablename__ = "bidding_task_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    template_name: Mapped[str] = mapped_column(Unicode(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Unicode(1000))
+
+
+class TemplateStructure(Base):
+    __tablename__ = "template_structure"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_template_id: Mapped[int] = mapped_column(ForeignKey("bidding_project_templates.id"))
+    task_template_id: Mapped[int] = mapped_column(ForeignKey("bidding_task_templates.id"))
+    default_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    
+    project_template: Mapped["BiddingProjectTemplate"] = relationship()
+    task_template: Mapped["BiddingTaskTemplate"] = relationship()
+# ==========================================
+# GROUP 3: INTERNAL PROJECT MANAGEMENT (Quản lý dự án nội bộ)
+# ==========================================
+class BiddingProject(Base):
+    __tablename__ = "bidding_project"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey("users.user_id")) # Người chủ trì
+    bid_team_leader_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id")) # Trưởng nhóm thầu
+    name: Mapped[str] = mapped_column(Unicode(255), nullable=False)
+    status: Mapped[Optional[str]] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, onupdate=func.now())
+    
+    # Quan hệ với gói thầu (One-to-Many hoặc One-to-One tùy nghiệp vụ)
+    packages: Mapped[List["BiddingPackage"]] = relationship(back_populates="project")
+    tasks: Mapped[List["BiddingTask"]] = relationship(back_populates="project")
+    # --- BỔ SUNG RELATIONSHIPS MỚI ---
+    # 1. Quan hệ với User (Người chủ trì)
+    host: Mapped["User"] = relationship(foreign_keys=[host_id])
+    
+    # 2. Quan hệ với User (Trưởng nhóm thầu)
+    team_leader: Mapped[Optional["User"]] = relationship(foreign_keys=[bid_team_leader_id])
+    
+    # 3. Quan hệ với Log nộp thầu (BidSubmitLog)
+    submit_logs: Mapped[List["BidSubmitLog"]] = relationship(back_populates="project")
 
 
 class BiddingTask(Base):
-    __tablename__ = "bidding_tasks"
+    __tablename__ = "bidding_task"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    bidding_project_id: Mapped[int] = mapped_column(ForeignKey("bidding_project.id"))
+    parent_task_id: Mapped[Optional[int]] = mapped_column(ForeignKey("bidding_task.id")) # Self-referential
+    template_id: Mapped[Optional[int]] = mapped_column(ForeignKey("bidding_task_templates.id"))
+    
+    task_name: Mapped[str] = mapped_column(Unicode(255))
+    assignee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id"))
+    reviewer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id"))
+    
+    deadline: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    status: Mapped[Optional[str]] = mapped_column(String(50))
+    is_milestone: Mapped[bool] = mapped_column(Boolean, default=False)
+    
+    source_type: Mapped[Optional[str]] = mapped_column(String(50)) # E.g., "DOCUMENT", "COMMENT"
+    ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON) # Lưu trữ kết quả AI reasoning nếu có
+    hsmt_ref_page: Mapped[Optional[int]] = mapped_column(Integer) # Trang HSMT tham chiếu (nếu có)
+
+    project: Mapped["BiddingProject"] = relationship(back_populates="tasks")
+    sub_tasks: Mapped[List["BiddingTask"]] = relationship("BiddingTask")
+    
+    # 1. Quan hệ đệ quy (Parent - Subtasks)
+    # remote_side=[id] là bắt buộc để SQLAlchemy hiểu đây là quan hệ trỏ về chính bảng này
+    parent: Mapped[Optional["BiddingTask"]] = relationship(remote_side=[id], back_populates="sub_tasks")
+    sub_tasks: Mapped[List["BiddingTask"]] = relationship(back_populates="parent", cascade="all, delete-orphan")
+
+    # 2. Quan hệ với User (Người thực hiện)
+    assignee: Mapped[Optional["User"]] = relationship(foreign_keys=[assignee_id])
+
+    # 3. Quan hệ với User (Người review)
+    reviewer: Mapped[Optional["User"]] = relationship(foreign_keys=[reviewer_id])
+
+    # 4. Quan hệ với Template gốc
+    template: Mapped[Optional["BiddingTaskTemplate"]] = relationship()
+
+
+class BidSubmitLog(Base):
+    __tablename__ = "bid_submit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    bidding_project_id: Mapped[int] = mapped_column(ForeignKey("bidding_project.id"))
+    snapshot_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    snapshot_data: Mapped[Optional[dict]] = mapped_column(JSON) # Log lại data lúc submit
+    archive_file_path: Mapped[Optional[str]] = mapped_column(Unicode(500))
+    file_checksum: Mapped[Optional[str]] = mapped_column(String(64)) # MD5/SHA256 checksum của file nộp
+    
+    # --- BỔ SUNG RELATIONSHIP ---
+    project: Mapped["BiddingProject"] = relationship(back_populates="submit_logs")
+class TenderContractor(Base):
+    __tablename__ = "tender_contractor" # Bảng này nằm góc dưới bên phải
+    
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     hsmt_id: Mapped[int] = mapped_column(Integer, ForeignKey("bidding_packages.hsmt_id"))
-    task_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    
+    contractor_name: Mapped[Optional[str]] = mapped_column(Unicode(255))
+    financial_requirements: Mapped[Optional[str]] = mapped_column(Unicode(1000)) # Yêu cầu tài chính
+    technical_requirements: Mapped[Optional[str]] = mapped_column(Unicode(1000)) # Yêu cầu kỹ thuật
+    experience_requirements: Mapped[Optional[str]] = mapped_column(Unicode(1000))
+    ai_score: Mapped[Optional[Float]] = mapped_column(Float, nullable=True) # Điểm đánh giá AI
+    status: Mapped[Optional[str]] = mapped_column(String(50))
 
-
-
+    package: Mapped["BiddingPackage"] = relationship(back_populates="contractors")
