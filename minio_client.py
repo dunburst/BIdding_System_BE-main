@@ -1,6 +1,7 @@
 from minio import Minio
 import logging
 import os
+from urllib.parse import quote
 
 # --- CẤU HÌNH MINIO ---
 # Nếu chạy bot trên cùng máy cài MinIO thì để localhost.
@@ -37,7 +38,7 @@ class MinIOHandler:
             return None
         
         try:
-            # Upload file lên
+            # Upload file lên MinIO (MinIO hỗ trợ UTF-8 nên tên file tiếng Việt vẫn OK)
             self.client.fput_object(
                 MINIO_BUCKET,
                 object_name,
@@ -45,9 +46,12 @@ class MinIOHandler:
                 content_type=content_type
             )
             
-            # Tạo link để truy cập
+            # [QUAN TRỌNG] Mã hóa URL để đảm bảo an toàn tuyệt đối khi lưu vào DB và click link
+            # safe='/' để giữ lại dấu gạch chéo phân cách thư mục
+            safe_object_name = quote(object_name, safe='/')
+
             protocol = "https" if MINIO_SECURE else "http"
-            url = f"{protocol}://{MINIO_ENDPOINT}/{MINIO_BUCKET}/{object_name}"
+            url = f"{protocol}://{MINIO_ENDPOINT}/{MINIO_BUCKET}/{safe_object_name}"
             return url
         except Exception as e:
             logger.error(f"-> MinIO Upload Lỗi: {e}")

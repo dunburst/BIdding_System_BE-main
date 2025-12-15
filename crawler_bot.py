@@ -5,7 +5,7 @@ import logging
 import io
 import shutil
 import re
-import mimetypes  # Thư viện để nhận diện file
+import mimetypes 
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import text 
@@ -30,10 +30,9 @@ from selenium.webdriver.common.action_chains import ActionChains
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger   
 
-# Setup Logging
+# Setup Logging - Đảm bảo log ra Unicode không bị lỗi
 try:
-    if sys.stdout.encoding.lower() != 'utf-8':
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8')
 except:
     pass
 
@@ -81,6 +80,15 @@ class MuasamcongDBBot:
     # ---------------------------------------------------------
     # HELPER FUNCTIONS
     # ---------------------------------------------------------
+    
+    # [SỬA ĐỔI] Giữ nguyên tiếng Việt, chỉ bỏ ký tự cấm của FileSystem
+    def sanitize_filename(self, filename):
+        # Thay thế các ký tự cấm trong tên file Windows/Linux (\ / : * ? " < > |) bằng gạch dưới
+        # Nhưng vẫn GIỮ LẠI tiếng Việt có dấu
+        clean_name = re.sub(r'[\\/*?:"<>|]', '_', filename)
+        # Xóa khoảng trắng thừa ở đầu đuôi
+        return clean_name.strip()
+
     def parse_date(self, date_str):
         if not date_str: return None
         date_str = date_str.strip()
@@ -125,37 +133,17 @@ class MuasamcongDBBot:
                     continue
         return None
 
-    def scroll_and_find_click(self, driver, xpaths, step=400, max_attempts=20):
-        if isinstance(xpaths, str): xpaths = [xpaths]
-        logger.info(f"-> Đang quét dọc trang để tìm phần tử...")
-        driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(1)
-        for i in range(max_attempts):
-            for xp in xpaths:
-                try:
-                    element = driver.find_element(By.XPATH, xp)
-                    if element.is_displayed():
-                        driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", element)
-                        time.sleep(1)
-                        try:
-                            element.click()
-                            return True
-                        except:
-                            try:
-                                driver.execute_script("arguments[0].click();", element)
-                                return True
-                            except:
-                                ActionChains(driver).move_to_element(element).click().perform()
-                                return True
-                except:
-                    pass
-            driver.execute_script(f"window.scrollBy(0, {step});")
-            time.sleep(0.5) 
-            new_height = driver.execute_script("return window.scrollY")
-            total_height = driver.execute_script("return document.body.scrollHeight")
-            if new_height + driver.execute_script("return window.innerHeight") >= total_height:
-                break
-        return False
+    def clean_download_dir(self):
+        """Xóa sạch thư mục download để tránh lấy nhầm file cũ"""
+        for filename in os.listdir(self.download_dir):
+            file_path = os.path.join(self.download_dir, filename)
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+            except Exception as e:
+                logger.warning(f"Không xóa được file cũ {file_path}: {e}")
 
     # ---------------------------------------------------------
     # DATABASE ACTIONS
@@ -185,9 +173,9 @@ class MuasamcongDBBot:
             if pkg:
                 new_file = models.BiddingPackageFile(
                     hsmt_id=pkg.hsmt_id, 
-                    file_name=file_name, 
+                    file_name=file_name, # Tên gốc (hiển thị)
                     file_type="HSMT/Webform", 
-                    file_path=file_path 
+                    file_path=file_path  # URL MinIO
                 )
                 self.db.add(new_file)
                 self.db.commit()
@@ -402,8 +390,10 @@ class MuasamcongDBBot:
             logger.info(f"-> Đã lưu TBMT vào DB với HSMT_ID: {hsmt_id}")
 
             # BƯỚC 3: TẢI WEBFORM & UPLOAD MINIO
-            # (Đã sửa lỗi cú pháp try/except ở đây)
             try:
+                # [QUAN TRỌNG] Dọn dẹp thư mục download trước khi tải
+                self.clean_download_dir()
+
                 logger.info("-> Bắt đầu bước tải HSMT...")
                 driver.execute_script("window.scrollTo(0, 0)")
                 
@@ -448,17 +438,24 @@ class MuasamcongDBBot:
                         if downloaded_file:
                             full_local_path = os.path.join(self.download_dir, downloaded_file)
                             
-                            # Tạo tên và đoán loại file
-                            safe_ma_tbmt = ma_tbmt.replace('/', '_')
-                            object_name = f"{safe_ma_tbmt}/{downloaded_file}"
+                            # [SỬA ĐỔI] Dùng hàm sanitize nhẹ nhàng (giữ tiếng Việt)
+                            safe_filename = self.sanitize_filename(downloaded_file)
+                            
+                            # Xử lý folder path (thay / bằng _ trong mã TBMT để tránh tạo folder con ngoài ý muốn)
+                            safe_ma_tbmt = ma_tbmt.replace('/', '_').replace(' ', '').strip()
+                            
+                            # Tạo Object Name: Giữ nguyên tiếng Việt
+                            object_name = f"{safe_ma_tbmt}/{safe_filename}"
+                            
                             mime_type, _ = mimetypes.guess_type(full_local_path)
                             if not mime_type: mime_type = "application/octet-stream"
 
-                            logger.info(f"-> Đang upload MinIO: {object_name}")
+                            logger.info(f"-> Đang upload MinIO (Unicode): {object_name}")
                             minio_url = self.minio.upload_file(full_local_path, object_name, mime_type)
                             
                             if minio_url:
                                 logger.info(f"-> Upload Xong: {minio_url}")
+                                # Cập nhật DB: file_name là tên gốc, file_path là URL MinIO (đã encode)
                                 self.update_file_path(ma_tbmt, minio_url, downloaded_file)
                                 try: os.remove(full_local_path)
                                 except: pass

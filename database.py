@@ -28,7 +28,12 @@ params = urllib.parse.quote_plus(
 DATABASE_URL = f"mssql+pyodbc:///?odbc_connect={params}"
 
 # 3. Khởi tạo Engine
-engine = create_engine(DATABASE_URL, echo=True) # echo=True để log câu SQL ra màn hình debug
+# THÊM 'use_setinputsizes=False': Đây là cấu hình quan trọng để sửa lỗi Tiếng Việt với pyodbc
+engine = create_engine(
+    DATABASE_URL, 
+    echo=True, # echo=True để log câu SQL ra màn hình debug
+    use_setinputsizes=False 
+)
 
 # 4. Tạo Session
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
