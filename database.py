@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+import json
 import os
 from dotenv import load_dotenv
 import urllib.parse
@@ -27,8 +28,13 @@ params = urllib.parse.quote_plus(
 
 DATABASE_URL = f"mssql+pyodbc:///?odbc_connect={params}"
 
+def json_dumps_vietnamese(data):
+    return json.dumps(data, ensure_ascii=False)
+
 # 3. Khởi tạo Engine
-engine = create_engine(DATABASE_URL, echo=True) # echo=True để log câu SQL ra màn hình debug
+engine = create_engine(DATABASE_URL, 
+                       json_serializer=json_dumps_vietnamese,
+                       echo=True) # echo=True để log câu SQL ra màn hình debug
 
 # 4. Tạo Session
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

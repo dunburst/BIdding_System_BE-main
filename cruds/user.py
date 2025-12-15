@@ -1,5 +1,4 @@
 from sqlalchemy.orm import Session
-<<<<<<< HEAD
 from models import User, UserRole
 from sqlalchemy import select
 from utils.security import get_password_hash
@@ -37,10 +36,3 @@ def update_user_status(db: Session, user_id: int, status: bool):
         db.commit()
         db.refresh(user)
     return user
-=======
-from models import User 
-
-def get_user_by_email(db: Session, email: str):
-    """Tìm user trong DB dựa theo email"""
-    return db.query(User).filter(User.email == email).first()
->>>>>>> fc5e93d7250bbb543615092398c0269867abee6c

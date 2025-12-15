@@ -3,11 +3,7 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy.orm import Session
 import models
 from database import engine, get_db
-<<<<<<< HEAD
 from routers import auth, bidding, crawl
-=======
-from routers import auth, bidding # <--- 1. Import thêm router bidding
->>>>>>> fc5e93d7250bbb543615092398c0269867abee6c
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -16,15 +12,9 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="PC1 Bidding Management System")
 
-<<<<<<< HEAD
 app.include_router(auth.router)
 app.include_router(bidding.router)
 app.include_router(crawl.router)
-=======
-# Đăng ký các router
-app.include_router(auth.router)
-app.include_router(bidding.router) # <--- 2. Đăng ký router bidding vào app
->>>>>>> fc5e93d7250bbb543615092398c0269867abee6c
 
 # API Test kết nối
 @app.get("/")
@@ -45,10 +35,6 @@ app.add_middleware(
     allow_methods=["*"],  # Cho phép tất cả các method (POST, GET, PUT, DELETE...)
     allow_headers=["*"],  # Cho phép tất cả các header (Authorization, Content-Type...)
 )
-<<<<<<< HEAD
-=======
-
->>>>>>> fc5e93d7250bbb543615092398c0269867abee6c
 @app.exception_handler(HTTPException)
 async def custom_http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
@@ -87,10 +73,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "errors": errors_dict # Trả về object lỗi chi tiết
         },
     )
-<<<<<<< HEAD
-=======
-
->>>>>>> fc5e93d7250bbb543615092398c0269867abee6c
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -1,8 +1,8 @@
-<<<<<<< HEAD
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
-from models import BiddingPackage, BiddingTask, PackageStatus
+from models import BiddingPackage, BiddingTask, PackageStatus, BiddingPackageFile
 from schemas import bidding as schemas
+from typing import Optional, List
 
 # --- Gói thầu (Package) ---
 
@@ -12,12 +12,24 @@ def get_package(db: Session, hsmt_id: int):
 def get_package_by_ma_tbmt(db: Session, ma_tbmt: str):
     return db.query(BiddingPackage).filter(BiddingPackage.ma_tbmt == ma_tbmt).first()
 
+# 1. Lấy danh sách gói thầu (có phân trang)
+def get_all_bidding_packages(db: Session, skip: int = 0, limit: int = 100):
+    return db.query(BiddingPackage).order_by(BiddingPackage.created_at.desc()).offset(skip).limit(limit).all()
+
+# 2. Lấy chi tiết gói thầu theo ID
+def get_bidding_package_by_id(db: Session, hsmt_id: int):
+    return db.query(BiddingPackage).filter(BiddingPackage.hsmt_id == hsmt_id).first()
+
+# 3. Lấy danh sách file theo ID gói thầu
+def get_files_by_package_id(db: Session, hsmt_id: int):
+    return db.query(BiddingPackageFile).filter(BiddingPackageFile.hsmt_id == hsmt_id).all()
+
 def get_packages(
     db: Session, 
     skip: int = 0, 
     limit: int = 100, 
-    search_query: str = None, 
-    status: PackageStatus = None
+    search_query: Optional[str] = None, 
+    status: Optional[PackageStatus] = None
 ):
     query = db.query(BiddingPackage)
     
@@ -83,20 +95,3 @@ def create_task(db: Session, task: schemas.TaskCreate):
     db.commit()
     db.refresh(db_task)
     return db_task
-=======
-# cruds/bidding.py
-from sqlalchemy.orm import Session
-from models import BiddingPackage, BiddingPackageFile
-
-# 1. Lấy danh sách gói thầu (có phân trang)
-def get_all_bidding_packages(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(BiddingPackage).order_by(BiddingPackage.created_at.desc()).offset(skip).limit(limit).all()
-
-# 2. Lấy chi tiết gói thầu theo ID
-def get_bidding_package_by_id(db: Session, hsmt_id: int):
-    return db.query(BiddingPackage).filter(BiddingPackage.hsmt_id == hsmt_id).first()
-
-# 3. Lấy danh sách file theo ID gói thầu
-def get_files_by_package_id(db: Session, hsmt_id: int):
-    return db.query(BiddingPackageFile).filter(BiddingPackageFile.hsmt_id == hsmt_id).all()
->>>>>>> fc5e93d7250bbb543615092398c0269867abee6c

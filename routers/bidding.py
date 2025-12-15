@@ -1,5 +1,4 @@
-<<<<<<< HEAD
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -7,6 +6,10 @@ from database import get_db # Hàm lấy DB session (bạn tự định nghĩa t
 from schemas import bidding as schemas
 from cruds import bidding as crud_bidding
 from models import PackageStatus
+
+from schemas.base import BaseResponse
+from schemas.bidding import BiddingPackageResponse, BiddingFileResponse
+import cruds.bidding as bidding_crud
 
 router = APIRouter(
     prefix="/packages",
@@ -20,23 +23,6 @@ def create_package(package: schemas.BiddingPackageCreate, db: Session = Depends(
         raise HTTPException(status_code=400, detail="Mã TBMT đã tồn tại")
     return crud_bidding.create_package(db=db, package=package)
 
-@router.get("/", response_model=List[schemas.BiddingPackageResponse])
-def read_packages(
-    skip: int = 0, 
-    limit: int = 100, 
-    q: Optional[str] = Query(None, description="Tìm kiếm theo tên hoặc mã"),
-    status: Optional[PackageStatus] = Query(None, description="Lọc theo trạng thái"),
-    db: Session = Depends(get_db)
-):
-    packages = crud_bidding.get_packages(db, skip=skip, limit=limit, search_query=q, status=status)
-    return packages
-
-@router.get("/{hsmt_id}", response_model=schemas.BiddingPackageResponse)
-def read_package(hsmt_id: int, db: Session = Depends(get_db)):
-    db_package = crud_bidding.get_package(db, hsmt_id=hsmt_id)
-    if db_package is None:
-        raise HTTPException(status_code=404, detail="Không tìm thấy gói thầu")
-    return db_package
 
 @router.put("/{hsmt_id}", response_model=schemas.BiddingPackageResponse)
 def update_package(hsmt_id: int, package_in: schemas.BiddingPackageUpdate, db: Session = Depends(get_db)):
@@ -51,16 +37,7 @@ def delete_package(hsmt_id: int, db: Session = Depends(get_db)):
     if db_package is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy gói thầu")
     return {"message": "Đã xóa thành công"}
-=======
-# routers/bidding.py
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from typing import List
 
-from database import get_db
-from schemas.base import BaseResponse
-from schemas.bidding import BiddingPackageResponse, BiddingFileResponse
-import cruds.bidding as bidding_crud
 
 router = APIRouter(
     prefix="/bidding-packages",
@@ -120,4 +97,3 @@ def get_package_files(hsmt_id: int, db: Session = Depends(get_db)):
         message="Lấy danh sách file thành công",
         data=files
     )
->>>>>>> fc5e93d7250bbb543615092398c0269867abee6c

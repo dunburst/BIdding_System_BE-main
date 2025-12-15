@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from datetime import datetime
@@ -27,11 +26,6 @@ class BiddingPackageUpdate(BaseModel):
     so_quyet_dinh_phe_duyet: Optional[str] = None
     # ...
 
-class BiddingPackageResponse(BiddingPackageBase):
-    hsmt_id: int
-    created_at: datetime
-    
-    model_config = ConfigDict(from_attributes=True)
 
 # --- Task Schemas ---
 class TaskBase(BaseModel):
@@ -44,13 +38,6 @@ class TaskCreate(TaskBase):
 class TaskResponse(TaskBase):
     id: int
     model_config = ConfigDict(from_attributes=True)
-=======
-# schemas/bidding.py
-from pydantic import BaseModel
-from typing import Optional, List
-from datetime import datetime
-from decimal import Decimal
-from models import PackageStatus
 
 # 1. Schema cho File đính kèm
 class BiddingFileResponse(BaseModel):
@@ -89,4 +76,3 @@ class BiddingPackageResponse(BaseModel):
 
     class Config:
         from_attributes = True
->>>>>>> fc5e93d7250bbb543615092398c0269867abee6c
