@@ -44,6 +44,7 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.ENGINEER, nullable=False)
     status: Mapped[bool] = mapped_column(Boolean, default=True)
 
+<<<<<<< HEAD
 class AuditLog(Base):
     __tablename__ = "audit_log"
 
@@ -59,6 +60,8 @@ class AuditLog(Base):
 
     user: Mapped["User"] = relationship(back_populates="audit_logs")
     
+=======
+>>>>>>> fc5e93d7250bbb543615092398c0269867abee6c
 class CrawlSchedule(Base):
     __tablename__ = "crawl_schedules"
 
@@ -170,6 +173,7 @@ class BiddingPackageFile(Base): # [cite: 183]
     file_path: Mapped[str] = mapped_column(String(500)) # Đường dẫn lưu trữ file
 
 
+<<<<<<< HEAD
 # ==========================================
 # GROUP 2: TEMPLATES (Mẫu dự án/công việc)
 # ==========================================
@@ -260,3 +264,13 @@ class TenderContractor(Base):
     status: Mapped[Optional[str]] = mapped_column(String(50))
 
     package: Mapped["BiddingPackage"] = relationship(back_populates="contractors")
+=======
+class BiddingTask(Base):
+    __tablename__ = "bidding_tasks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hsmt_id: Mapped[int] = mapped_column(Integer, ForeignKey("bidding_packages.hsmt_id"))
+    task_name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+
+>>>>>>> fc5e93d7250bbb543615092398c0269867abee6c
