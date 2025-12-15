@@ -125,7 +125,7 @@ class BiddingFileResponse(BaseModel):
     file_path: str
 
     class Config:
-        from_attributes = True # Cho phép đọc dữ liệu từ ORM model
+        from_attributes = True
 
 # 2. Schema cho Gói thầu (Bidding Package)
 class BiddingPackageResponse(BiddingPackageBase):
