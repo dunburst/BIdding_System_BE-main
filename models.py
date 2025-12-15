@@ -106,6 +106,23 @@ class CrawlRule(Base):
     # Độ ưu tiên
     priority: Mapped[int] = mapped_column(Integer, default=1, nullable=True)
     
+class CrawlLog(Base):
+    __tablename__ = "crawl_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[Optional[int]] = mapped_column(ForeignKey("crawl_rules.id"))
+    
+    # Thời gian bắt đầu và kết thúc
+    start_time: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    end_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    
+    # Kết quả
+    status: Mapped[str] = mapped_column(String(50)) # "SUCCESS", "FAILED", "RUNNING"
+    packages_found: Mapped[int] = mapped_column(Integer, default=0) # Số gói tìm thấy
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # Quan hệ
+    rule: Mapped["CrawlRule"] = relationship()
 # ==========================================
 # 2. PHÂN HỆ ĐẦU VÀO (INPUT & HSMT) [cite: 44, 46]
 # ==========================================
