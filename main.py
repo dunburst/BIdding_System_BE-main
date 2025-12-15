@@ -13,7 +13,6 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="PC1 Bidding Management System")
 
-# Đăng ký các router
 app.include_router(auth.router)
 app.include_router(bidding.router) # <--- 2. Đăng ký router bidding vào app
 app.include_router(crawler.router)
@@ -37,7 +36,6 @@ app.add_middleware(
     allow_methods=["*"],  # Cho phép tất cả các method (POST, GET, PUT, DELETE...)
     allow_headers=["*"],  # Cho phép tất cả các header (Authorization, Content-Type...)
 )
-
 @app.exception_handler(HTTPException)
 async def custom_http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
@@ -76,7 +74,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "errors": errors_dict # Trả về object lỗi chi tiết
         },
     )
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
