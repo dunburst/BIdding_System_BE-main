@@ -1,14 +1,17 @@
 # routers/crawler.py
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from crawler_bot import reload_scheduler
+from sqlalchemy import desc
+import cruds.crawler as crawler
+from sqlalchemy.orm import Session
 
 from database import get_db
 from schemas.base import BaseResponse
 from schemas.crawler import (
     CrawlScheduleResponse, CrawlScheduleCreate, CrawlScheduleUpdate,
-    CrawlRuleResponse, CrawlRuleCreate, CrawlRuleUpdate
+    CrawlRuleResponse, CrawlRuleCreate, CrawlRuleUpdate, CrawlLogResponse, CrawlLogWithRuleResponse
 )
 import cruds.crawler as crawler_crud
 
@@ -72,3 +75,27 @@ def delete_rule(id: int, db: Session = Depends(get_db)):
     if not success:
         raise HTTPException(status_code=404, detail="Không tìm thấy luật")
     return BaseResponse(success=True, status=200, message="Xóa luật thành công", data=None)
+
+# ==========================================
+# CRAWL LOG API (GET LIST & DETAIL ONLY)
+# ==========================================
+
+# 1. Lấy danh sách Log (Filter: status, rule_id)
+@router.get("/logs", response_model=List[CrawlLogResponse])
+def get_logs(
+    skip: int = Query(0, ge=0), 
+    limit: int = Query(100, ge=1), 
+    status: Optional[str] = Query(None, description="Lọc theo trạng thái: SUCCESS, FAILED, RUNNING"),
+    rule_id: Optional[int] = Query(None, description="Lọc theo ID của luật cào"),
+    db: Session = Depends(get_db)
+):
+    return crawler.get_logs(db, skip=skip, limit=limit, status=status, rule_id=rule_id)
+
+# 2. Tìm kiếm chi tiết Log theo ID
+# Sử dụng CrawlLogWithRuleResponse để trả về cả thông tin Rule chi tiết
+@router.get("/logs/{log_id}", response_model=CrawlLogWithRuleResponse)
+def get_log_detail(log_id: int, db: Session = Depends(get_db)):
+    db_log = crawler.get_log(db, log_id)
+    if not db_log:
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy nhật ký với ID {log_id}")
+    return db_log

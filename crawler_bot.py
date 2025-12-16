@@ -100,15 +100,26 @@ class MuasamcongDBBot:
             logger.error(f"Lỗi tạo log: {e}")
             return None
 
-    def update_crawl_log(self, log_id, status, count=0, error=None):
+    def update_crawl_log(self, log_id, status, count=0, failed=0, details=None, error=None):
         """Cập nhật log khi chạy xong"""
         try:
             if not log_id: return
+            
+            # Nếu details là dict/list thì convert sang string json
+            import json
+            details_str = json.dumps(details, ensure_ascii=False) if details else None
+
             log = self.db.query(models.CrawlLog).filter_by(id=log_id).first()
             if log:
                 log.end_time = datetime.now()
                 log.status = status
                 log.packages_found = count
+                
+                # --- Cập nhật trường mới ---
+                log.packages_failed = failed
+                log.details = details_str
+                # ---------------------------
+                
                 log.error_message = str(error) if error else None
                 self.db.commit()
         except Exception as e:
@@ -314,7 +325,7 @@ class MuasamcongDBBot:
             # Date
             try:
                 now = datetime.now()
-                from_date = (now - timedelta(days=30)).strftime("%d/%m/%Y")
+                from_date = (now - timedelta(days=1)).strftime("%d/%m/%Y")
                 to_date = now.strftime("%d/%m/%Y")
                 date_inputs = driver.find_elements(By.XPATH, "//input[contains(@placeholder, 'dd/mm/yyyy')]")
                 if len(date_inputs) >= 2:
@@ -368,21 +379,49 @@ class MuasamcongDBBot:
 
             # Crawl Detail
             success_count = 0
+            fail_count = 0
+            fail_details = [] # Danh sách lưu chi tiết lỗi
+
             for idx, pkg_url in enumerate(list_packages):
                 logger.info(f"=== PROCESSING {idx+1}/{len(list_packages)}: {pkg_url} ===")
-                # Bạn có thể sửa process_package để trả về True/False
                 try:
+                    # Gọi hàm xử lý (Hàm này nên raise Exception nếu lỗi)
                     self.process_package(pkg_url)
                     success_count += 1
                 except Exception as e:
-                    logger.error(f"Lỗi gói {pkg_url}: {e}")
-                
-            self.update_crawl_log(log_id, "SUCCESS", count=success_count)
+                    fail_count += 1
+                    error_msg = str(e)
+                    logger.error(f"Lỗi gói {pkg_url}: {error_msg}")
+                    
+                    # Lưu lại link và lý do lỗi vào list để update vào DB
+                    fail_details.append({
+                        "url": pkg_url,
+                        "error": error_msg
+                    })
+            
+            # Xác định trạng thái cuối cùng của cả Rule
+            final_status = "SUCCESS"
+            if fail_count > 0:
+                # Nếu có cái thành công, có cái thất bại -> WARNING
+                # Nếu chết sạch -> FAILED
+                final_status = "WARNING" if success_count > 0 else "FAILED"
+            
+            # Update Log với đầy đủ thông tin thống kê
+            self.update_crawl_log(
+                log_id, 
+                status=final_status, 
+                count=success_count, 
+                failed=fail_count,    # Số lượng lỗi
+                details=fail_details  # Chi tiết lỗi (JSON)
+            )
+            # ========================================================
 
         except Exception as e:
             logger.error(f"Lỗi fatal trong execute_rule_search: {e}")
-            self.update_crawl_log(log_id, "FAILED", error=str(e))
-            if driver: driver.quit()
+            self.update_crawl_log(log_id, "CRASHED", error=str(e))
+            if driver: 
+                try: driver.quit()
+                except: pass
 
     # ---------------------------------------------------------
     # MAIN LOGIC
@@ -452,7 +491,8 @@ class MuasamcongDBBot:
             }
 
             hsmt_id = self.save_package_to_db(tbmt_data)
-            if not hsmt_id: return
+            if not hsmt_id: 
+                raise Exception("Lỗi lưu Database (hsmt_id is None)")
             logger.info(f"-> Đã lưu TBMT vào DB với HSMT_ID: {hsmt_id}")
 
             # BƯỚC 3: TẢI WEBFORM & UPLOAD MINIO
@@ -463,83 +503,137 @@ class MuasamcongDBBot:
                 logger.info("-> Bắt đầu bước tải HSMT...")
                 driver.execute_script("window.scrollTo(0, 0)")
                 
-                # Click Tab HSMT
+                # 1. Click Tab "Hồ sơ mời thầu"
                 tab_hsmt = wait_element("//*[contains(text(), 'Hồ sơ mời thầu')]", timeout=15)
                 driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", tab_hsmt)
                 time.sleep(1)
                 driver.execute_script("arguments[0].click();", tab_hsmt)
-                time.sleep(5)
+                time.sleep(3)
                 
-                # Click Nút Tải
+                # 2. Click Nút "Tải tất cả biểu mẫu webform"
                 webform_xpath = "//*[contains(text(), 'Tải tất cả biểu mẫu webform')]"
                 btn_webform = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, webform_xpath)))
                 driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_webform)
                 time.sleep(1)
                 driver.execute_script("arguments[0].click();", btn_webform)
                 
-                # Xử lý Viewer
+                # 3. Xử lý Viewer (Tab mới)
                 time.sleep(5)
                 if len(driver.window_handles) > 1:
                     driver.switch_to.window(driver.window_handles[-1])
+                    logger.info("-> Đã chuyển sang tab Viewer.")
+                    
+                    clicked = False
                     try:
-                        btn_download = WebDriverWait(driver, 30).until(
-                            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Tải về')] | //span[contains(text(), 'Tải về')] | //*[text()='Tải về']"))
-                        )
-                        driver.execute_script("arguments[0].click();", btn_download)
-                        logger.info("-> Đang đợi file tải về...")
-                        
-                        # Chờ File
-                        timeout = 90
-                        elapsed = 0
-                        downloaded_file = None
-                        while elapsed < timeout:
-                            files = [f for f in os.listdir(self.download_dir) if not f.endswith('.crdownload') and not f.endswith('.tmp')]
-                            if files:
-                                downloaded_file = files[0]
-                                break
-                            time.sleep(1)
-                            elapsed += 1
-                        
-                        # Upload MinIO
-                        if downloaded_file:
-                            full_local_path = os.path.join(self.download_dir, downloaded_file)
-                            
-                            # [SỬA ĐỔI] Dùng hàm sanitize nhẹ nhàng (giữ tiếng Việt)
-                            safe_filename = self.sanitize_filename(downloaded_file)
-                            
-                            # Xử lý folder path (thay / bằng _ trong mã TBMT để tránh tạo folder con ngoài ý muốn)
-                            safe_ma_tbmt = ma_tbmt.replace('/', '_').replace(' ', '').strip()
-                            
-                            # Tạo Object Name: Giữ nguyên tiếng Việt
-                            object_name = f"{safe_ma_tbmt}/{safe_filename}"
-                            
-                            mime_type, _ = mimetypes.guess_type(full_local_path)
-                            if not mime_type: mime_type = "application/octet-stream"
+                        # --- [CHIẾN THUẬT 1] TÌM NGAY Ở KHUNG CHÍNH (MAIN FRAME) ---
 
-                            logger.info(f"-> Đang upload MinIO (Unicode): {object_name}")
-                            minio_url = self.minio.upload_file(full_local_path, object_name, mime_type)
-                            
-                            if minio_url:
-                                logger.info(f"-> Upload Xong: {minio_url}")
-                                # Cập nhật DB: file_name là tên gốc, file_path là URL MinIO (đã encode)
-                                self.update_file_path(ma_tbmt, minio_url, downloaded_file)
-                                try: os.remove(full_local_path)
-                                except: pass
-                            else:
-                                logger.error("-> Upload thất bại!")
-                        else:
-                            logger.warning("-> Timeout: Không thấy file tải về.")
+                        btn_xpath = "//button[contains(@class, 'btn-primary') and contains(., 'Tải về')]"
+                        
+                        logger.info("-> Đang tìm nút Tải về (btn-primary) ở Main Frame...")
+                        btn = WebDriverWait(driver, 7).until(
+                            EC.element_to_be_clickable((By.XPATH, btn_xpath))
+                        )
+                        
+                        # Dùng Javascript click để chắc chắn ăn
+                        driver.execute_script("arguments[0].click();", btn)
+                        logger.info("-> Đã Click nút Tải về thành công!")
+                        clicked = True
                         
                     except Exception as e:
-                        logger.error(f"-> Lỗi trong tab Viewer: {e}")
+                        logger.warning(f"-> Không thấy ở Main Frame ({e}). Đang thử tìm trong các Iframe...")
+                        
+                        # --- [CHIẾN THUẬT 2] CHỈ TÌM TRONG IFRAME NẾU BƯỚC 1 THẤT BẠI ---
+                        iframes = driver.find_elements(By.TAG_NAME, "iframe")
+                        for i, frame in enumerate(iframes):
+                            try:
+                                driver.switch_to.frame(frame)
+                                # Tìm lại với xpath rộng hơn một chút
+                                btn = WebDriverWait(driver, 2).until(
+                                    EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Tải về')] | //a[contains(., 'Tải về')]"))
+                                )
+                                driver.execute_script("arguments[0].click();", btn)
+                                logger.info(f"-> Đã Click được trong Iframe số {i}")
+                                clicked = True
+                                break # Thoát vòng lặp iframe nếu đã click được
+                            except:
+                                # Quay ra để thử iframe khác hoặc thử phương án khác
+                                driver.switch_to.default_content() 
+                                if len(driver.window_handles) > 1: driver.switch_to.window(driver.window_handles[-1])
+
+                    # --- [CHIẾN THUẬT 3] ĐƯỜNG CÙNG - DÙNG PHÍM TẮT CTRL+S ---
+                    if not clicked:
+                        logger.error("-> Vẫn không click được. Dùng phím tắt Ctrl+S...")
+                        try:
+                            # Đảm bảo đang ở main frame để gửi phím
+                            driver.switch_to.default_content() 
+                            if len(driver.window_handles) > 1: driver.switch_to.window(driver.window_handles[-1])
+                            
+                            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.CONTROL, 's')
+                        except Exception as k_err:
+                            logger.error(f"-> Gửi phím tắt thất bại: {k_err}")
+
+                    # 4. CHỜ FILE TẢI VỀ (Code cũ giữ nguyên)
+                    logger.info("-> Đang đợi file xuất hiện trong thư mục...")
+                    timeout = 90 
+                    elapsed = 0
+                    downloaded_file = None
+                    
+                    while elapsed < timeout:
+                        files = [f for f in os.listdir(self.download_dir) if not f.endswith('.crdownload') and not f.endswith('.tmp')]
+                        if files:
+                            # Sắp xếp lấy file mới nhất
+                            files.sort(key=lambda x: os.path.getmtime(os.path.join(self.download_dir, x)), reverse=True)
+                            
+                            # Check size > 0
+                            potential_file = files[0]
+                            if os.path.getsize(os.path.join(self.download_dir, potential_file)) > 0:
+                                downloaded_file = potential_file
+                                break
+                        time.sleep(1)
+                        elapsed += 1
+                        
+                    # 5. Upload MinIO
+                    if downloaded_file:
+                        full_local_path = os.path.join(self.download_dir, downloaded_file)
+                        
+                        # [FIX] Dùng hàm sanitize vừa thêm
+                        safe_filename = self.sanitize_filename(downloaded_file)
+                        
+                        # Xử lý folder path (thay / bằng _ trong mã TBMT)
+                        safe_ma_tbmt = ma_tbmt.replace('/', '_').replace(' ', '').strip()
+                        
+                        # Tạo Object Name: Giữ nguyên tiếng Việt
+                        object_name = f"{safe_ma_tbmt}/{safe_filename}"
+                        
+                        mime_type, _ = mimetypes.guess_type(full_local_path)
+                        if not mime_type: mime_type = "application/octet-stream"
+
+                        logger.info(f"-> Đang upload MinIO: {object_name}")
+                        minio_url = self.minio.upload_file(full_local_path, object_name, mime_type)
+                        
+                        if minio_url:
+                            logger.info(f"-> Upload Xong: {minio_url}")
+                            # Cập nhật DB
+                            self.update_file_path(ma_tbmt, minio_url, downloaded_file)
+                            # Xóa file local sau khi up xong
+                            try: os.remove(full_local_path)
+                            except: pass
+                        else:
+                            logger.error("-> Upload thất bại (MinIO trả về None).")
+                    else:
+                        logger.warning("-> Timeout: Không thấy file tải về sau 60s.")
+                        # Chụp ảnh lỗi nếu không thấy file
+                        driver.save_screenshot(os.path.join(self.base_dir, f"error_no_file_{ma_tbmt.replace('/','_')}.png"))
+                
                 else:
-                    logger.warning("-> Không thấy tab Viewer bật lên.")
+                    logger.warning("-> Không thấy tab Viewer bật lên (Popup blocked?).")
                     
             except Exception as e:
                 logger.error(f"-> Lỗi trong quá trình tải file: {e}")
 
         except Exception as e:
-            logger.error(f"Lỗi chung xử lý gói thầu: {e}")
+            logger.error(f"Chi tiết lỗi process_package: {e}")
+            raise e
         finally:
             driver.quit()
             

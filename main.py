@@ -13,24 +13,24 @@ from crawler_bot import start_scheduler_service
 # 1. Tự động tạo các bảng trong Database nếu chưa tồn tại
 models.Base.metadata.create_all(bind=engine)
 
-# 2. Định nghĩa Lifespan (Vòng đời ứng dụng)
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # --- Code chạy KHI KHỞI ĐỘNG App ---
-    print("--- STARTING CRAWLER SCHEDULER ---")
-    scheduler = start_scheduler_service() # Khởi động Bot
+# # 2. Định nghĩa Lifespan (Vòng đời ứng dụng)
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
+#     # --- Code chạy KHI KHỞI ĐỘNG App ---
+#     print("--- STARTING CRAWLER SCHEDULER ---")
+#     scheduler = start_scheduler_service() # Khởi động Bot
     
-    yield # App sẽ chạy ở đây
+#     yield # App sẽ chạy ở đây
     
-    # --- Code chạy KHI TẮT App ---
-    print("--- STOPPING CRAWLER SCHEDULER ---")
-    if scheduler:
-        scheduler.shutdown()
+#     # --- Code chạy KHI TẮT App ---
+#     print("--- STOPPING CRAWLER SCHEDULER ---")
+#     if scheduler:
+#         scheduler.shutdown()
 
 # 3. Gắn lifespan vào FastAPI
 app = FastAPI(
     title="PC1 Bidding Management System",
-    lifespan=lifespan # <--- Gắn vào đây
+    # lifespan=lifespan # <--- Gắn vào đây
 )
 
 
