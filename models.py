@@ -24,15 +24,34 @@ class PackageStatus(str, enum.Enum):
     SUBMITTED = "SUBMITTED" # Đã nộp
     CLOSED = "CLOSED"
 
+class UnitType(str, enum.Enum):
+    GROUP = "GROUP"           # Tập đoàn
+    BLOCK = "BLOCK"           # Khối
+    BOARD = "BOARD"           # Ban
+    SUBSIDIARY = "SUBSIDIARY" # Công ty con
+    DEPARTMENT = "DEPARTMENT" # Phòng
+
+class AssignmentType(str, enum.Enum):
+    MAIN = "MAIN"       # Xử lý chính
+    SUPPORT = "SUPPORT" # Phối hợp
+    REVIEW = "REVIEW"   # Duyệt
+
+# Cập nhật lại TaskStatus theo yêu cầu 3.1
 class TaskStatus(str, enum.Enum):
-    TODO = "TODO"
+    OPEN = "OPEN"             # Chưa ai nhận
+    ASSIGNED = "ASSIGNED"     # Đã giao (có người/đơn vị cụ thể)
     IN_PROGRESS = "IN_PROGRESS"
-    PENDING_REVIEW = "PENDING_REVIEW" # Chờ duyệt
+    PENDING_REVIEW = "PENDING_REVIEW"
     COMPLETED = "COMPLETED"
     REJECTED = "REJECTED"
-
+    
+class SecurityLevel(int, enum.Enum):
+    PUBLIC = 1          # Công khai / Nhân viên thường
+    INTERNAL = 2        # Nội bộ phòng ban
+    CONFIDENTIAL = 3    # Mật (Cấp quản lý/Trưởng ban)
+    SECRET = 4          # Tối mật (Lãnh đạo cấp cao)
 # ==========================================
-# 1. PHÂN HỆ QUẢN TRỊ (ADMIN) [cite: 40, 199]
+# 1. PHÂN HỆ TỔ CHỨC & QUẢN TRỊ (ORGANIZATION & ADMIN)
 # ==========================================
 
 class User(Base):
@@ -44,8 +63,43 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.ENGINEER, nullable=False)
     status: Mapped[bool] = mapped_column(Boolean, default=True)
     
+    # --- CÁC TRƯỜNG MỚI CHO ABAC ---
+    org_unit_id: Mapped[Optional[int]] = mapped_column(ForeignKey("organizational_units.unit_id"))
+    job_title: Mapped[Optional[str]] = mapped_column(Unicode(100)) # VD: Chuyên viên chính
+    security_clearance: Mapped[SecurityLevel] = mapped_column(
+        Enum(SecurityLevel), 
+        default=SecurityLevel.PUBLIC,
+        nullable=False
+    )
+
+    # Relationships
+    org_unit: Mapped[Optional["OrganizationalUnit"]] = relationship(foreign_keys=[org_unit_id], back_populates="members")
     audit_logs = relationship("AuditLog", back_populates="user")
 
+# 1.1. Bảng Mới: Cơ cấu tổ chức
+class OrganizationalUnit(Base):
+    __tablename__ = "organizational_units"
+
+    unit_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    unit_name: Mapped[str] = mapped_column(Unicode(255), nullable=False)
+    unit_code: Mapped[str] = mapped_column(String(50), unique=True, index=True) # VD: BLOCK_ENERGY
+    
+    # Self-referencing FK: Đơn vị cha
+    parent_unit_id: Mapped[Optional[int]] = mapped_column(ForeignKey("organizational_units.unit_id"))
+    
+    unit_type: Mapped[UnitType] = mapped_column(Enum(UnitType), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(UnicodeText)
+    
+    # Người đứng đầu (Trưởng ban/GĐ Khối)
+    manager_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id"))
+
+    # Relationships
+    parent: Mapped[Optional["OrganizationalUnit"]] = relationship(remote_side=[unit_id], back_populates="children")
+    children: Mapped[List["OrganizationalUnit"]] = relationship(back_populates="parent")
+    
+    manager: Mapped[Optional["User"]] = relationship(foreign_keys=[manager_id])
+    members: Mapped[List["User"]] = relationship(foreign_keys="[User.org_unit_id]", back_populates="org_unit")
+    
 class AuditLog(Base):
     __tablename__ = "audit_log"
 
@@ -61,13 +115,16 @@ class AuditLog(Base):
 
     user: Mapped["User"] = relationship(back_populates="audit_logs")
     
+# ==========================================
+# 2. CẤU HÌNH CÀO DỮ LIỆU (CRAWLER CONFIGURATION)
+# ==========================================
 class CrawlSchedule(Base):
     __tablename__ = "crawl_schedules"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     
     # ID của nguồn (VD: Muasamcong, DauThauInfo...)
-    source_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_url: Mapped[str] = mapped_column(UnicodeText, nullable=False)
     
     # Chuỗi Cron chuẩn (VD: "0 */2 * * *" - Chạy 2 tiếng/lần)
     cron_expression: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -121,10 +178,13 @@ class CrawlLog(Base):
     packages_found: Mapped[int] = mapped_column(Integer, default=0) # Số gói tìm thấy
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
+    packages_failed: Mapped[int] = mapped_column(Integer, default=0) # Số lượng thất bại
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True) # Lưu JSON chi tiết lỗi
+    
     # Quan hệ
     rule: Mapped["CrawlRule"] = relationship()
 # ==========================================
-# 2. PHÂN HỆ ĐẦU VÀO (INPUT & HSMT) [cite: 44, 46]
+# 3. PHÂN HỆ ĐẦU VÀO (INPUT & HSMT) [cite: 44, 46]
 # ==========================================
 class BiddingPackage(Base):
     __tablename__ = "bidding_packages"
@@ -259,43 +319,6 @@ class BiddingProject(Base):
     submit_logs: Mapped[List["BidSubmitLog"]] = relationship(back_populates="project")
 
 
-class BiddingTask(Base):
-    __tablename__ = "bidding_task"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    bidding_project_id: Mapped[int] = mapped_column(ForeignKey("bidding_project.id"))
-    parent_task_id: Mapped[Optional[int]] = mapped_column(ForeignKey("bidding_task.id")) # Self-referential
-    template_id: Mapped[Optional[int]] = mapped_column(ForeignKey("bidding_task_templates.id"))
-    
-    task_name: Mapped[str] = mapped_column(Unicode(255))
-    assignee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id"))
-    reviewer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id"))
-    
-    deadline: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    status: Mapped[Optional[str]] = mapped_column(String(50))
-    is_milestone: Mapped[bool] = mapped_column(Boolean, default=False)
-    
-    source_type: Mapped[Optional[str]] = mapped_column(String(50)) # E.g., "DOCUMENT", "COMMENT"
-    ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON) # Lưu trữ kết quả AI reasoning nếu có
-    hsmt_ref_page: Mapped[Optional[int]] = mapped_column(Integer) # Trang HSMT tham chiếu (nếu có)
-
-    project: Mapped["BiddingProject"] = relationship(back_populates="tasks")
-    sub_tasks: Mapped[List["BiddingTask"]] = relationship("BiddingTask")
-    
-    # 1. Quan hệ đệ quy (Parent - Subtasks)
-    # remote_side=[id] là bắt buộc để SQLAlchemy hiểu đây là quan hệ trỏ về chính bảng này
-    parent: Mapped[Optional["BiddingTask"]] = relationship(remote_side=[id], back_populates="sub_tasks")
-    sub_tasks: Mapped[List["BiddingTask"]] = relationship(back_populates="parent", cascade="all, delete-orphan")
-
-    # 2. Quan hệ với User (Người thực hiện)
-    assignee: Mapped[Optional["User"]] = relationship(foreign_keys=[assignee_id])
-
-    # 3. Quan hệ với User (Người review)
-    reviewer: Mapped[Optional["User"]] = relationship(foreign_keys=[reviewer_id])
-
-    # 4. Quan hệ với Template gốc
-    template: Mapped[Optional["BiddingTaskTemplate"]] = relationship()
-
 
 class BidSubmitLog(Base):
     __tablename__ = "bid_submit_log"
@@ -323,3 +346,74 @@ class TenderContractor(Base):
     status: Mapped[Optional[str]] = mapped_column(String(50))
 
     package: Mapped["BiddingPackage"] = relationship(back_populates="contractors")
+    
+# ==========================================
+# QUẢN LÝ CÔNG VIỆC & PHÂN QUYỀN (TASK & ASSIGNMENT)
+# ==========================================
+
+# 3.2. Bảng Mới: Task Assignments (Quy tắc giao việc)
+class TaskAssignment(Base):
+    __tablename__ = "task_assignments"
+
+    assignment_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("bidding_task.id"), nullable=False)
+    
+    # Giao cho Đơn vị (Phòng/Ban)
+    assigned_unit_id: Mapped[Optional[int]] = mapped_column(ForeignKey("organizational_units.unit_id"))
+    
+    # Giao đích danh User (Ghi đè unit nếu có)
+    assigned_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id"))
+    
+    # Các luật ABAC để lọc người nhận
+    required_role: Mapped[Optional[str]] = mapped_column(String(50)) # VD: 'MANAGER'
+    required_min_security: Mapped[SecurityLevel] = mapped_column(
+        Enum(SecurityLevel), 
+        default=SecurityLevel.PUBLIC,
+        nullable=False
+    )
+    assignment_type: Mapped[AssignmentType] = mapped_column(Enum(AssignmentType), default=AssignmentType.MAIN)
+    is_accepted: Mapped[bool] = mapped_column(Boolean, default=False) # User đã bấm nhận việc chưa
+
+    # Relationships
+    task: Mapped["BiddingTask"] = relationship(back_populates="assignments")
+    unit: Mapped[Optional["OrganizationalUnit"]] = relationship()
+    user: Mapped[Optional["User"]] = relationship()
+    
+# 3.1. Sửa Bảng: BiddingTask
+class BiddingTask(Base):
+    __tablename__ = "bidding_task"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    bidding_project_id: Mapped[int] = mapped_column(ForeignKey("bidding_project.id"))
+    parent_task_id: Mapped[Optional[int]] = mapped_column(ForeignKey("bidding_task.id"))
+    template_id: Mapped[Optional[int]] = mapped_column(ForeignKey("bidding_task_templates.id"))
+    
+    task_name: Mapped[str] = mapped_column(Unicode(255))
+    
+    # assignee_id cũ vẫn giữ để lưu người đang thực thi chính (sau khi accept assignment)
+    assignee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id"), nullable=True) 
+    reviewer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id"), nullable=True)
+    
+    deadline: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    
+    # Cập nhật Enum status mới
+    status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), default=TaskStatus.OPEN)
+    
+    is_milestone: Mapped[bool] = mapped_column(Boolean, default=False)
+    source_type: Mapped[Optional[str]] = mapped_column(String(50))
+    ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON)
+    hsmt_ref_page: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # Relationships
+    project: Mapped["BiddingProject"] = relationship(back_populates="tasks")
+    
+    # Quan hệ với bảng Assignments mới
+    assignments: Mapped[List["TaskAssignment"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+
+    # Self-referential relationships
+    parent: Mapped[Optional["BiddingTask"]] = relationship(remote_side=[id], back_populates="sub_tasks")
+    sub_tasks: Mapped[List["BiddingTask"]] = relationship(back_populates="parent", cascade="all, delete-orphan")
+
+    assignee: Mapped[Optional["User"]] = relationship(foreign_keys=[assignee_id])
+    reviewer: Mapped[Optional["User"]] = relationship(foreign_keys=[reviewer_id])
+    template: Mapped[Optional["BiddingTaskTemplate"]] = relationship()

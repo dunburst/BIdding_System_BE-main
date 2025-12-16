@@ -1,7 +1,9 @@
 # cruds/crawler.py
 from sqlalchemy.orm import Session
-from models import CrawlSchedule, CrawlRule
+from models import CrawlSchedule, CrawlRule, CrawlLog
 from schemas.crawler import CrawlScheduleCreate, CrawlScheduleUpdate, CrawlRuleCreate, CrawlRuleUpdate
+from typing import Optional
+from sqlalchemy import desc
 
 # === SCHEDULE CRUD ===
 def get_schedules(db: Session, skip: int = 0, limit: int = 100):
@@ -70,7 +72,52 @@ def update_rule(db: Session, rule_id: int, rule_update: CrawlRuleUpdate):
 def delete_rule(db: Session, rule_id: int):
     db_rule = get_rule_by_id(db, rule_id)
     if db_rule:
+        db.query(CrawlLog).filter(CrawlLog.rule_id == rule_id).delete()
         db.delete(db_rule)
         db.commit()
         return True
     return False
+
+# ==========================================
+# CRAWL LOG CRUD
+# ==========================================
+
+# 1. Lấy danh sách Log (Có phân trang & Lọc)
+def get_logs(
+    db: Session, 
+    skip: int = 0, 
+    limit: int = 100, 
+    status: Optional[str] = None, 
+    rule_id: Optional[int] = None
+):
+    query = db.query(CrawlLog)
+    
+    # --- Filter (Lọc dữ liệu) ---
+    if status:
+        query = query.filter(CrawlLog.status == status)
+    if rule_id:
+        query = query.filter(CrawlLog.rule_id == rule_id)
+        
+    # --- Sort & Pagination ---
+    # Luôn sắp xếp start_time giảm dần (mới nhất lên đầu) để tránh lỗi SQL Server
+    logs = query.order_by(desc(CrawlLog.start_time))\
+                .offset(skip)\
+                .limit(limit)\
+                .all()
+    
+    # [Mẹo] Gán thủ công tên rule để Schema nhận diện được trường 'rule_name'
+    for log in logs:
+        if log.rule:
+            log.rule_name = log.rule.rule_name
+            
+    return logs
+
+# 2. Tìm kiếm chi tiết Log theo ID
+def get_log(db: Session, log_id: int):
+    log = db.query(CrawlLog).filter(CrawlLog.id == log_id).first()
+    
+    # Gán tên rule nếu tìm thấy log
+    if log and log.rule:
+        log.rule_name = log.rule.rule_name
+        
+    return log
