@@ -451,7 +451,7 @@ class AbacAttribute(Base):
     Giúp Admin biết có những biến nào để viết luật.
     VD: user.department_id, resource.total_amount
     """
-    __tablename__ = "abac_attributes"
+    __tablename__ = "attributes"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     
@@ -473,7 +473,7 @@ class AbacPolicy(Base):
     Bảng chứa các luật truy cập (Policies).
     Đây là trái tim của hệ thống phân quyền động.
     """
-    __tablename__ = "abac_policies"
+    __tablename__ = "policies"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     
@@ -488,7 +488,11 @@ class AbacPolicy(Base):
     target_resource: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     
     # Hành động (VD: VIEW, UPDATE, APPROVE, DELETE)
-    action: Mapped[AbacAction] = mapped_column(Enum(AbacAction), default=AbacAction.VIEW, nullable=False)
+    # --- THAY ĐỔI QUAN TRỌNG Ở ĐÂY ---
+    # 1. Dùng kiểu JSON của SQLAlchemy
+    # 2. Python type là List[str]
+    # 3. Mặc định là list rỗng []
+    action: Mapped[List[str]] = mapped_column(JSON, nullable=False, default=list)
     
     # Kết quả: ALLOW (Cho phép) hoặc DENY (Chặn)
     effect: Mapped[PolicyEffect] = mapped_column(Enum(PolicyEffect), default=PolicyEffect.ALLOW, nullable=False)
@@ -511,4 +515,4 @@ class AbacPolicy(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime,server_default=func.now(), onupdate=func.now())
