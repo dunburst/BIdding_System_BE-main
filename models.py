@@ -130,7 +130,7 @@ class CrawlSchedule(Base):
     cron_expression: Mapped[str] = mapped_column(String(50), nullable=False)
     
     # Mô tả (VD: "Quét dạo ban đêm")
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True)
     
     # Trạng thái bật/tắt
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
