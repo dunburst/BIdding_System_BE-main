@@ -37,12 +37,11 @@ class AbacPolicyBase(BaseModel):
     target_resource: str = Field(..., description="Đối tượng chịu tác động, VD: bidding_package")
     # --- THAY ĐỔI Ở ĐÂY ---
     # Chấp nhận List[str]. 
-    # Frontend có thể gửi ["VIEW", "EXPORT_EXCEL"]
     action: List[str] = Field(
         ..., 
         description="Danh sách hành động cho phép/cấm (Dùng constant AbacAction)",
         json_schema_extra={
-            "example": [AbacAction.VIEW, AbacAction.APPROVE_BID] # Gợi ý trong Swagger
+            "example": [AbacAction.VIEW, AbacAction.APPROVE_BID] 
         }
     )
     effect: PolicyEffect = Field(default=PolicyEffect.ALLOW)

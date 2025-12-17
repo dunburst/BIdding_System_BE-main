@@ -1,12 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import status as http_status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
 from database import get_db
-from models import PackageStatus
+from models import PackageStatus, User
+from utils.security import get_current_user
 from schemas.base import BaseResponse # Giả sử bạn có class bọc response chuẩn
 from schemas import bidding as schemas
 from cruds import bidding as crud_bidding # Thống nhất dùng tên này
+from utils.abac import check_permission, AbacAction
 
 router = APIRouter(
     prefix="/bidding-packages",
@@ -43,17 +46,32 @@ def create_package(
 def get_packages(
     skip: int = Query(0, ge=0), 
     limit: int = Query(100, ge=1),
-    search: Optional[str] = Query(None, description="Tìm theo tên gói, mã TBMT, dự án"),
-    status: Optional[PackageStatus] = Query(None, description="Lọc theo trạng thái"),
-    db: Session = Depends(get_db)
+    search: Optional[str] = Query(None),
+    status: Optional[PackageStatus] = Query(None), 
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    # Gọi hàm CRUD mới đã viết ở bước trước (có order_by, filter, search)
+    # 2. CHECK QUYỀN
+    is_allowed = check_permission(
+        db=db,                      # <--- SỬA 2: Thêm tham số db
+        user=current_user,
+        resource="bidding_package", 
+        required_action=AbacAction.LIST 
+    )
+
+    if not is_allowed:
+        raise HTTPException(
+            status_code=http_status.HTTP_403_FORBIDDEN, 
+            detail="Bạn không có quyền MANAGER hoặc cấp độ bảo mật không đủ."
+        )
+
+    # Logic lấy dữ liệu...
     packages = crud_bidding.get_packages(
         db, 
         skip=skip, 
         limit=limit, 
         search_query=search, 
-        status=status
+        status=status 
     )
     
     return BaseResponse(
@@ -62,18 +80,37 @@ def get_packages(
         message="Lấy danh sách gói thầu thành công",
         data=packages
     )
-
 # ==========================================
 # 3. LẤY CHI TIẾT (GET DETAIL)
 # ==========================================
 @router.get("/{hsmt_id}", response_model=BaseResponse[schemas.BiddingPackageResponse])
-def get_package_detail(hsmt_id: int, db: Session = Depends(get_db)):
-    package = crud_bidding.get_package(db, hsmt_id=hsmt_id)
+def get_package_detail(
+    hsmt_id: int, 
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user) # Inject User
+):
+    # 1. Lấy gói thầu ra trước (để dùng làm resource checking nếu cần logic sâu hơn)
+    # Tuy nhiên với rule của bạn chỉ check trên User attribute, ta chưa cần object package cụ thể
+    # Nhưng để chuẩn bài ABAC (Resource attribute), ta nên lấy nó ra.
     
+    package = crud_bidding.get_package(db, hsmt_id=hsmt_id)
     if not package:
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy gói thầu ID {hsmt_id}")
+
+    # 2. CHECK QUYỀN (Action: VIEW)
+    # Ở đây tôi truyền object 'package' vào tham số resource
+    # Để nếu sau này bạn muốn thêm luật "Chỉ xem gói thầu của phòng mình" thì nó vẫn chạy đúng
+    is_allowed = check_permission(
+        db=db,                      # <--- SỬA 2: Thêm tham số db
+        user=current_user,
+        resource=package, # Truyền cả object vào (hoặc string "bidding_package" nếu chỉ check user)
+        required_action=AbacAction.VIEW
+    )
+
+    if not is_allowed:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy gói thầu ID {hsmt_id}"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối: Yêu cầu quyền MANAGER & CONFIDENTIAL."
         )
         
     return BaseResponse(
@@ -82,7 +119,6 @@ def get_package_detail(hsmt_id: int, db: Session = Depends(get_db)):
         message="Lấy chi tiết gói thầu thành công",
         data=package
     )
-
 # ==========================================
 # 4. CẬP NHẬT (UPDATE)
 # ==========================================
