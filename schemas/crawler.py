@@ -6,7 +6,7 @@ from datetime import datetime
 
 # --- SCHEMAS CHO CRAWL SCHEDULE (Giữ nguyên) ---
 class CrawlScheduleBase(BaseModel):
-    source_url: str = Field(..., description="ID nguồn dữ liệu (1: Muasamcong, v.v.)")
+    source_url: str = Field(..., description="Link nguồn dữ liệu (VD: https://muasamcong.mpi.gov.vn...)")
     cron_expression: str = Field(..., description="Chuỗi cron (VD: '0 */2 * * *')")
     description: Optional[str] = None
     is_active: bool = True

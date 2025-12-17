@@ -2,6 +2,7 @@ from sqlalchemy import Column, Integer, Numeric, String, Boolean, DateTime, Floa
 from sqlalchemy.orm import relationship, sessionmaker, Mapped, mapped_column
 from sqlalchemy.sql import func
 from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy.dialects.mssql import NVARCHAR
 import enum
 from decimal import Decimal
 from typing import Optional, List
@@ -50,6 +51,28 @@ class SecurityLevel(int, enum.Enum):
     INTERNAL = 2        # Nội bộ phòng ban
     CONFIDENTIAL = 3    # Mật (Cấp quản lý/Trưởng ban)
     SECRET = 4          # Tối mật (Lãnh đạo cấp cao)
+    
+# --- ENUMS CHO ABAC ---
+class PolicyEffect(str, enum.Enum):
+    ALLOW = "ALLOW"
+    DENY = "DENY"
+
+class AttributeType(str, enum.Enum):
+    STRING = "STRING"
+    INTEGER = "INTEGER"
+    BOOLEAN = "BOOLEAN"
+    DECIMAL = "DECIMAL"
+    LIST = "LIST"  # Dùng cho trường hợp so sánh danh sách (VD: user.roles in [...])
+    
+class AbacAction(str, enum.Enum):
+    VIEW = "VIEW"           # Xem chi tiết
+    LIST = "LIST"           # Xem danh sách
+    CREATE = "CREATE"       # Tạo mới
+    UPDATE = "UPDATE"       # Cập nhật thông thường
+    DELETE = "DELETE"       # Xóa
+    APPROVE = "APPROVE"     # Phê duyệt (Action đặc biệt)
+    REJECT = "REJECT"       # Từ chối
+    ASSIGN = "ASSIGN"       # Giao việc
 # ==========================================
 # 1. PHÂN HỆ TỔ CHỨC & QUẢN TRỊ (ORGANIZATION & ADMIN)
 # ==========================================
@@ -91,7 +114,7 @@ class OrganizationalUnit(Base):
     description: Mapped[Optional[str]] = mapped_column(UnicodeText)
     
     # Người đứng đầu (Trưởng ban/GĐ Khối)
-    manager_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id"))
+    manager_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id"), nullable=True)
 
     # Relationships
     parent: Mapped[Optional["OrganizationalUnit"]] = relationship(remote_side=[unit_id], back_populates="children")
@@ -130,7 +153,7 @@ class CrawlSchedule(Base):
     cron_expression: Mapped[str] = mapped_column(String(50), nullable=False)
     
     # Mô tả (VD: "Quét dạo ban đêm")
-    description: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(NVARCHAR(None), nullable=True)
     
     # Trạng thái bật/tắt
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -339,9 +362,9 @@ class TenderContractor(Base):
     hsmt_id: Mapped[int] = mapped_column(Integer, ForeignKey("bidding_packages.hsmt_id"))
     
     contractor_name: Mapped[Optional[str]] = mapped_column(Unicode(255))
-    financial_requirements: Mapped[Optional[str]] = mapped_column(Unicode(1000)) # Yêu cầu tài chính
-    technical_requirements: Mapped[Optional[str]] = mapped_column(Unicode(1000)) # Yêu cầu kỹ thuật
-    experience_requirements: Mapped[Optional[str]] = mapped_column(Unicode(1000))
+    financial_requirements: Mapped[Optional[str]] = mapped_column(NVARCHAR(None)) # Yêu cầu tài chính
+    technical_requirements: Mapped[Optional[str]] = mapped_column(NVARCHAR(None)) # Yêu cầu kỹ thuật
+    experience_requirements: Mapped[Optional[str]] = mapped_column(NVARCHAR(None)) # Yêu cầu kinh nghiệm
     ai_score: Mapped[Optional[Float]] = mapped_column(Float, nullable=True) # Điểm đánh giá AI
     status: Mapped[Optional[str]] = mapped_column(String(50))
 
@@ -417,3 +440,75 @@ class BiddingTask(Base):
     assignee: Mapped[Optional["User"]] = relationship(foreign_keys=[assignee_id])
     reviewer: Mapped[Optional["User"]] = relationship(foreign_keys=[reviewer_id])
     template: Mapped[Optional["BiddingTaskTemplate"]] = relationship()
+
+# ==========================================
+# 4. PHÂN HỆ BẢO MẬT & ABAC (SECURITY POLICIES)
+# ==========================================
+
+class AbacAttribute(Base):
+    """
+    Bảng từ điển thuộc tính (Dictionary):
+    Giúp Admin biết có những biến nào để viết luật.
+    VD: user.department_id, resource.total_amount
+    """
+    __tablename__ = "abac_attributes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    
+    # Tên biến dùng trong JSON (VD: user.org_unit_id)
+    attr_key: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    
+    # Kiểu dữ liệu để Parser biết cách so sánh
+    attr_type: Mapped[AttributeType] = mapped_column(Enum(AttributeType), default=AttributeType.STRING, nullable=False)
+    
+    # Nguồn dữ liệu (VD: users, bidding_packages) - Dùng để document
+    source_table: Mapped[Optional[str]] = mapped_column(String(50))
+    
+    # Mô tả chi tiết (VD: "ID phòng ban của người dùng hiện tại")
+    description: Mapped[Optional[str]] = mapped_column(Unicode(255))
+
+
+class AbacPolicy(Base):
+    """
+    Bảng chứa các luật truy cập (Policies).
+    Đây là trái tim của hệ thống phân quyền động.
+    """
+    __tablename__ = "abac_policies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    
+    # Tên chính sách (VD: "Trưởng phòng duyệt bài nội bộ")
+    name: Mapped[str] = mapped_column(Unicode(255), nullable=False)
+    
+    # Mô tả chi tiết mục đích của policy
+    description: Mapped[Optional[str]] = mapped_column(UnicodeText)
+    
+    # Đối tượng chịu tác động (VD: bidding_task, bidding_package)
+    # Có thể index trường này để query policy nhanh hơn theo resource
+    target_resource: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    
+    # Hành động (VD: VIEW, UPDATE, APPROVE, DELETE)
+    action: Mapped[AbacAction] = mapped_column(Enum(AbacAction), default=AbacAction.VIEW, nullable=False)
+    
+    # Kết quả: ALLOW (Cho phép) hoặc DENY (Chặn)
+    effect: Mapped[PolicyEffect] = mapped_column(Enum(PolicyEffect), default=PolicyEffect.ALLOW, nullable=False)
+    
+    # Độ ưu tiên: Số càng lớn càng ưu tiên (Giải quyết xung đột nếu có 2 luật trái ngược)
+    priority: Mapped[int] = mapped_column(Integer, default=1)
+    
+    # Điều kiện logic (Lõi ABAC)
+    # Lưu cấu trúc logic. Ví dụ:
+    # {
+    #   "condition": "AND",
+    #   "rules": [
+    #       {"field": "user.role", "operator": "eq", "value": "MANAGER"},
+    #       {"field": "user.org_unit_id", "operator": "eq", "value": "resource.unit_id"}
+    #   ]
+    # }
+    condition_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    
+    # Trạng thái bật tắt policy
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, onupdate=func.now())

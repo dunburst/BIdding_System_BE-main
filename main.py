@@ -4,8 +4,7 @@ from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
 import models
 from database import engine, get_db
-from routers import auth, bidding # <--- 1. Import thêm router bidding
-from routers import bidding, auth, crawler
+from routers import bidding, auth, crawler, organization, user
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -37,6 +36,8 @@ app = FastAPI(
 app.include_router(auth.router)
 app.include_router(bidding.router) # <--- 2. Đăng ký router bidding vào app
 app.include_router(crawler.router)
+app.include_router(organization.router)
+app.include_router(user.router)
 
 # API Test kết nối
 @app.get("/")
