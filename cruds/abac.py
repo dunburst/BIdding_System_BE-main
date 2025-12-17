@@ -14,7 +14,7 @@ def get_attribute_by_key(db: Session, attr_key: str):
     return db.query(AbacAttribute).filter(AbacAttribute.attr_key == attr_key).first()
 
 def get_attributes(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(AbacAttribute).offset(skip).limit(limit).all()
+    return db.query(AbacAttribute).order_by(AbacAttribute.id).offset(skip).limit(limit).all()
 
 def create_attribute(db: Session, attribute: AbacAttributeCreate):
     db_obj = AbacAttribute(
