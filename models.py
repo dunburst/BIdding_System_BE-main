@@ -16,6 +16,7 @@ class UserRole(str, enum.Enum):
     BID_MANAGER = "BID_MANAGER"     # Trưởng phòng / Chủ trì
     SPECIALIST = "SPECIALIST"       # Chuyên viên
     ENGINEER = "ENGINEER"           # Kỹ sư
+    JKAN = "JKAN"                   # Thành viên dự án nào cũng có
     
 class PackageStatus(str, enum.Enum):
     NEW = "NEW"

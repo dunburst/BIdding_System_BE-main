@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import inspect
 from database import get_db  # Import hàm get_db từ file cấu hình của bạn
-
+from schemas.base import BaseResponse
+from utils.constants import AbacAction
+from typing import List
 router = APIRouter(prefix="/system", tags=["System"])
 
 @router.get("/tables")
@@ -24,3 +26,19 @@ def get_all_table_names(db: Session = Depends(get_db)):
         "count": len(table_names),
         "tables": table_names
     }
+    
+@router.get("/actions", response_model=BaseResponse[List[str]])
+def get_system_actions():
+    """
+    Trả về danh sách tất cả các Action có trong hệ thống.
+    Dùng để Frontend render dropdown hoặc check quyền.
+    """
+    # Gọi hàm list_all() có sẵn trong class của bạn
+    actions = AbacAction.list_all()
+    
+    return BaseResponse(
+        success=True,
+        status=200,
+        message="Lấy danh sách hành động thành công",
+        data=actions
+    )

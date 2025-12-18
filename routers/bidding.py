@@ -9,7 +9,7 @@ from utils.security import get_current_user
 from schemas.base import BaseResponse # Giả sử bạn có class bọc response chuẩn
 from schemas import bidding as schemas
 from cruds import bidding as crud_bidding # Thống nhất dùng tên này
-from utils.abac import check_permission
+from utils.abac import check_permission, get_allowed_actions
 from utils.constants import AbacAction
 
 router = APIRouter(
@@ -63,8 +63,9 @@ def get_packages(
     if not is_allowed:
         raise HTTPException(
             status_code=http_status.HTTP_403_FORBIDDEN, 
-            detail="Bạn không có quyền MANAGER hoặc cấp độ bảo mật không đủ."
+            detail="Bạn không có quyền hoặc cấp độ bảo mật không đủ."
         )
+        
 
     # Logic lấy dữ liệu...
     packages = crud_bidding.get_packages(
@@ -74,6 +75,19 @@ def get_packages(
         search_query=search, 
         status=status 
     )
+    
+    results = []
+    
+    for pkg in packages:
+        # a. Convert SQLAlchemy Model sang Pydantic Model
+        pkg_response = schemas.BiddingPackageResponse.model_validate(pkg)
+        
+        # b. Tính toán quyền cho riêng gói thầu này
+        # (Ví dụ: Gói thầu này đang NEW -> Manager thấy nút Duyệt. 
+        #  Gói kia đang CLOSED -> Manager không thấy nút Duyệt)
+        pkg_response.allowed_actions = get_allowed_actions(db, current_user, pkg)
+        
+        results.append(pkg_response)
     
     return BaseResponse(
         success=True,
@@ -88,37 +102,33 @@ def get_packages(
 def get_package_detail(
     hsmt_id: int, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user) # Inject User
+    current_user: User = Depends(get_current_user)
 ):
-    # 1. Lấy gói thầu ra trước (để dùng làm resource checking nếu cần logic sâu hơn)
-    # Tuy nhiên với rule của bạn chỉ check trên User attribute, ta chưa cần object package cụ thể
-    # Nhưng để chuẩn bài ABAC (Resource attribute), ta nên lấy nó ra.
-    
+    # 1. Lấy dữ liệu
     package = crud_bidding.get_package(db, hsmt_id=hsmt_id)
     if not package:
-        raise HTTPException(status_code=404, detail=f"Không tìm thấy gói thầu ID {hsmt_id}")
+        raise HTTPException(status_code=404, detail="Không tìm thấy gói thầu")
 
-    # 2. CHECK QUYỀN (Action: VIEW)
-    # Ở đây tôi truyền object 'package' vào tham số resource
-    # Để nếu sau này bạn muốn thêm luật "Chỉ xem gói thầu của phòng mình" thì nó vẫn chạy đúng
-    is_allowed = check_permission(
-        db=db,                      # <--- SỬA 2: Thêm tham số db
-        user=current_user,
-        resource=package, # Truyền cả object vào (hoặc string "bidding_package" nếu chỉ check user)
-        action=AbacAction.VIEW
+    # 2. Check quyền xem (như cũ)
+    is_allowed_view = check_permission(
+        db=db, user=current_user, resource=package, action=AbacAction.VIEW
     )
+    if not is_allowed_view:
+        # Xử lý lỗi 403 như cũ...
+        raise HTTPException(status_code=403, detail="...")
 
-    if not is_allowed:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Truy cập bị từ chối: Yêu cầu quyền MANAGER & CONFIDENTIAL."
-        )
-        
+    # 3. --- MẤU CHỐT: TÍNH TOÁN QUYỀN NÚT BẤM ---
+    # Convert SQLAlchemy object sang Pydantic Model thủ công để chèn thêm field
+    package_response = schemas.BiddingPackageResponse.model_validate(package)
+    
+    # Gọi hàm quét quyền và gán vào response
+    package_response.allowed_actions = get_allowed_actions(db, current_user, package)
+
     return BaseResponse(
-        success=True,
-        status=200,
-        message="Lấy chi tiết gói thầu thành công",
-        data=package
+        success=True, 
+        status=200, 
+        message="Thành công", 
+        data=package_response
     )
 # ==========================================
 # 4. CẬP NHẬT (UPDATE)
@@ -210,6 +220,23 @@ def make_bid_decision(
     package = crud_bidding.get_package(db, hsmt_id=hsmt_id)
     if not package:
         raise HTTPException(status_code=404, detail="Không tìm thấy gói thầu")
+    
+    # Xác định Action: APPROVE_BID hoặc REJECT_BID
+    required_action = AbacAction.APPROVE_BID if request.decision == "GO" else AbacAction.REJECT_BID
+    
+    # Policy SQL: Chỉ MANAGER mới có quyền này. BID_MANAGER sẽ bị chặn.
+    is_allowed = check_permission(
+        db=db, 
+        user=current_user, 
+        resource=package, 
+        action=required_action
+    )
+
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Chỉ Lãnh đạo (Giám đốc) mới có quyền phê duyệt/từ chối."
+        )
     
     allowed_statuses = [PackageStatus.NEW, PackageStatus.INTERESTED]
 
