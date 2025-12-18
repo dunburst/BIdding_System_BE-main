@@ -3,10 +3,34 @@ from sqlalchemy.orm import Session
 import enum
 from models import AbacPolicy, AbacAttribute, User, PolicyEffect
 from utils.constants import AbacAction
+from typing import List
 
 # Biến toàn cục lưu Cache Mapping (Key -> Path)
 # VD: { "user.org_unit_type": "org_unit.unit_type" }
 ATTRIBUTE_MAPPING_CACHE: Dict[str, str] = {}
+def get_allowed_actions(db: Session, user: User, resource: Any) -> List[str]:
+    """
+    Hàm này chạy thử tất cả các hành động quan trọng 
+    để xem user được phép làm những gì.
+    """
+    # Danh sách các nút bấm có trên màn hình Frontend cần check
+    possible_actions = [
+        AbacAction.UPDATE,
+        AbacAction.DELETE,
+        AbacAction.APPROVE_BID,
+        AbacAction.REJECT_BID,
+        AbacAction.CREATE_PROJECT,
+        AbacAction.EXPORT_EXCEL
+    ]
+    
+    allowed = []
+    
+    # Chạy vòng lặp check từng quyền (Logic check_permission của bạn đủ nhanh để làm việc này)
+    for action in possible_actions:
+        if check_permission(db=db, user=user, resource=resource, action=action):
+            allowed.append(action)
+            
+    return allowed
 
 def load_attribute_mapping(db: Session):
     """

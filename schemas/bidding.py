@@ -133,6 +133,10 @@ class BiddingPackageResponse(BiddingPackageBase):
     hsmt_id: int
     project_id: Optional[int] = None
     created_at: Optional[datetime] = None
+    allowed_actions: List[str] = Field(
+        default=[], 
+        description="Danh sách các hành động user được phép làm trên gói thầu này (VD: ['VIEW', 'APPROVE_BID'])"
+    )
 
     # Cấu hình Pydantic V2 (Thay cho class Config cũ)
     model_config = ConfigDict(from_attributes=True)
