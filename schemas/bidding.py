@@ -3,6 +3,7 @@ from typing import Optional, List
 from datetime import datetime
 from decimal import Decimal
 from models import PackageStatus, TaskStatus
+from enum import Enum
 
 # --- Bidding Package Schemas ---
 class BiddingPackageBase(BaseModel):
@@ -135,3 +136,12 @@ class BiddingPackageResponse(BiddingPackageBase):
 
     # Cấu hình Pydantic V2 (Thay cho class Config cũ)
     model_config = ConfigDict(from_attributes=True)
+
+# Enum riêng cho API này để clear nghĩa
+class BidDecision(str, Enum):
+    GO = "GO"       # Đồng ý dự thầu
+    NO_GO = "NO_GO" # Từ chối dự thầu
+
+class BidDecisionRequest(BaseModel):
+    decision: BidDecision = Field(..., description="Quyết định: GO (Đồng ý) hoặc NO_GO (Từ chối)")
+    reason: Optional[str] = Field(None, description="Lý do phê duyệt hoặc từ chối (để lưu log)")

@@ -26,7 +26,7 @@ async def upload_secure_file(
 
     # Gọi service upload
     # Lưu ý: Convert Enum sang int (security_level.value)
-    result = drive_service.upload_file_with_security(file, security_level.value)
+    result = await drive_service.upload_file_with_security(file, security_level.value)
     
     if not result:
         raise HTTPException(500, "Lỗi upload lên Google Drive")

@@ -162,7 +162,11 @@ def delete_package(hsmt_id: int, db: Session = Depends(get_db)):
 # 6. LẤY FILE ĐÍNH KÈM
 # ==========================================
 @router.get("/{hsmt_id}/files", response_model=BaseResponse[List[schemas.BiddingFileResponse]]) # Giả sử bạn có schema này
-def get_package_files(hsmt_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)): # 1. Cần lấy user hiện tại):
+def get_package_files(
+    hsmt_id: int, 
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user) 
+):
     # Check tồn tại trước
     package = crud_bidding.get_package(db, hsmt_id=hsmt_id)
     if not package:
@@ -190,4 +194,53 @@ def get_package_files(hsmt_id: int, db: Session = Depends(get_db), current_user:
         status=200,
         message="Lấy danh sách file thành công",
         data=files
+    )
+    
+# ==========================================
+# 7. PHÊ DUYỆT / TỪ CHỐI DỰ THẦU (GO / NO-GO)
+# ==========================================
+@router.put("/{hsmt_id}/decision", response_model=BaseResponse[schemas.BiddingPackageResponse])
+def make_bid_decision(
+    hsmt_id: int, 
+    request: schemas.BidDecisionRequest, # Body chứa GO hoặc NO_GO
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # 1. Lấy thông tin gói thầu
+    package = crud_bidding.get_package(db, hsmt_id=hsmt_id)
+    if not package:
+        raise HTTPException(status_code=404, detail="Không tìm thấy gói thầu")
+    
+    allowed_statuses = [PackageStatus.NEW, PackageStatus.INTERESTED]
+
+    # 2. KIỂM TRA LOGIC NGHIỆP VỤ (State Transition)
+    # Chỉ được duyệt khi đang ở trạng thái 'INTERESTED'
+    if package.trang_thai not in allowed_statuses:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Không thể duyệt. Gói thầu đang ở trạng thái '{package.trang_thai.value}', yêu cầu phải là 'NEW' hoặc 'INTERESTED'."
+        )
+
+    # 3. CHECK QUYỀN ABAC (Action: APPROVE)
+    # Đây là hành động quan trọng, cần quyền APPROVE (thường là Manager/Admin)
+
+    # 4. Xử lý chuyển trạng thái
+    new_status = None
+    if request.decision == schemas.BidDecision.GO:
+        new_status = PackageStatus.BIDDING # Chuyển sang "Đang dự thầu"
+    elif request.decision == schemas.BidDecision.NO_GO:
+        new_status = PackageStatus.NO_GO   # Chuyển sang "Không dự thầu"
+
+    # 5. Cập nhật vào DB
+    # Ta dùng lại hàm update_package nhưng tạo schema update nhỏ gọn
+    update_data = schemas.BiddingPackageUpdate(trang_thai=new_status)
+    updated_package = crud_bidding.update_package(db, hsmt_id, update_data)
+    
+    # (Optional) Bạn có thể lưu request.reason vào bảng AuditLog ở đây nếu cần
+
+    return BaseResponse(
+        success=True,
+        status=200,
+        message=f"Đã cập nhật quyết định: {request.decision.value}",
+        data=updated_package
     )
