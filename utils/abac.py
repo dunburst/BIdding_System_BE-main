@@ -1,187 +1,162 @@
+from typing import Any, Dict, Union
 from sqlalchemy.orm import Session
-from typing import Union, Any, List, Optional
-from models import AbacPolicy, User, PolicyEffect
-from utils.constants import AbacAction
 import enum
+from models import AbacPolicy, AbacAttribute, User, PolicyEffect
+from utils.constants import AbacAction
 
-# 1. Hàm hỗ trợ: Lấy giá trị từ đối tượng an toàn
-def get_attribute_value(target_obj: Any, attr_path: str) -> Any:
+# Biến toàn cục lưu Cache Mapping (Key -> Path)
+# VD: { "user.org_unit_type": "org_unit.unit_type" }
+ATTRIBUTE_MAPPING_CACHE: Dict[str, str] = {}
+
+def load_attribute_mapping(db: Session):
     """
-    Lấy giá trị thuộc tính động. Trả về None nếu không lấy được.
+    Load toàn bộ bảng attributes vào RAM để tra cứu nhanh.
     """
-    if target_obj is None or not attr_path:
+    global ATTRIBUTE_MAPPING_CACHE
+    attributes = db.query(AbacAttribute).all()
+    ATTRIBUTE_MAPPING_CACHE = {
+        attr.attr_key: attr.mapping_path 
+        for attr in attributes 
+        if attr.mapping_path
+    }
+    print(f"✅ [SYSTEM] Cache Loaded: {ATTRIBUTE_MAPPING_CACHE}")
+
+def get_value_deep(target_obj: Any, path_str: str) -> Any:
+    """
+    Hàm Reflection: Đi xuyên qua object bằng chuỗi path (dot notation).
+    VD: user -> org_unit -> unit_type
+    """
+    if not target_obj or not path_str:
         return None
+    
+    parts = path_str.split(".")
+    current = target_obj
+    
+    for part in parts:
+        if current is None:
+            return None
+        # Nếu là Dict
+        if isinstance(current, dict):
+            current = current.get(part)
+        # Nếu là Object Class
+        else:
+            current = getattr(current, part, None)
+            
+    # Tự động lấy value nếu là Enum (để so sánh với String trong JSON)
+    if isinstance(current, enum.Enum):
+        return current.value
         
-    parts = attr_path.split(".")
-    if len(parts) < 2:
-        return None
-    
-    attr_name = parts[1] # Lấy phần sau dấu chấm (VD: "role" trong "user.role")
-    
-    # getattr(obj, name, default): Trả về None nếu không tìm thấy thuộc tính
-    return getattr(target_obj, attr_name, None)
+    return current
 
-# 2. Hàm hỗ trợ: So sánh logic
-def evaluate_rule(user: User, resource: Any, rule: dict) -> bool:
+def resolve_attribute_value(user: User, resource: Any, attr_key: str) -> Any:
     """
-    Đánh giá 1 dòng rule JSON. 
-    Đã fix lỗi Type Hinting cho phép so sánh số an toàn.
+    Hàm Resolve thông minh:
+    1. Nhận attr_key (VD: user.org_unit_type)
+    2. Tra Cache lấy mapping (VD: org_unit.unit_type)
+    3. Gọi get_value_deep
     """
-    field = rule.get("field")
-    if not isinstance(field, str): 
+    # Lấy đường dẫn mapping thực tế, nếu không có thì dùng chính key đó
+    mapping_path = ATTRIBUTE_MAPPING_CACHE.get(attr_key, attr_key)
+    
+    # Xác định đối tượng gốc (User hay Resource)
+    if attr_key.startswith("user."):
+        # Xóa prefix "user." nếu mapping_path vẫn còn giữ nó (để get_value_deep chạy từ root obj)
+        clean_path = mapping_path.replace("user.", "") if mapping_path.startswith("user.") else mapping_path
+        return get_value_deep(user, clean_path)
+        
+    elif attr_key.startswith("resource."):
+        clean_path = mapping_path.replace("resource.", "") if mapping_path.startswith("resource.") else mapping_path
+        return get_value_deep(resource, clean_path)
+        
+    return None
+
+def compare_values(left: Any, operator: str, right: Any) -> bool:
+    """Logic so sánh cơ bản"""
+    # 1. So sánh bằng
+    if operator == "eq": return str(left) == str(right)
+    if operator == "neq": return str(left) != str(right)
+    
+    # 2. So sánh danh sách
+    if operator == "in":
+        if isinstance(right, list):
+            return str(left) in [str(x) for x in right]
         return False
         
-    operator = rule.get("operator")
-    target_value = rule.get("value")
-
-    # A. Lấy giá trị thực tế của Vế Trái (Left Value)
-    left_value: Any = None
-    if field.startswith("user."):
-        left_value = get_attribute_value(user, field)
-    elif field.startswith("resource."):
-        left_value = get_attribute_value(resource, field)
-    else:
-        return False
-
-    # B. Xử lý giá trị của Vế Phải (Target Value)
-    real_target_value: Any = target_value
-    if isinstance(target_value, str):
-        if target_value.startswith("resource."):
-            real_target_value = get_attribute_value(resource, target_value)
-        elif target_value.startswith("user."):
-            real_target_value = get_attribute_value(user, target_value)
-
-    # --- LỘT VỎ ENUM THÔNG MINH ---
-    if isinstance(left_value, enum.Enum):
-        if operator in ["gt", "gte", "lt", "lte"]:
-            left_value = left_value.value
-        elif isinstance(real_target_value, str) and not real_target_value.isdigit():
-            left_value = left_value.name 
-        elif operator == "in" and isinstance(real_target_value, list) and len(real_target_value) > 0 and isinstance(real_target_value[0], str):
-            left_value = left_value.name
-        else:
-            left_value = left_value.value
-
-    if isinstance(real_target_value, enum.Enum):
-        if isinstance(left_value, str):
-            real_target_value = real_target_value.name
-        else:
-            real_target_value = real_target_value.value
-    # -------------------------------
-
-    # C. So sánh (Core Logic)
-    
-    # 1. So sánh Bằng / Khác
-    if operator == "eq":
-        return str(left_value) == str(real_target_value)
-    
-    elif operator == "neq":
-        return str(left_value) != str(real_target_value)
-    
-    # 2. So sánh Số (SỬA LỖI TYPE HINT Ở ĐÂY)
-    elif operator in ["gt", "gte", "lt", "lte"]:
-        # Bước 1: Loại bỏ List/Dict ngay lập tức để Type Checker không báo lỗi
-        if isinstance(left_value, (list, dict)) or isinstance(real_target_value, (list, dict)):
-            return False 
-            
-        # Bước 2: Kiểm tra None
-        if left_value is None or real_target_value is None:
-            return False 
-            
+    # 3. So sánh số học
+    if operator in ["gt", "gte", "lt", "lte"]:
         try:
-            # Lúc này Type Checker đã yên tâm đây là scalar type (int, float, str...)
-            val_left = float(left_value)
-            val_right = float(real_target_value)
-            
-            if operator == "gt": return val_left > val_right
-            if operator == "gte": return val_left >= val_right
-            if operator == "lt": return val_left < val_right
-            if operator == "lte": return val_left <= val_right
-        except (ValueError, TypeError):
-            return False 
-
-    # 3. So sánh Danh sách (IN)
-    elif operator == "in":
-        if isinstance(real_target_value, list):
-            return str(left_value) in [str(x) for x in real_target_value]
-        return False
-
+            if left is None or right is None: return False
+            l, r = float(left), float(right)
+            if operator == "gt": return l > r
+            if operator == "gte": return l >= r
+            if operator == "lt": return l < r
+            if operator == "lte": return l <= r
+        except:
+            return False
     return False
 
-# 3. Hàm chính: Kiểm tra quyền
-def check_permission(
-    db: Session, 
-    user: User, 
-    resource: Union[str, Any], 
-    required_action: str
-) -> bool:
-    """
-    Hàm quyết định quyền truy cập.
-    """
-    if not user:
-        return False
+def evaluate_logic_block(user: User, resource: Any, logic_block: Dict) -> bool:
+    """Đệ quy xử lý AND/OR"""
+    condition = logic_block.get("condition", "AND")
+    rules = logic_block.get("rules", [])
+    
+    if not rules: return True
+    
+    results = []
+    for rule in rules:
+        # Nếu rule con là một nhóm logic (có condition/rules) -> Đệ quy
+        if "condition" in rule or "rules" in rule:
+            results.append(evaluate_logic_block(user, resource, rule))
+        else:
+            # Nếu là rule đơn lẻ
+            attr_key = rule.get("field")
+            target_val = rule.get("value")
+            operator = rule.get("operator")
+            
+            # Lấy giá trị thực tế (User/Resource)
+            left_val = resolve_attribute_value(user, resource, attr_key)
+            
+            # Nếu vế phải cũng là biến động (VD: so sánh user.id == resource.owner_id)
+            final_target = target_val
+            if isinstance(target_val, str) and (target_val.startswith("user.") or target_val.startswith("resource.")):
+                final_target = resolve_attribute_value(user, resource, target_val)
+                
+            results.append(compare_values(left_val, operator, final_target))
+            
+    if condition == "AND": return all(results)
+    if condition == "OR": return any(results)
+    return False
 
-    # 1. Xác định tên resource (String) để query DB tìm Policies
-    resource_name = ""
-    if isinstance(resource, str):
-        resource_name = resource
-    elif hasattr(resource, "__tablename__"):
-        resource_name = resource.__tablename__
-    else:
-        # Fallback: Nếu không xác định được tên resource thì coi như là bidding_package
-        # Bạn có thể sửa chỗ này tùy logic
-        resource_name = "bidding_package"
-
-    # 2. Lấy tất cả Policy ACTIVE liên quan đến Resource này
+def check_permission(db: Session, user: User, resource: Union[str, Any], action: str) -> bool:
+    """Hàm Main Check Quyền"""
+    if not user: return False
+    
+    # Xác định tên Resource
+    res_name = resource if isinstance(resource, str) else resource.__tablename__
+    res_obj = resource if not isinstance(resource, str) else {}
+    
+    # Load Cache nếu chưa có
+    if not ATTRIBUTE_MAPPING_CACHE:
+        load_attribute_mapping(db)
+        
+    # Query Policy
     policies = db.query(AbacPolicy).filter(
-        AbacPolicy.target_resource == resource_name,
+        AbacPolicy.target_resource == res_name,
         AbacPolicy.is_active == True
     ).order_by(AbacPolicy.priority.desc()).all()
-
-    if not policies:
-        # Nếu không có policy nào -> Mặc định CẤM (Zero Trust)
-        return False 
-
-    allowed = False
-
+    
+    if not policies: return False # Zero Trust
+    
     for policy in policies:
-        # 3. Kiểm tra Action
-        # policy.action là list (VD: ["VIEW", "UPDATE"])
-        if required_action not in policy.action:
-            continue 
-
-        # 4. Đánh giá Condition JSON
-        condition_json = policy.condition_json or {} # Handle None
-        logic = condition_json.get("condition", "AND")
-        rules = condition_json.get("rules", [])
+        if action not in policy.action: continue
         
-        if not rules:
-            # Nếu policy không có rules điều kiện -> Mặc định là áp dụng luôn
-            is_policy_match = True
-        else:
-            is_policy_match = True if logic == "AND" else False
+        # Check logic JSON
+        matched = True
+        if policy.condition_json:
+            matched = evaluate_logic_block(user, res_obj, policy.condition_json)
             
-            if logic == "AND":
-                # AND: Chỉ cần 1 rule sai là toàn bộ sai
-                for rule in rules:
-                    if not evaluate_rule(user, resource, rule):
-                        is_policy_match = False
-                        break
+        if matched:
+            print(f"👉 Matched Policy: {policy.name} -> {policy.effect.value}")
+            return policy.effect == PolicyEffect.ALLOW
             
-            elif logic == "OR":
-                # OR: Chỉ cần 1 rule đúng là toàn bộ đúng
-                for rule in rules:
-                    if evaluate_rule(user, resource, rule):
-                        is_policy_match = True
-                        break
-
-        # 5. Quyết định kết quả
-        if is_policy_match:
-            if policy.effect == PolicyEffect.DENY:
-                return False # Gặp DENY là chặn luôn
-            elif policy.effect == PolicyEffect.ALLOW:
-                allowed = True
-                # Với priority giảm dần, gặp ALLOW đầu tiên có thể return luôn
-                return True
-
-    return allowed
+    return False
