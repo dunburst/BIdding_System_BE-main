@@ -466,6 +466,8 @@ class AbacAttribute(Base):
     
     # Mô tả chi tiết (VD: "ID phòng ban của người dùng hiện tại")
     description: Mapped[Optional[str]] = mapped_column(Unicode(255))
+    
+    mapping_path: Mapped[Optional[str]] = mapped_column(String)
 
 
 class AbacPolicy(Base):

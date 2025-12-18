@@ -9,7 +9,8 @@ from utils.security import get_current_user
 from schemas.base import BaseResponse # Giả sử bạn có class bọc response chuẩn
 from schemas import bidding as schemas
 from cruds import bidding as crud_bidding # Thống nhất dùng tên này
-from utils.abac import check_permission, AbacAction
+from utils.abac import check_permission
+from utils.constants import AbacAction
 
 router = APIRouter(
     prefix="/bidding-packages",
@@ -56,7 +57,7 @@ def get_packages(
         db=db,                      # <--- SỬA 2: Thêm tham số db
         user=current_user,
         resource="bidding_packages", 
-        required_action=AbacAction.LIST 
+        action=AbacAction.LIST 
     )
 
     if not is_allowed:
@@ -104,7 +105,7 @@ def get_package_detail(
         db=db,                      # <--- SỬA 2: Thêm tham số db
         user=current_user,
         resource=package, # Truyền cả object vào (hoặc string "bidding_package" nếu chỉ check user)
-        required_action=AbacAction.VIEW
+        action=AbacAction.VIEW
     )
 
     if not is_allowed:
