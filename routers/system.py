@@ -5,7 +5,9 @@ from schemas.base import BaseResponse
 from utils.constants import AbacAction
 from typing import List
 from database import get_db  # Import hàm get_db từ file cấu hình của bạn
-
+from schemas.base import BaseResponse
+from utils.constants import AbacAction
+from typing import List
 router = APIRouter(prefix="/system", tags=["System"])
 
 @router.get("/tables")
@@ -27,7 +29,7 @@ def get_all_table_names(db: Session = Depends(get_db)):
         "count": len(table_names),
         "tables": table_names
     }
-
+    
 @router.get("/actions", response_model=BaseResponse[List[str]])
 def get_system_actions():
     """

@@ -16,6 +16,9 @@ class AbacAction:
     SUBMIT_BID = "SUBMIT_BID"         # Nộp thầu
     EVALUATE_BID = "EVALUATE_BID"     # Chấm thầu
     OPEN_BID = "OPEN_BID"             # Mở thầu
+    
+    # --- NGHIỆP VỤ DỰ ÁN ---
+    CREATE_PROJECT = "CREATE_PROJECT" # Quản lý khởi tạo dự án từ gói thầu
 
     CREATE_PROJECT = "CREATE_PROJECT" # Tạo dự án mới
 
