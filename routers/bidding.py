@@ -55,7 +55,7 @@ def get_packages(
     is_allowed = check_permission(
         db=db,                      # <--- SỬA 2: Thêm tham số db
         user=current_user,
-        resource="bidding_package", 
+        resource="bidding_packages", 
         required_action=AbacAction.LIST 
     )
 

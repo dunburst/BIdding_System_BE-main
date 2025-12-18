@@ -7,6 +7,7 @@ from database import engine, get_db
 from routers import bidding, auth, crawler, organization, user, abac
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from mcp_drive.router import router as drive_router
 
 from crawler_bot import start_scheduler_service
 # 1. Tự động tạo các bảng trong Database nếu chưa tồn tại
@@ -39,6 +40,7 @@ app.include_router(crawler.router)
 app.include_router(organization.router)
 app.include_router(user.router)
 app.include_router(abac.router)
+app.include_router(drive_router)
 
 # API Test kết nối
 @app.get("/")

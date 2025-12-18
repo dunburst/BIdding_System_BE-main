@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from models import CrawlSchedule, CrawlRule, CrawlLog
 from schemas.crawler import CrawlScheduleCreate, CrawlScheduleUpdate, CrawlRuleCreate, CrawlRuleUpdate
 from typing import Optional
-from sqlalchemy import descdđ
+from sqlalchemy import desc
 
 # === SCHEDULE CRUD ===
 def get_schedules(db: Session, skip: int = 0, limit: int = 100):
