@@ -1,50 +1,65 @@
 import os
-import shutil
-from google.oauth2.service_account import Credentials
+import io
+from google.oauth2.credentials import Credentials 
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaIoBaseUpload
 from fastapi import UploadFile
+from dotenv import load_dotenv
 
-# --- CẤU HÌNH ---
-SERVICE_ACCOUNT_FILE = 'service_account.json'
-SCOPES = ['https://www.googleapis.com/auth/drive']
-SHARED_FOLDER_ID = "1mnemuaGkv16h5jVf-ptBorudAltlxJ8p"  # <--- ID thư mục của bạn
+load_dotenv() # Load biến môi trường
 
 class GoogleDriveService:
     def __init__(self):
-        self.creds = None
         self.service = None
+        self.SHARED_FOLDER_ID = os.getenv("GOOGLE_DRIVE_SHARED_FOLDER_ID")
+        
+        # Lấy thông tin OAuth 2.0 từ .env
+        client_id = os.getenv("GOOGLE_CLIENT_ID")
+        client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+        refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN")
 
-        if os.path.exists(SERVICE_ACCOUNT_FILE):
-            self.creds = Credentials.from_service_account_file(
-                SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+        if client_id and client_secret and refresh_token:
+            # Tạo Credentials giả danh User thật
+            self.creds = Credentials(
+                None, # Access token (để None nó tự lấy lại bằng refresh token)
+                refresh_token=refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=client_id,
+                client_secret=client_secret
+            )
             self.service = build('drive', 'v3', credentials=self.creds)
-
         else:
-            print("❌ Lỗi: Không tìm thấy file service_account.json")
+            print("❌ Lỗi: Thiếu cấu hình OAuth (Client ID/Secret/Refresh Token)")
 
-    def upload_file_with_security(self, file: UploadFile, security_level: int = 1):
+    async def upload_file_with_security(self, file: UploadFile, security_level: int = 1):
         """
-        Upload file kèm mức độ bảo mật
-        security_level: 1 (Public), 2 (Internal), 3 (Confidential), 4 (Secret)
+        Upload file từ RAM lên Drive kèm metadata security_level
         """
-        temp_path = f"temp_{file.filename}"
-        media = None
+        if not self.service or not self.SHARED_FOLDER_ID:
+            return None
+
         try:
-            with open(temp_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+            # 1. Đọc nội dung file vào RAM (BytesIO)
+            file_content = await file.read()
+            file_stream = io.BytesIO(file_content)
 
-            # Gắn metadata security_level vào properties của file
+            # 2. Tạo metadata
             file_metadata = {
                 'name': file.filename,
-                'parents': [SHARED_FOLDER_ID],
+                'parents': [self.SHARED_FOLDER_ID],
                 'properties': {
-                    'security_level': str(security_level) # Google chỉ cho lưu String
+                    'security_level': str(security_level) # Quan trọng: Lưu level vào đây
                 }
             }
             
-            media = MediaFileUpload(temp_path, mimetype=file.content_type, resumable=True)
+            # 3. Tạo Media Object từ RAM (Không cần lưu file tạm)
+            media = MediaIoBaseUpload(
+                file_stream, 
+                mimetype=file.content_type, 
+                resumable=True
+            )
             
+            # 4. Upload
             drive_file = self.service.files().create(
                 body=file_metadata,
                 media_body=media,
@@ -52,22 +67,22 @@ class GoogleDriveService:
             ).execute()
 
             return drive_file
+            
         except Exception as e:
             print(f"❌ Lỗi upload: {str(e)}")
             return None
-        finally:
-            if media: del media
-            if os.path.exists(temp_path): os.remove(temp_path)
 
     def list_files_with_metadata(self):
-        """Lấy danh sách file kèm thuộc tính bảo mật"""
+        """Lấy danh sách file và lọc theo properties"""
+        if not self.service or not self.SHARED_FOLDER_ID: return []
+        
         try:
-            query = f"'{SHARED_FOLDER_ID}' in parents and trashed=false"
-            # Lấy thêm trường 'properties' để biết file nào là mật
+            query = f"'{self.SHARED_FOLDER_ID}' in parents and trashed=false"
             results = self.service.files().list(
                 q=query,
                 pageSize=100,
-                fields="files(id, name, webViewLink, properties)",
+                # Lấy thêm properties để biết file này mật hay không
+                fields="files(id, name, webViewLink, properties)", 
                 orderBy="createdTime desc"
             ).execute()
 
@@ -76,5 +91,5 @@ class GoogleDriveService:
             print(f"❌ Lỗi list file: {str(e)}")
             return []
 
-
+# Khởi tạo singleton
 drive_service = GoogleDriveService()
