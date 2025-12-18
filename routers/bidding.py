@@ -162,11 +162,26 @@ def delete_package(hsmt_id: int, db: Session = Depends(get_db)):
 # 6. LẤY FILE ĐÍNH KÈM
 # ==========================================
 @router.get("/{hsmt_id}/files", response_model=BaseResponse[List[schemas.BiddingFileResponse]]) # Giả sử bạn có schema này
-def get_package_files(hsmt_id: int, db: Session = Depends(get_db)):
+def get_package_files(hsmt_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)): # 1. Cần lấy user hiện tại):
     # Check tồn tại trước
     package = crud_bidding.get_package(db, hsmt_id=hsmt_id)
     if not package:
         raise HTTPException(status_code=404, detail="Không tìm thấy gói thầu")
+    
+    # 3. ÁP DỤNG ABAC CHECK
+    # Check quyền trên chính gói thầu đó (bidding_packages)
+    is_allowed = check_permission(
+        db=db,
+        user=current_user,
+        resource=package,       # Object gói thầu lấy từ DB
+        action="VIEW"           # Hành động muốn kiểm tra (trùng với DB Policy)
+    )
+
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bạn không có quyền MANAGER (Level 3) hoặc ADMIN (Level 4) để xem tài liệu này."
+        )
         
     files = crud_bidding.get_files_by_package_id(db, hsmt_id=hsmt_id)
     

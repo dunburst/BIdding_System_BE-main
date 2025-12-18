@@ -12,6 +12,9 @@ class AbacAttributeBase(BaseModel):
     attr_type: AttributeType = Field(default=AttributeType.STRING, description="Kiểu dữ liệu")
     source_table: Optional[str] = Field(None, description="Bảng nguồn dữ liệu")
     description: Optional[str] = Field(None, description="Mô tả chi tiết")
+    mapping_path: Optional[str] = Field(
+        None, 
+        description="Đường dẫn ánh xạ dữ liệu trong code Python. VD: 'org_unit.unit_type' hoặc 'role'")
 
 class AbacAttributeCreate(AbacAttributeBase):
     pass
@@ -21,6 +24,7 @@ class AbacAttributeUpdate(BaseModel):
     attr_type: Optional[AttributeType] = None
     source_table: Optional[str] = None
     description: Optional[str] = None
+    mapping_path: Optional[str] = None
 
 class AbacAttributeResponse(AbacAttributeBase):
     id: int
