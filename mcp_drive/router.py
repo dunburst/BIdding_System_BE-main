@@ -114,14 +114,35 @@ async def upload_secure_file(
 @router.put("/update/{file_id}")
 async def update_drive_file(
     file_id: str,
-    new_name: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None),
+    new_name: Optional[str] = Form(None),       # Sửa tên
+    security_level: Optional[int] = Form(None), # Sửa level (VD: 1, 2, 3, 4)
+    file: Optional[UploadFile] = File(None),    # Sửa nội dung (Option)
     current_user: User = Depends(get_current_user)
 ):
-    success = await drive_service.update_file(file_id, new_name, file)
-    if not success: raise HTTPException(500, "Lỗi cập nhật file")
-    return {"message": "Cập nhật thành công"}
+    """
+    API sửa file đa năng:
+    - Có thể chỉ sửa tên
+    - Có thể chỉ sửa level
+    - Có thể up file mới đè lên file cũ
+    - Hoặc làm cả 3 cùng lúc
+    """
+    # (Optional) Logic kiểm tra quyền: Chỉ Admin hoặc người tạo mới được sửa Level cao
+    # if security_level and security_level > current_user.security_clearance.value:
+    #     raise HTTPException(403, "Bạn không thể set level cao hơn quyền hạn của mình")
 
+    success = await drive_service.update_file(file_id, new_name, file, security_level)
+    
+    if not success:
+        raise HTTPException(500, "Lỗi cập nhật file trên Google Drive")
+        
+    return {
+        "message": "Cập nhật thành công",
+        "updated_fields": {
+            "name": new_name,
+            "level": security_level,
+            "content_updated": file is not None
+        }
+    }
 # Tìm kiếm tài liệu kho
 @router.get("/search-repo")
 def search_repository(query: str, current_user: User = Depends(get_current_user)):
