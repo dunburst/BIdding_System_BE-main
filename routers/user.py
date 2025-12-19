@@ -40,3 +40,14 @@ def update_user(user_id: int, user_in: schemas.UserUpdate, db: Session = Depends
     if db_user is None:
         raise HTTPException(status_code=404, detail="User not found")
     return db_user
+
+@router.delete("/{user_id}", status_code=status.HTTP_200_OK)
+def delete_user(user_id: int, db: Session = Depends(get_db)):
+    # Gọi hàm CRUD để xóa
+    result = crud_user.delete_user(db=db, user_id=user_id)
+    
+    if not result:
+        # Nếu hàm CRUD trả về False/None nghĩa là không tìm thấy user
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return {"message": "Xóa người dùng thành công"}

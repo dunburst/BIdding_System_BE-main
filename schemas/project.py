@@ -6,7 +6,7 @@ from models import PackageStatus
 # Base Schema: Chứa các field chung
 class BiddingProjectBase(BaseModel):
     name: str
-    status: Optional[str] = "New" # Giá trị mặc định
+    status: Optional[str] = "ACTIVE" # Giá trị mặc định
 
 # Create Schema: Dùng khi tạo mới
 class BiddingProjectCreate(BiddingProjectBase):
