@@ -168,3 +168,23 @@ def download_folder_as_zip(folder_id: str, current_user: User = Depends(get_curr
         zip_stream, media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=Project_{folder_id}.zip"}
     )
+
+# 8. API Xóa file (Mới)
+@router.delete("/delete/{file_id}")
+def delete_drive_file(
+    file_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Chuyển file vào thùng rác của Google Drive
+    """
+    # (Optional) Chỉ cho phép Admin hoặc PM xóa
+    # if current_user.role not in ["ADMIN", "PM"]:
+    #     raise HTTPException(403, "Bạn không có quyền xóa tài liệu")
+
+    success = drive_service.delete_file(file_id)
+    
+    if not success:
+        raise HTTPException(404, "Lỗi: File không tồn tại hoặc không thể xóa")
+        
+    return {"message": "Đã chuyển file vào thùng rác thành công", "file_id": file_id}

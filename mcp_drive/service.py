@@ -221,7 +221,21 @@ class GoogleDriveService:
         except Exception as e:
             print(f"❌ Lỗi copy file: {e}")
             return None
-
+        
+    def delete_file(self, file_id: str):
+        """
+        Xóa file bằng cách chuyển vào thùng rác (Trash).
+        An toàn hơn xóa vĩnh viễn.
+        """
+        try:
+            body = {'trashed': True}
+            self.service.files().update(fileId=file_id, body=body).execute()
+            print(f"🗑️ Đã chuyển file {file_id} vào thùng rác.")
+            return True
+        except Exception as e:
+            print(f"❌ Lỗi xóa file: {e}")
+            return False
+        
     def zip_folder(self, folder_id: str):
         try:
             files = self.list_files_in_folder(folder_id)
