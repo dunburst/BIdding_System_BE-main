@@ -93,7 +93,7 @@ def get_packages(
         success=True,
         status=200,
         message="Lấy danh sách gói thầu thành công",
-        data=packages
+        data=results
     )
 # ==========================================
 # 3. LẤY CHI TIẾT (GET DETAIL)
@@ -251,23 +251,32 @@ def make_bid_decision(
     # 3. CHECK QUYỀN ABAC (Action: APPROVE)
     # Đây là hành động quan trọng, cần quyền APPROVE (thường là Manager/Admin)
 
-    # 4. Xử lý chuyển trạng thái
+    # 4. Xử lý chuyển trạng thái & Lưu người duyệt
     new_status = None
+    approver_id = None # Biến tạm
+
     if request.decision == schemas.BidDecision.GO:
-        new_status = PackageStatus.BIDDING # Chuyển sang "Đang dự thầu"
+        # Gán trực tiếp giá trị Enum vào model
+        package.trang_thai = PackageStatus.BIDDING 
+        # Lưu ID người duyệt (người đang đăng nhập)
+        package.nguoi_duyet_id = current_user.user_id 
+        
     elif request.decision == schemas.BidDecision.NO_GO:
-        new_status = PackageStatus.NO_GO   # Chuyển sang "Không dự thầu"
+        package.trang_thai = PackageStatus.NO_GO
+        # Nếu từ chối, có thể không cần lưu người duyệt hoặc tùy nghiệp vụ
+        
+    else:
+        # Thêm nhánh else này để Linter hiểu rằng không bao giờ có trường hợp lọt khe
+        raise HTTPException(status_code=400, detail="Quyết định không hợp lệ")
 
     # 5. Cập nhật vào DB
-    # Ta dùng lại hàm update_package nhưng tạo schema update nhỏ gọn
-    update_data = schemas.BiddingPackageUpdate(trang_thai=new_status)
-    updated_package = crud_bidding.update_package(db, hsmt_id, update_data)
-    
-    # (Optional) Bạn có thể lưu request.reason vào bảng AuditLog ở đây nếu cần
+    db.add(package)
+    db.commit()
+    db.refresh(package)
 
     return BaseResponse(
         success=True,
         status=200,
         message=f"Đã cập nhật quyết định: {request.decision.value}",
-        data=updated_package
+        data=package
     )

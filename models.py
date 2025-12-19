@@ -215,6 +215,7 @@ class BiddingPackage(Base):
     
     hsmt_id : Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     project_id: Mapped[Optional[int]] = mapped_column(ForeignKey("bidding_project.id"))
+    nguoi_duyet_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id"), nullable=True)
     #thông tin cơ bản
     ma_tbmt:Mapped[str] = mapped_column(String(50), unique=True, index=True) # Mã TBMT để check trùng 
     phien_ban_thay_doi: Mapped[str] = mapped_column(String(10), default='00')
@@ -265,6 +266,8 @@ class BiddingPackage(Base):
     
     # 1. Quan hệ n-1 với Dự án (Project)
     project: Mapped["BiddingProject"] = relationship(back_populates="packages")
+    
+    nguoi_duyet: Mapped[Optional["User"]] = relationship(foreign_keys=[nguoi_duyet_id])
     
     # 2. Quan hệ 1-n với File đính kèm
     files: Mapped[List["BiddingPackageFile"]] = relationship(back_populates="package", cascade="all, delete-orphan")
@@ -327,7 +330,7 @@ class BiddingProject(Base):
     name: Mapped[str] = mapped_column(Unicode(255), nullable=False)
     status: Mapped[Optional[str]] = mapped_column(String(50))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(),onupdate=func.now())
     
     # Quan hệ với gói thầu (One-to-Many hoặc One-to-One tùy nghiệp vụ)
     packages: Mapped[List["BiddingPackage"]] = relationship(back_populates="project")

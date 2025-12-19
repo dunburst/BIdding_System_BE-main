@@ -1,7 +1,7 @@
 import os
 import io
 import zipfile
-from typing import List, Optional
+from typing import List, Optional, Any
 from google.oauth2.credentials import Credentials 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
@@ -12,8 +12,8 @@ load_dotenv()
 
 class GoogleDriveService:
     def __init__(self):
-        self.service = None
-        self.ROOT_FOLDER_ID = os.getenv("GOOGLE_DRIVE_SHARED_FOLDER_ID")
+        self.service: Any = None
+        self.ROOT_FOLDER_ID:Optional[str] = os.getenv("GOOGLE_DRIVE_SHARED_FOLDER_ID")
         
         client_id = os.getenv("GOOGLE_CLIENT_ID")
         client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
@@ -34,7 +34,7 @@ class GoogleDriveService:
 
     # --- NHÓM 1: QUẢN LÝ FOLDER & FILE CƠ BẢN ---
 
-    def create_folder(self, folder_name: str, parent_id: str = None) -> str:
+    def create_folder(self, folder_name: str, parent_id:Optional[str] = None) -> Optional[str]:
         """Tạo folder mới và trả về ID"""
         try:
             target_parent = parent_id if parent_id else self.ROOT_FOLDER_ID
@@ -80,7 +80,7 @@ class GoogleDriveService:
             "sub_folders": created_folders
         }
 
-    async def upload_file_with_security(self, file: UploadFile, folder_id: str = None, security_level: int = 1):
+    async def upload_file_with_security(self, file: UploadFile, folder_id:Optional[str] = None, security_level: int = 1):
         target_folder = folder_id if folder_id else self.ROOT_FOLDER_ID
         if not self.service or not target_folder: return None
 
@@ -105,7 +105,7 @@ class GoogleDriveService:
             print(f"❌ Lỗi upload: {str(e)}")
             return None
 
-    async def update_file(self, file_id: str, new_name: str = None, new_file: UploadFile = None):
+    async def update_file(self, file_id: str, new_name: Optional[str] = None, new_file:Optional[UploadFile] = None):
         try:
             if new_name:
                 self.service.files().update(fileId=file_id, body={'name': new_name}).execute()
@@ -119,7 +119,7 @@ class GoogleDriveService:
             print(f"❌ Lỗi update file: {e}")
             return False
 
-    def list_files_in_folder(self, folder_id: str = None):
+    def list_files_in_folder(self, folder_id: Optional[str] = None):
         target_folder = folder_id if folder_id else self.ROOT_FOLDER_ID
         if not self.service: return []
         try:
@@ -150,7 +150,7 @@ class GoogleDriveService:
             print(f"❌ Lỗi search: {e}")
             return []
 
-    def copy_file(self, file_id: str, target_folder_id: str, new_name: str = None):
+    def copy_file(self, file_id: str, target_folder_id: str, new_name: Optional[str] = None):
         try:
             file_metadata = {
                 'parents': [target_folder_id],
