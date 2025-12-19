@@ -18,7 +18,7 @@ class AbacAction:
     OPEN_BID = "OPEN_BID"             # Mở thầu
     
     # --- NGHIỆP VỤ DỰ ÁN ---
-    CREATE_PROJECT = "CREATE_PROJECT" # Quản lý khởi tạo dự án từ gói thầu
+    CREATE_PROJECT = "CREATE_PROJECT" # Tạo dự án mới
 
     # --- NGHIỆP VỤ KHÁC ---
     ASSIGN_TASK = "ASSIGN_TASK"       # Giao việc

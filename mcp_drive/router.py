@@ -1,10 +1,12 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form
-from typing import List
+from fastapi.responses import StreamingResponse
+from typing import List, Optional
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
 from database import get_db
 from models import User, SecurityLevel
-from utils.security import get_current_user # Hàm lấy user hiện tại của bạn
+from utils.security import get_current_user
 from .service import drive_service
 
 router = APIRouter(
@@ -12,68 +14,136 @@ router = APIRouter(
     tags=["Google Drive Security"]
 )
 
-# API Upload file có chọn mức độ mật
+# --- SCHEMA MODEL ---
+class TaskAssignmentRequest(BaseModel):
+    project_id: str             
+    task_type: str  # HR, LEGAL, TECH, FINANCE, DEVICE, CONTRACT, OTHER
+    template_file_ids: List[str] 
+
+# =================================================================
+# 1. API LẤY DANH SÁCH DỰ ÁN (ROOT)
+# =================================================================
+@router.get("/projects")
+def get_root_projects(current_user: User = Depends(get_current_user)):
+    """Chỉ trả về danh sách các Folder dự án ở thư mục gốc"""
+    all_items = drive_service.list_files_in_folder(None) # None = Root
+    
+    visible_items = []
+    for item in all_items:
+        # Chỉ lấy Folder
+        if 'application/vnd.google-apps.folder' in item.get('mimeType', ''):
+            visible_items.append({
+                "id": item['id'], "name": item['name'], "type": "FOLDER",
+                "link": item['webViewLink'], "access": "GRANTED"
+            })
+            
+    return {"current_context": "ROOT_PROJECTS", "total": len(visible_items), "data": visible_items}
+
+# =================================================================
+# 2. API LẤY FILE TRONG 1 FOLDER CỤ THỂ
+# =================================================================
+@router.get("/folder/{folder_id}")
+def get_folder_content(folder_id: str, current_user: User = Depends(get_current_user)):
+    """Lấy danh sách file/folder con trong folder_id"""
+    all_items = drive_service.list_files_in_folder(folder_id)
+    user_clearance = current_user.security_clearance.value 
+    visible_items = []
+    
+    for item in all_items:
+        # A. Folder con -> Luôn hiện
+        if 'application/vnd.google-apps.folder' in item.get('mimeType', ''):
+            visible_items.append({
+                "id": item['id'], "name": item['name'], "type": "FOLDER",
+                "link": item['webViewLink'], "access": "GRANTED"
+            })
+            continue
+
+        # B. File -> Check quyền
+        props = item.get('properties', {})
+        file_level = int(props.get('security_level', 1))
+        
+        if user_clearance >= file_level:
+            visible_items.append({
+                "id": item['id'], "name": item['name'], "type": "FILE",
+                "mime_type": item.get('mimeType'),
+                "link": item['webViewLink'], "level": file_level, "access": "GRANTED"
+            })
+    
+    return {"current_folder_id": folder_id, "total_items": len(visible_items), "data": visible_items}
+
+# =================================================================
+# 3. CÁC API NGHIỆP VỤ KHÁC
+# =================================================================
+
+# Khởi tạo dự án
+@router.post("/init-project")
+def create_project_structure(
+    project_name: str = Form(...),
+    current_user: User = Depends(get_current_user)
+):
+    result = drive_service.create_project_tree(project_name)
+    if not result: raise HTTPException(500, "Lỗi tạo cấu trúc dự án")
+    return {"message": "Tạo dự án thành công", "data": result}
+
+# Giao việc & Clone file tự động
+@router.post("/assign-task-files")
+def provision_files_for_task(
+    payload: TaskAssignmentRequest,
+    current_user: User = Depends(get_current_user)
+):
+    result = drive_service.clone_files_for_task(
+        payload.project_id, payload.task_type, payload.template_file_ids
+    )
+    if not result: raise HTTPException(500, "Lỗi khi cấp phát tài liệu (Không tìm thấy folder đích)")
+    return {"message": "Đã copy tài liệu mẫu thành công", "data": result}
+
+# Upload file thủ công
 @router.post("/upload-secure")
 async def upload_secure_file(
     file: UploadFile = File(...),
-    security_level: SecurityLevel = Form(SecurityLevel.PUBLIC), # Chọn mức độ từ Dropdown
-    current_user: User = Depends(get_current_user), # Chỉ user đăng nhập mới được up
+    folder_id: str = Form(None), 
+    security_level: SecurityLevel = Form(SecurityLevel.PUBLIC),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Logic mở rộng: Chỉ Giám đốc mới được up file Secret (Tùy bạn)
-    # if security_level == SecurityLevel.SECRET and current_user.role != "ADMIN":
-    #     raise HTTPException(403, "Bạn không đủ quyền upload file mật")
+    result = await drive_service.upload_file_with_security(file, folder_id, security_level.value)
+    if not result: raise HTTPException(500, "Lỗi upload lên Google Drive")
+    return {"message": "Upload thành công", "file_info": result}
 
-    # Gọi service upload
-    # Lưu ý: Convert Enum sang int (security_level.value)
-    result = await drive_service.upload_file_with_security(file, security_level.value)
-    
-    if not result:
-        raise HTTPException(500, "Lỗi upload lên Google Drive")
-        
-    return {
-        "message": "Upload thành công",
-        "file_info": result,
-        "security_tag": security_level
-    }
-
-# API Xem danh sách (Đã phân quyền)
-@router.get("/list-secure")
-def get_my_files(
-    current_user: User = Depends(get_current_user) # Bắt buộc phải đăng nhập
+# Cập nhật file
+@router.put("/update/{file_id}")
+async def update_drive_file(
+    file_id: str,
+    new_name: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    current_user: User = Depends(get_current_user)
 ):
-    """
-    Chỉ trả về những file có security_level <= security_clearance của User
-    """
-    # 1. Lấy tất cả file từ Drive
-    all_files = drive_service.list_files_with_metadata()
-    
-    # 2. Lấy quyền của user (VD: Nhân viên=1, Giám đốc=4)
-    user_clearance = current_user.security_clearance.value 
-    
-    visible_files = []
-    
-    # 3. Lọc file
-    for file in all_files:
-        # Lấy tag bảo mật của file (mặc định là 1 - Public nếu không có tag)
-        props = file.get('properties', {})
-        file_level = int(props.get('security_level', 1))
-        
-        # LOGIC QUAN TRỌNG NHẤT:
-        # Nếu quyền user >= độ mật của file thì mới cho xem
-        if user_clearance >= file_level:
-            visible_files.append({
-                "id": file['id'],
-                "name": file['name'],
-                "link": file['webViewLink'],
-                "level": file_level, # Trả về để Frontend hiện màu (Đỏ=Mật, Xanh=Thường)
-                "access": "GRANTED"
-            })
-    
-    return {
-        "user_role": current_user.role,
-        "user_clearance": user_clearance,
-        "total_files_on_drive": len(all_files),
-        "visible_files_count": len(visible_files),
-        "data": visible_files
-    }
+    success = await drive_service.update_file(file_id, new_name, file)
+    if not success: raise HTTPException(500, "Lỗi cập nhật file")
+    return {"message": "Cập nhật thành công"}
+
+# Tìm kiếm tài liệu kho
+@router.get("/search-repo")
+def search_repository(query: str, current_user: User = Depends(get_current_user)):
+    results = drive_service.search_files(query)
+    return {"count": len(results), "data": results}
+
+# Clone file thủ công (nếu cần)
+@router.post("/clone-file")
+def clone_file_to_project(
+    source_file_id: str = Form(...), target_folder_id: str = Form(...),
+    new_name: Optional[str] = Form(None), current_user: User = Depends(get_current_user)
+):
+    result = drive_service.copy_file(source_file_id, target_folder_id, new_name)
+    if not result: raise HTTPException(500, "Lỗi khi copy file")
+    return {"message": "Clone thành công", "file": result}
+
+# Đóng gói dự án ZIP
+@router.get("/package-zip/{folder_id}")
+def download_folder_as_zip(folder_id: str, current_user: User = Depends(get_current_user)):
+    zip_stream = drive_service.zip_folder(folder_id)
+    if not zip_stream: raise HTTPException(404, "Không tìm thấy file để nén")
+    return StreamingResponse(
+        zip_stream, media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=Project_{folder_id}.zip"}
+    )

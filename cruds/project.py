@@ -17,8 +17,6 @@ def create_project_from_package(db: Session, project_in: BiddingProjectCreate) -
     db_project = BiddingProject(
         name=project_in.name,
         status=project_in.status,
-        host_id=project_in.host_id,
-        bid_team_leader_id=project_in.bid_team_leader_id
     )
     db.add(db_project)
     
