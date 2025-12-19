@@ -51,6 +51,8 @@ class TaskUpdate(BaseModel):
     assignee_id: Optional[int] = None
     reviewer_id: Optional[int] = None 
     source_type: Optional[str] = None
+    # BỔ SUNG: Cho phép gửi kèm danh sách assignments mới để thay thế danh sách cũ
+    assignments: Optional[List[TaskAssignmentCreate]] = None
 
 # --- SCHEMA HIỂN THỊ (QUAN TRỌNG: Cấu trúc cây) ---
 class TaskResponse(TaskBase):

@@ -133,3 +133,59 @@ def update_task_status(db: Session, task_id: int, status: TaskStatus, user: User
     db.commit()
     db.refresh(task)
     return task
+
+# --- UPDATE ---
+def update_task(db: Session, task_id: int, task_in: TaskUpdate, user: User):
+    # 1. Lấy task và check quyền (dùng lại hàm get_task_detail đã có check quyền)
+    task = get_task_detail(db, task_id, user)
+    
+    # 2. Cập nhật các trường thông tin cơ bản (chỉ cập nhật trường khác None)
+    update_data = task_in.model_dump(exclude_unset=True)
+    
+    # Loại bỏ 'assignments' khỏi update_data để xử lý riêng, tránh lỗi update vào bảng Task
+    if "assignments" in update_data:
+        del update_data["assignments"]
+
+    for field, value in update_data.items():
+        setattr(task, field, value)
+
+    # 3. Xử lý cập nhật Assignments (Nếu có gửi kèm)
+    if task_in.assignments is not None:
+        # A. Xóa toàn bộ phân công cũ của task này
+        db.query(TaskAssignment).filter(TaskAssignment.task_id == task.id).delete()
+        
+        # B. Tạo lại phân công mới
+        for assign_in in task_in.assignments:
+            final_user_id = assign_in.assigned_user_id
+            
+            # Logic: Nếu assignment ko có user, lấy assignee_id HIỆN TẠI của task
+            if final_user_id is None and task.assignee_id is not None:
+                final_user_id = task.assignee_id
+                
+            new_assign = TaskAssignment(
+                task_id=task.id,
+                assigned_unit_id=assign_in.assigned_unit_id,
+                assigned_user_id=final_user_id,
+                assignment_type=assign_in.assignment_type,
+                required_role=assign_in.required_role,
+                required_min_security=assign_in.required_min_security,
+                is_accepted=True
+            )
+            db.add(new_assign)
+
+    db.commit()
+    db.refresh(task)
+    return task
+
+# --- DELETE ---
+def delete_task(db: Session, task_id: int, user: User):
+    # 1. Lấy task và check quyền
+    task = get_task_detail(db, task_id, user)
+    
+    # Lưu ý: Nếu task này có sub-tasks, DB phải cấu hình cascade delete 
+    # hoặc bạn phải xóa sub-tasks bằng code trước.
+    # Ở đây giả định DB đã cấu hình relationship(cascade="all, delete")
+    
+    db.delete(task)
+    db.commit()
+    return {"message": "Task deleted successfully"}

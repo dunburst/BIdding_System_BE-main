@@ -57,3 +57,29 @@ def update_status(
     Chỉ nhân viên thuộc phòng ban được assign mới update được.
     """
     return task_crud.update_task_status(db, task_id, status, current_user)
+
+@router.put("/{task_id}", response_model=TaskResponse)
+def update_existing_task(
+    task_id: int,
+    task_in: TaskUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Cập nhật thông tin Task.
+    - Nếu gửi kèm 'assignments': Hệ thống sẽ XÓA assignments cũ và TẠO assignments mới.
+    - Nếu không gửi 'assignments': Giữ nguyên assignments cũ.
+    """
+    return task_crud.update_task(db, task_id, task_in, current_user)
+
+@router.delete("/{task_id}", status_code=status.HTTP_200_OK)
+def delete_existing_task(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Xóa Task.
+    Lưu ý: Nếu Task có Task con (sub-tasks), chúng cũng sẽ bị xóa theo (nếu DB config cascade).
+    """
+    return task_crud.delete_task(db, task_id, current_user)
