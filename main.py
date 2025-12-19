@@ -4,10 +4,11 @@ from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
 import models
 from database import engine, get_db
-from routers import bidding, auth, crawler, organization, user, abac, system, project
+from routers import bidding, auth, crawler, organization, user, abac, system, project, googlelogin
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from mcp_drive.router import router as drive_router
+from starlette.middleware.sessions import SessionMiddleware
 
 from crawler_bot import start_scheduler_service
 # 1. Tự động tạo các bảng trong Database nếu chưa tồn tại
@@ -32,7 +33,7 @@ app = FastAPI(
     title="PC1 Bidding Management System",
     # lifespan=lifespan # <--- Gắn vào đây
 )
-
+app.add_middleware(SessionMiddleware, secret_key="bi_mat_khong_bat_mi")
 
 app.include_router(auth.router)
 app.include_router(bidding.router) # <--- 2. Đăng ký router bidding vào app
@@ -42,6 +43,7 @@ app.include_router(user.router)
 app.include_router(abac.router)
 app.include_router(system.router)
 app.include_router(project.router)
+app.include_router(googlelogin.router) # Gắn router Google Login
 app.include_router(drive_router)
 
 # API Test kết nối

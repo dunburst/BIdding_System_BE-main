@@ -56,3 +56,16 @@ def update_user_status(db: Session, user_id: int, status: bool):
         db.commit()
         db.refresh(user)
     return user
+
+def delete_user(db: Session, user_id: int):
+    # 1. Tìm user theo ID
+    db_user = db.query(User).filter(User.user_id == user_id).first()
+    
+    # 2. Nếu không thấy thì trả về False
+    if not db_user:
+        return False
+    
+    # 3. Xóa và lưu thay đổi
+    db.delete(db_user)
+    db.commit()
+    return True

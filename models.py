@@ -82,8 +82,8 @@ class User(Base):
     __tablename__ = "users"
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     email: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
-    hashed_password: Mapped[str] = mapped_column((String), nullable=False)
-    full_name: Mapped[str] = mapped_column(String(100))
+    hashed_password: Mapped[str] = mapped_column((String), nullable=True)
+    full_name: Mapped[str] = mapped_column(UnicodeText(100))
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.ENGINEER, nullable=False)
     status: Mapped[bool] = mapped_column(Boolean, default=True)
     
@@ -95,6 +95,8 @@ class User(Base):
         default=SecurityLevel.PUBLIC,
         nullable=False
     )
+    
+    auth_provider: Mapped[str] = mapped_column(String(50), default="local") # 'google' hoặc 'local'
 
     # Relationships
     org_unit: Mapped[Optional["OrganizationalUnit"]] = relationship(foreign_keys=[org_unit_id], back_populates="members")
