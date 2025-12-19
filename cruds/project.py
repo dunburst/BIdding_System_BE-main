@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_
 from typing import List, Optional
+from models import User, UserRole
 
 # Import model của bạn và schema ở trên
 from models import BiddingPackage, BiddingProject 
@@ -45,7 +46,8 @@ def get_projects(
     skip: int = 0, 
     limit: int = 100, 
     search_keyword: Optional[str] = None,
-    status_filter: Optional[str] = None
+    status_filter: Optional[str] = None,
+    user: Optional[User] = None
 ) -> List[BiddingProject]:
     query = select(BiddingProject)
 
@@ -56,6 +58,20 @@ def get_projects(
     # Logic lọc theo trạng thái
     if status_filter:
         query = query.where(BiddingProject.status == status_filter)
+        
+    # 3. --- LOGIC PHÂN QUYỀN (QUAN TRỌNG) ---
+    # Nếu user KHÔNG phải ADMIN -> Áp dụng bộ lọc cá nhân
+    if user and user.role != UserRole.ADMIN:
+        query = query.filter(
+            or_(
+                # Trường hợp 1: User là Người chủ trì (Host/Người duyệt)
+                BiddingProject.host_id == user.user_id,
+                
+                # Trường hợp 2: User là Trưởng nhóm thầu
+                BiddingProject.bid_team_leader_id == user.user_id
+            )
+        )
+    # Nếu là ADMIN thì bỏ qua đoạn if trên -> Xem được tất cả
 
     # Sắp xếp theo mới nhất
     query = query.order_by(BiddingProject.created_at.desc()).offset(skip).limit(limit)

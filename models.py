@@ -336,7 +336,7 @@ class BiddingProject(Base):
     
     # Quan hệ với gói thầu (One-to-Many hoặc One-to-One tùy nghiệp vụ)
     packages: Mapped[List["BiddingPackage"]] = relationship(back_populates="project")
-    tasks: Mapped[List["BiddingTask"]] = relationship(back_populates="project")
+    tasks: Mapped[List["BiddingTask"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     # --- BỔ SUNG RELATIONSHIPS MỚI ---
     # 1. Quan hệ với User (Người chủ trì)
     host: Mapped["User"] = relationship(foreign_keys=[host_id])
@@ -345,7 +345,7 @@ class BiddingProject(Base):
     team_leader: Mapped[Optional["User"]] = relationship(foreign_keys=[bid_team_leader_id])
     
     # 3. Quan hệ với Log nộp thầu (BidSubmitLog)
-    submit_logs: Mapped[List["BidSubmitLog"]] = relationship(back_populates="project")
+    submit_logs: Mapped[List["BidSubmitLog"]] = relationship(back_populates="project", cascade="all, delete-orphan")
 
 
 
