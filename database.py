@@ -26,7 +26,7 @@ params = urllib.parse.quote_plus(
     "TrustServerCertificate=yes;"  # Cần thiết nếu dùng driver mới (v18+)
 )
 
-DATABASE_URL = f"mssql+pyodbc:///?odbc_connect={params}"
+DATABASE_URL = f"mssql+pyodbc:///?odbc_connect={params}&charset=utf8"
 
 def json_dumps_vietnamese(data):
     return json.dumps(data, ensure_ascii=False)
