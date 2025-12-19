@@ -415,7 +415,7 @@ class BiddingTask(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     bidding_project_id: Mapped[int] = mapped_column(ForeignKey("bidding_project.id"))
     parent_task_id: Mapped[Optional[int]] = mapped_column(ForeignKey("bidding_task.id"))
-    template_id: Mapped[Optional[int]] = mapped_column(ForeignKey("bidding_task_templates.id"))
+    template_id: Mapped[Optional[int]] = mapped_column(ForeignKey("bidding_task_templates.id"), nullable=True)
     
     task_name: Mapped[str] = mapped_column(Unicode(255))
     
@@ -430,8 +430,8 @@ class BiddingTask(Base):
     
     is_milestone: Mapped[bool] = mapped_column(Boolean, default=False)
     source_type: Mapped[Optional[str]] = mapped_column(String(50))
-    ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON)
-    hsmt_ref_page: Mapped[Optional[int]] = mapped_column(Integer)
+    ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True) # Lý do đánh giá AI
+    hsmt_ref_page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True) # Trang tham chiếu trong HSMT
 
     # Relationships
     project: Mapped["BiddingProject"] = relationship(back_populates="tasks")
@@ -446,6 +446,18 @@ class BiddingTask(Base):
     assignee: Mapped[Optional["User"]] = relationship(foreign_keys=[assignee_id])
     reviewer: Mapped[Optional["User"]] = relationship(foreign_keys=[reviewer_id])
     template: Mapped[Optional["BiddingTaskTemplate"]] = relationship()
+    
+    @property
+    def assigned_unit_ids_list(self):
+        """
+        Trả về danh sách ID các phòng ban được assign vào task này.
+        Dùng cho ABAC Engine so sánh tệp tin 'IN'.
+        """
+        return [
+            assign.assigned_unit_id 
+            for assign in self.assignments 
+            if assign.assigned_unit_id is not None
+        ]
 
 # ==========================================
 # 4. PHÂN HỆ BẢO MẬT & ABAC (SECURITY POLICIES)
