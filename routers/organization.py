@@ -6,7 +6,7 @@ from models import OrganizationalUnit
 from database import get_db
 import schemas.organization as schemas
 import cruds.organization as crud_org
-
+from schemas.organization import UserOrgResponse
 router = APIRouter(
     prefix="/organization",
     tags=["Organization Structure (Cơ cấu tổ chức)"]
@@ -55,3 +55,19 @@ def delete_org_unit(unit_id: int, db: Session = Depends(get_db)):
     if not success:
         raise HTTPException(status_code=404, detail="Không tìm thấy đơn vị hoặc không thể xóa (có thể do ràng buộc khóa ngoại)")
     return {"message": "Đã xóa đơn vị thành công"}
+
+# API 7: Lấy danh sách nhân viên trong phòng ban
+@router.get("/{unit_id}/members", response_model=List[UserOrgResponse])
+def read_unit_members(
+    unit_id: int, 
+    skip: int = 0, 
+    limit: int = 100, 
+    db: Session = Depends(get_db)
+):
+    # Kiểm tra unit có tồn tại không
+    unit = crud_org.get_unit(db, unit_id)
+    if not unit:
+        raise HTTPException(status_code=404, detail="Đơn vị không tồn tại")
+        
+    members = crud_org.get_members_by_unit(db, unit_id, skip=skip, limit=limit)
+    return members
