@@ -41,13 +41,51 @@ def create_new_project(project_name: str):
 
 def search_files_in_repository(query: str):
     """
-    Tìm kiếm tài liệu cũ, tài liệu mẫu trong kho lưu trữ hoặc các dự án trước.
-    Dùng khi người dùng muốn tìm file theo tên.
+    Tìm kiếm tài liệu và thư mục. 
+    Kết quả trả về dạng CÂY (Tree) để biết file nào nằm trong folder nào.
     """
-    print(f"\n[System] 🔎 AI đang tìm file với từ khóa: '{query}'...")
-    results = drive_service.search_files(query)
-    # Trả về ít thông tin thôi cho AI dễ đọc
-    return [{"id": f['id'], "name": f['name'], "link": f['webViewLink']} for f in results]
+    print(f"\n[System] 🔎 AI đang tìm (Dạng Tree) với từ khóa: '{query}'...")
+    
+    # 1. Lấy dữ liệu phẳng từ Service
+    flat_results = drive_service.search_files(query)
+    
+    # 2. Xử lý Tree (Giống hệt bên Router)
+    item_map = {}
+    
+    # Bước 2a: Map dữ liệu (Chỉ lấy field cần thiết cho AI để tiết kiệm Token)
+    for item in flat_results:
+        is_folder = 'application/vnd.google-apps.folder' in item.get('mimeType', '')
+        clean_item = {
+            "id": item['id'],
+            "name": item['name'],
+            "type": "📁 FOLDER" if is_folder else "📄 FILE",
+            # "link": item['webViewLink'], # Có thể bỏ Link đi để AI đỡ bị rối mắt, chỉ cần ID và Tên
+            "parents": item.get('parents', []),
+            "children": [] 
+        }
+        item_map[item['id']] = clean_item
+
+    # Bước 3: Build Tree
+    tree_roots = []
+    for item_id, item in item_map.items():
+        parent_id = item['parents'][0] if item['parents'] else None
+        
+        # Nếu cha cũng nằm trong kết quả tìm kiếm -> Nhét vào con của cha
+        if parent_id and parent_id in item_map:
+            item_map[parent_id]['children'].append(item)
+        else:
+            # Nếu không tìm thấy cha trong đợt này -> Nó là Root
+            tree_roots.append(item)
+            
+    # Bước 4: Clean up (Xóa trường 'parents' thừa đi cho gọn output)
+    def clean_output(nodes):
+        for node in nodes:
+            node.pop("parents", None) # Xóa field parents ko cần thiết nữa
+            if node["children"]:
+                clean_output(node["children"]) # Đệ quy
+        return nodes
+
+    return clean_output(tree_roots)
 
 def clone_documents_to_project(project_name_or_id: str, task_type: str, file_ids: list):
     """
