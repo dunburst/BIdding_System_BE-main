@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_
 from typing import List, Optional
+from models import User, UserRole, BiddingTask, TaskAssignment
 
 # Import model của bạn và schema ở trên
 from models import BiddingPackage, BiddingProject 
@@ -39,29 +40,96 @@ def create_project_from_package(db: Session, project_in: BiddingProjectCreate) -
 def get_project(db: Session, project_id: int) -> Optional[BiddingProject]:
     return db.get(BiddingProject, project_id)
 
-# 3. Lấy danh sách & Tìm kiếm (Read Many / Search)
+# ---------------------------------------------------------
+# 3. Lấy danh sách & Tìm kiếm (ĐÃ NÂNG CẤP)
+# ---------------------------------------------------------
 def get_projects(
     db: Session, 
     skip: int = 0, 
     limit: int = 100, 
     search_keyword: Optional[str] = None,
-    status_filter: Optional[str] = None
+    status_filter: Optional[str] = None,
+    user: Optional[User] = None
 ) -> List[BiddingProject]:
+    
+    # Bắt đầu query từ bảng Dự án
     query = select(BiddingProject)
 
-    # Logic tìm kiếm theo tên (không phân biệt hoa thường)
+    # --- LOGIC JOIN ĐỂ LỌC (Quan trọng) ---
+    if user and user.role not in [UserRole.ADMIN, UserRole.MANAGER, UserRole.BID_MANAGER]:
+        # Join sang Task và Assignment để kiểm tra điều kiện
+        # Dùng outerjoin để không bị mất dự án nếu user là Host (nhưng dự án chưa có task)
+        query = query.outerjoin(
+            BiddingTask, BiddingTask.bidding_project_id == BiddingProject.id
+        ).outerjoin(
+            TaskAssignment, BiddingTask.assignments
+        )
+
+    # --- CÁC BỘ LỌC CƠ BẢN ---
     if search_keyword:
         query = query.where(BiddingProject.name.ilike(f"%{search_keyword}%"))
     
-    # Logic lọc theo trạng thái
     if status_filter:
         query = query.where(BiddingProject.status == status_filter)
+        
+    # --- LOGIC PHÂN QUYỀN ---
+    # Nếu user KHÔNG phải cấp quản lý -> Áp dụng bộ lọc
+    if user and user.role not in [UserRole.ADMIN, UserRole.MANAGER, UserRole.BID_MANAGER]:
+        query = query.filter(
+            or_(
+                # 1. User là Lãnh đạo dự án (Host / Leader)
+                BiddingProject.host_id == user.user_id,
+                BiddingProject.bid_team_leader_id == user.user_id,
 
-    # Sắp xếp theo mới nhất
+                # 2. User được giao việc trực tiếp trong Task (assignee_id)
+                BiddingTask.assignee_id == user.user_id,
+
+                # 3. User được giao việc qua Assignment (đích danh)
+                TaskAssignment.assigned_user_id == user.user_id,
+
+                # 4. User thuộc phòng ban được giao việc
+                TaskAssignment.assigned_unit_id == user.org_unit_id
+            )
+        ).distinct() # CỰC KỲ QUAN TRỌNG: Loại bỏ các dòng dự án trùng lặp do phép Join
+
+    # Sắp xếp và phân trang
     query = query.order_by(BiddingProject.created_at.desc()).offset(skip).limit(limit)
     
     result = db.execute(query)
     return list(result.scalars().all())
+
+# ---------------------------------------------------------
+# [MỚI] Hàm kiểm tra quyền truy cập Project (cho API Detail)
+# ---------------------------------------------------------
+def check_user_project_access(db: Session, project_id: int, user: User) -> bool:
+    """
+    Trả về True nếu User có quyền xem dự án này.
+    Điều kiện: Là Admin/Manager HOẶC Host/Leader HOẶC Có task trong dự án.
+    """
+    # 1. Nếu là Admin/Manager -> Allow all
+    if user.role in [UserRole.ADMIN, UserRole.MANAGER, UserRole.BID_MANAGER]:
+        return True
+
+    # 2. Kiểm tra vai trò trong Dự án (Host/Leader)
+    project = db.get(BiddingProject, project_id)
+    if not project:
+        return False
+    if project.host_id == user.user_id or project.bid_team_leader_id == user.user_id:
+        return True
+
+    # 3. Kiểm tra xem có task nào dính dáng đến user không
+    # Query: Đếm số task trong dự án này mà user có liên quan
+    stmt = select(BiddingTask.id).outerjoin(TaskAssignment, BiddingTask.assignments).where(
+        BiddingTask.bidding_project_id == project_id,
+        or_(
+            BiddingTask.assignee_id == user.user_id,
+            TaskAssignment.assigned_user_id == user.user_id,
+            TaskAssignment.assigned_unit_id == user.org_unit_id
+        )
+    ).limit(1) # Chỉ cần tìm thấy 1 cái là đủ
+
+    result = db.execute(stmt).scalar_one_or_none()
+    return result is not None
 
 # 4. Cập nhật (Update)
 def update_project(

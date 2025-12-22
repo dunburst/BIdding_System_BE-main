@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from models import BiddingPackage, BiddingProject, User
+from models import BiddingPackage, BiddingProject, TaskAssignment, User, BiddingTask, TaskStatus, UserRole
 from utils.security import get_current_user
 from utils.abac import check_permission
 from utils.constants import AbacAction
@@ -65,6 +65,73 @@ def create_project(
         # Cập nhật ngược lại gói thầu (gán vào dự án)
         package.project_id = new_project.id
         db.add(package)
+        # # ====================================================
+        # # [MỚI] TỰ ĐỘNG TẠO 6 TASK GỐC (ROOT TASKS)
+        # # ====================================================
+        # default_tasks_config = [
+        #     {
+        #         "name": "01. Hồ sơ Pháp lý & Năng lực",
+        #         "unit_id": 7  # VD: Phòng Pháp chế / Hành chính
+        #     },
+        #     {
+        #         "name": "02. Hồ sơ Nhân sự",
+        #         "unit_id": 4  # VD: Phòng Tổ chức / Nhân sự
+        #     },
+        #     {
+        #         "name": "03. Biện pháp Thi công",
+        #         "unit_id": 9  # VD: Phòng Kỹ thuật (như trong ảnh bạn gửi)
+        #     },
+        #     {
+        #         "name": "04. Hồ sơ Tài chính",
+        #         "unit_id": 5  # VD: Phòng Tài chính - Kế toán
+        #     },
+        #     {
+        #         "name": "05. Hồ sơ Máy móc thiết bị",
+        #         "unit_id": 10  # VD: Phòng Vật tư / Thiết bị
+        #     },
+        #     {
+        #         "name": "06. Hồ sơ Hợp đồng & Thương mại",
+        #         "unit_id": 11  # VD: Phòng Kế hoạch / Kinh doanh
+        #     }
+        # ]
+
+        # # ====================================================
+        # # VÒNG LẶP TẠO TASK & PHÂN QUYỀN TỰ ĐỘNG
+        # # ====================================================
+        # for config in default_tasks_config:
+        #     # 1. Tạo Task (Thư mục gốc)
+        #     root_task = BiddingTask(
+        #         bidding_project_id=new_project.id,
+        #         task_name=config["name"],
+        #         parent_task_id=None,
+        #         status=TaskStatus.OPEN,
+        #         is_milestone=True,
+                
+        #         # Gán người phụ trách chính tạm thời là người tạo dự án
+        #         assignee_id=current_user.user_id, 
+        #         source_type="SYSTEM_AUTO"
+        #     )
+        #     db.add(root_task)
+        #     db.flush() # Lấy ID của task vừa tạo
+
+        #     # 2. Tạo Assignment (Phân về phòng ban tương ứng)
+        #     # Chỉ tạo nếu unit_id hợp lệ (khác None/0)
+        #     if config["unit_id"]:
+        #         auto_assign = TaskAssignment(
+        #             task_id=root_task.id,
+                    
+        #             # QUAN TRỌNG: Lấy ID phòng từ config map vào đây
+        #             assigned_unit_id=config["unit_id"], 
+                    
+        #             assigned_user_id=None, # Để NULL để cả phòng đều thấy
+        #             assignment_type="MAIN",
+        #             required_role=None,    # Không yêu cầu role cụ thể, ai trong phòng cũng xem đc
+        #             required_min_security=None,
+        #             is_accepted=True       # Tự động chấp nhận
+        #         )
+        #         db.add(auto_assign)
+
+        # # ====================================================
         
         db.commit()
         db.refresh(new_project)
@@ -80,27 +147,51 @@ def read_projects(
     limit: int = 100,
     q: Optional[str] = Query(None, description="Tìm kiếm theo tên dự án"),
     status: Optional[str] = Query(None, description="Lọc theo trạng thái"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    
+    # 1. Lấy thông tin người đang đăng nhập
+    current_user: User = Depends(get_current_user) 
 ):
     """
-    Lấy danh sách dự án thầu. 
-    Hỗ trợ phân trang (skip, limit), tìm kiếm (q) và lọc (status).
+    Lấy danh sách dự án thầu.
+    - Admin: Xem hết.
+    - User thường: Chỉ xem dự án mình là Host hoặc Leader.
     """
     projects = cruds.get_projects(
         db=db, 
         skip=skip, 
         limit=limit, 
         search_keyword=q,
-        status_filter=status
+        status_filter=status,
+        
+        # 2. Truyền user xuống CRUD để lọc
+        user=current_user 
     )
     return projects
 
+# --- API: LẤY CHI TIẾT 1 DỰ ÁN (Cũng nên chặn xem chi tiết nếu không phải người của dự án) ---
 # --- API: LẤY CHI TIẾT 1 DỰ ÁN ---
 @router.get("/{project_id}", response_model=schemas.BiddingProjectResponse)
-def read_project(project_id: int, db: Session = Depends(get_db)):
+def read_project(
+    project_id: int, 
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # 1. Lấy dữ liệu dự án
     db_project = cruds.get_project(db, project_id=project_id)
     if db_project is None:
         raise HTTPException(status_code=404, detail="Bidding Project not found")
+    
+    # 2. --- CHECK QUYỀN MỞ RỘNG ---
+    # Sử dụng hàm check logic mới (bao gồm cả việc check task)
+    has_access = cruds.check_user_project_access(db, project_id, current_user)
+    
+    if not has_access:
+        raise HTTPException(
+            status_code=403, 
+            detail="Bạn không có quyền truy cập dự án này (Không phải thành viên dự án hoặc được giao việc)."
+        )
+            
     return db_project
 
 # --- API: CẬP NHẬT DỰ ÁN ---
