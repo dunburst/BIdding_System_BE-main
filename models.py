@@ -274,8 +274,26 @@ class BiddingPackage(Base):
     # 2. Quan hệ 1-n với File đính kèm
     files: Mapped[List["BiddingPackageFile"]] = relationship(back_populates="package", cascade="all, delete-orphan")
     
-    # 3. Quan hệ 1-n với Nhà thầu tham gia (TenderContractor)
-    contractors: Mapped[List["TenderContractor"]] = relationship(back_populates="package", cascade="all, delete-orphan")
+    
+    # 1. Quan hệ 1-1 với Yêu cầu Tài chính & Thủ tục
+    # uselist=False giúp SQLAlchemy hiểu đây là quan hệ 1-1
+    financial_req: Mapped[Optional["BiddingReqFinancialAdmin"]] = relationship(
+        back_populates="package", 
+        uselist=False, 
+        cascade="all, delete-orphan"
+    )
+
+    # 2. Quan hệ 1-N với Yêu cầu Nhân sự
+    personnel_reqs: Mapped[List["BiddingReqPersonnel"]] = relationship(
+        back_populates="package", 
+        cascade="all, delete-orphan"
+    )
+
+    # 3. Quan hệ 1-N với Yêu cầu Thiết bị
+    equipment_reqs: Mapped[List["BiddingReqEquipment"]] = relationship(
+        back_populates="package", 
+        cascade="all, delete-orphan"
+    )
     
 class BiddingPackageFile(Base): # [cite: 183]
     __tablename__ = "bidding_package_files"
@@ -361,20 +379,6 @@ class BidSubmitLog(Base):
     
     # --- BỔ SUNG RELATIONSHIP ---
     project: Mapped["BiddingProject"] = relationship(back_populates="submit_logs")
-class TenderContractor(Base):
-    __tablename__ = "tender_contractor" # Bảng này nằm góc dưới bên phải
-    
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    hsmt_id: Mapped[int] = mapped_column(Integer, ForeignKey("bidding_packages.hsmt_id"))
-    
-    contractor_name: Mapped[Optional[str]] = mapped_column(Unicode(255))
-    financial_requirements: Mapped[Optional[str]] = mapped_column(NVARCHAR(None)) # Yêu cầu tài chính
-    technical_requirements: Mapped[Optional[str]] = mapped_column(NVARCHAR(None)) # Yêu cầu kỹ thuật
-    experience_requirements: Mapped[Optional[str]] = mapped_column(NVARCHAR(None)) # Yêu cầu kinh nghiệm
-    ai_score: Mapped[Optional[Float]] = mapped_column(Float, nullable=True) # Điểm đánh giá AI
-    status: Mapped[Optional[str]] = mapped_column(String(50))
-
-    package: Mapped["BiddingPackage"] = relationship(back_populates="contractors")
     
 # ==========================================
 # QUẢN LÝ CÔNG VIỆC & PHÂN QUYỀN (TASK & ASSIGNMENT)
@@ -550,3 +554,87 @@ class AbacPolicy(Base):
     
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime,server_default=func.now(), onupdate=func.now())
+    
+# ==========================================
+# 5. PHÂN HỆ YÊU CẦU GÓI THẦU (REQUIREMENTS)
+# ==========================================
+
+class BiddingReqFinancialAdmin(Base):
+    """
+    Bảng Yêu cầu Tài chính & Thủ tục (Quan hệ 1-1 với BiddingPackage)
+    Lưu dữ liệu Mục 2 & Mục 3 trong báo cáo.
+    """
+    __tablename__ = "bidding_req_financial_admin"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    
+    # Quan hệ 1-1: unique=True để đảm bảo 1 gói thầu chỉ có 1 bản ghi tài chính
+    hsmt_id: Mapped[int] = mapped_column(ForeignKey("bidding_packages.hsmt_id"), unique=True, nullable=False)
+
+    # === MỤC 2: THỦ TỤC & BẢO ĐẢM ===
+    bid_validity_days: Mapped[Optional[int]] = mapped_column(Integer)                # Hiệu lực HSDT (ngày)
+    bid_security_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))    # Bảo đảm dự thầu (VND)
+    bid_security_duration: Mapped[Optional[int]] = mapped_column(Integer)            # Thời gian bảo đảm (ngày)
+    submission_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))        # Chi phí nộp (VND)
+    contract_duration_text: Mapped[Optional[str]] = mapped_column(Unicode(255))      # Thời gian thực hiện HĐ (Text gốc)
+
+    # === MỤC 3: TÀI CHÍNH ===
+    req_revenue_avg: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))       # Doanh thu bình quân
+    req_working_capital: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))   # Nguồn lực tài chính
+    req_net_worth_policy: Mapped[Optional[str]] = mapped_column(Unicode(500))        # Yêu cầu giá trị tài sản ròng
+
+    # === MỤC 3: HỢP ĐỒNG TƯƠNG TỰ ===
+    req_similar_contract_qty: Mapped[Optional[int]] = mapped_column(Integer)         # Số lượng HĐ tương tự
+    req_similar_contract_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2)) # Giá trị tối thiểu 1 HĐ
+    req_similar_contract_desc: Mapped[Optional[str]] = mapped_column(UnicodeText)    # Mô tả tính chất tương tự
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationship (Back reference)
+    package: Mapped["BiddingPackage"] = relationship(back_populates="financial_req")
+
+
+class BiddingReqPersonnel(Base):
+    """
+    Bảng Yêu cầu Nhân sự (Quan hệ 1-N với BiddingPackage)
+    Lưu dữ liệu Mục 4.
+    """
+    __tablename__ = "bidding_req_personnel"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hsmt_id: Mapped[int] = mapped_column(ForeignKey("bidding_packages.hsmt_id"), nullable=False)
+
+    stt: Mapped[Optional[int]] = mapped_column(Integer)                          # Số thứ tự
+    position_name: Mapped[Optional[str]] = mapped_column(Unicode(255))           # Vị trí
+    quantity: Mapped[Optional[int]] = mapped_column(Integer)                     # Số lượng
+
+    # Các tiêu chí chi tiết để AI so sánh
+    min_exp_years: Mapped[Optional[int]] = mapped_column(Integer)                # Số năm kinh nghiệm tối thiểu
+    qualification_req: Mapped[Optional[str]] = mapped_column(UnicodeText)        # Yêu cầu bằng cấp/chứng chỉ
+    similar_project_exp: Mapped[Optional[int]] = mapped_column(Integer)          # Số công trình tương tự đã làm
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationship
+    package: Mapped["BiddingPackage"] = relationship(back_populates="personnel_reqs")
+
+
+class BiddingReqEquipment(Base):
+    """
+    Bảng Yêu cầu Thiết bị (Quan hệ 1-N với BiddingPackage)
+    Lưu dữ liệu Mục 5.
+    """
+    __tablename__ = "bidding_req_equipment"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hsmt_id: Mapped[int] = mapped_column(ForeignKey("bidding_packages.hsmt_id"), nullable=False)
+
+    stt: Mapped[Optional[int]] = mapped_column(Integer)
+    equipment_name: Mapped[Optional[str]] = mapped_column(Unicode(255))          # Tên thiết bị
+    quantity: Mapped[Optional[int]] = mapped_column(Integer)                     # Số lượng
+    specifications: Mapped[Optional[str]] = mapped_column(UnicodeText)           # Thông số kỹ thuật (Max)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationship
+    package: Mapped["BiddingPackage"] = relationship(back_populates="equipment_reqs")
