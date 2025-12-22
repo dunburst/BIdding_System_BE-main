@@ -1,0 +1,60 @@
+from pydantic import BaseModel, ConfigDict
+from typing import Optional, List
+from datetime import datetime
+from decimal import Decimal
+
+# --- 1. SCHEMAS CHO YÊU CẦU TÀI CHÍNH (1-1) ---
+class FinancialReqBase(BaseModel):
+    bid_validity_days: Optional[int] = None
+    bid_security_value: Optional[Decimal] = None
+    bid_security_duration: Optional[int] = None
+    submission_fee: Optional[Decimal] = None
+    contract_duration_text: Optional[str] = None
+    req_revenue_avg: Optional[Decimal] = None
+    req_working_capital: Optional[Decimal] = None
+    req_net_worth_policy: Optional[str] = None
+    req_similar_contract_qty: Optional[int] = None
+    req_similar_contract_value: Optional[Decimal] = None
+    req_similar_contract_desc: Optional[str] = None
+
+class FinancialReqRead(FinancialReqBase):
+    id: int
+    hsmt_id: int
+    created_at: datetime
+    
+    model_config = ConfigDict(from_attributes=True)
+
+# --- 2. SCHEMAS CHO YÊU CẦU NHÂN SỰ (1-N) ---
+class PersonnelReqBase(BaseModel):
+    stt: Optional[int] = None
+    position_name: Optional[str] = None
+    quantity: Optional[int] = None
+    min_exp_years: Optional[int] = None
+    qualification_req: Optional[str] = None
+    similar_project_exp: Optional[int] = None
+
+class PersonnelReqRead(PersonnelReqBase):
+    id: int
+    hsmt_id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+# --- 3. SCHEMAS CHO YÊU CẦU THIẾT BỊ (1-N) ---
+class EquipmentReqBase(BaseModel):
+    stt: Optional[int] = None
+    equipment_name: Optional[str] = None
+    quantity: Optional[int] = None
+    specifications: Optional[str] = None
+
+class EquipmentReqRead(EquipmentReqBase):
+    id: int
+    hsmt_id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+    
+class FullPackageAnalysis(BaseModel):
+    financial: Optional[FinancialReqRead]
+    personnel: List[PersonnelReqRead]
+    equipment: List[EquipmentReqRead]
