@@ -170,26 +170,27 @@ def read_projects(
     return projects
 
 # --- API: LẤY CHI TIẾT 1 DỰ ÁN (Cũng nên chặn xem chi tiết nếu không phải người của dự án) ---
+# --- API: LẤY CHI TIẾT 1 DỰ ÁN ---
 @router.get("/{project_id}", response_model=schemas.BiddingProjectResponse)
 def read_project(
     project_id: int, 
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # 1. Lấy dữ liệu dự án
     db_project = cruds.get_project(db, project_id=project_id)
     if db_project is None:
         raise HTTPException(status_code=404, detail="Bidding Project not found")
     
-    # --- THÊM CHECK QUYỀN Ở ĐÂY ---
-    if current_user.role != UserRole.ADMIN:
-        # Nếu không phải Admin, Host, hoặc Leader -> Chặn
-        if (db_project.host_id != current_user.user_id and 
-            db_project.bid_team_leader_id != current_user.user_id):
-            
-            raise HTTPException(
-                status_code=403, 
-                detail="Bạn không có quyền truy cập dự án này (Không phải Chủ trì hoặc Trưởng nhóm)."
-            )
+    # 2. --- CHECK QUYỀN MỞ RỘNG ---
+    # Sử dụng hàm check logic mới (bao gồm cả việc check task)
+    has_access = cruds.check_user_project_access(db, project_id, current_user)
+    
+    if not has_access:
+        raise HTTPException(
+            status_code=403, 
+            detail="Bạn không có quyền truy cập dự án này (Không phải thành viên dự án hoặc được giao việc)."
+        )
             
     return db_project
 

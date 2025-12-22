@@ -71,41 +71,45 @@ def create_task(db: Session, task_in: TaskCreate, current_user: User):
     db.refresh(new_task)
     return new_task
 
+FULL_ACCESS_ROLES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.BID_MANAGER]
 # --- READ (GET LIST WITH SECURITY) ---
 def get_project_tasks_tree(db: Session, project_id: int, user: User):
     """
-    Lấy danh sách task của dự án theo dạng cây.
-    NHƯNG: Chỉ trả về các nhánh mà User có quyền nhìn thấy (thuộc phòng ban).
+    Lấy danh sách task dạng cây.
+    - Manager/Bid_Manager: Xem hết.
+    - Employee: Chỉ xem task mình được giao (trực tiếp hoặc qua phòng ban).
     """
+    
+    # 1. Base Query: Lấy các Root Task (Task cha cao nhất) và nạp sẵn con
     query = select(BiddingTask).where(
         BiddingTask.bidding_project_id == project_id,
-        # Chỉ lấy task cha cao nhất (Root tasks), các task con sẽ được load qua relationship
         BiddingTask.parent_task_id == None
     ).options(
-        # Eager load để lấy task con và assignments
         joinedload(BiddingTask.assignments),
         joinedload(BiddingTask.sub_tasks).joinedload(BiddingTask.assignments)
     )
 
-    # NẾU KHÔNG PHẢI ADMIN -> ÁP DỤNG BỘ LỌC PHÒNG BAN
-    if user.role != UserRole.ADMIN:
-        # Logic lọc phức tạp:
-        # Ta cần join với bảng TaskAssignment để lọc.
-        # Tuy nhiên, nếu lọc thẳng ở Root Task, ta có thể mất các Sub-task mà user được giao 
-        # (nếu user không được giao task cha nhưng được giao task con).
+    # 2. Kiểm tra quyền hạn
+    # Nếu user KHÔNG thuộc nhóm quản lý -> Áp dụng bộ lọc
+    if user.role not in FULL_ACCESS_ROLES:
         
-        # Cách tiếp cận đơn giản và hiệu quả nhất cho API Tree:
-        # 1. Lấy toàn bộ cấu trúc (hoặc filter nhẹ).
-        # 2. Filter đệ quy bằng Python sau khi query (để xử lý việc ẩn hiện nút cha/con).
+        # Sử dụng OUTER JOIN để không bị mất task nếu bảng assignment rỗng
+        query = query.outerjoin(TaskAssignment, BiddingTask.assignments)
         
-        # Ở đây tôi demo cách filter bằng SQL Join cho các Task mà User TRỰC TIẾP liên quan
-        query = query.join(TaskAssignment, BiddingTask.assignments).where(
+        query = query.where(
             or_(
-                TaskAssignment.assigned_unit_id == user.org_unit_id,
-                TaskAssignment.assigned_user_id == user.user_id
+                # 1. Giao đích danh trên bảng Task (Đây là cái bạn đang thiếu)
+                BiddingTask.assignee_id == user.user_id,
+                
+                # 2. Giao đích danh qua bảng phụ Assignment
+                TaskAssignment.assigned_user_id == user.user_id,
+                
+                # 3. Giao cho phòng ban của user
+                TaskAssignment.assigned_unit_id == user.org_unit_id
             )
-        )
-    
+        ).distinct() # Quan trọng: Loại bỏ trùng lặp do phép Join
+
+    # 3. Thực thi query
     result = db.execute(query).unique().scalars().all()
     return result
 
