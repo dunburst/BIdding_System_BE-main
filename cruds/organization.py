@@ -52,10 +52,18 @@ def get_organization_tree(db: Session):
 
 # 7. Lấy danh sách thành viên thuộc đơn vị (Phân trang)
 def get_members_by_unit(db: Session, unit_id: int, skip: int = 0, limit: int = 100):
-    return db.query(User)\
-             .filter(User.org_unit_id == unit_id)\
-             .filter(User.status == True)\
-             .order_by(User.user_id)\
+    # Danh sách các role cần lấy
+    target_roles = [
+        models.UserRole.SPECIALIST, 
+        models.UserRole.ENGINEER, 
+        models.UserRole.JKAN
+    ]
+
+    return db.query(models.User)\
+             .filter(models.User.org_unit_id == unit_id)\
+             .filter(models.User.status == True)\
+             .filter(models.User.role.in_(target_roles)) \
+             .order_by(models.User.user_id) \
              .offset(skip).limit(limit).all()
 
 # [NÂNG CAO - OPTIONAL] 
