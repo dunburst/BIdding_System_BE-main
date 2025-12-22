@@ -35,3 +35,13 @@ class OrganizationalUnitResponse(OrganizationalUnitBase):
 # Dùng để hiển thị cây sơ đồ tổ chức
 class OrganizationalUnitTreeResponse(OrganizationalUnitResponse):
     children: List["OrganizationalUnitTreeResponse"] = [] # Tự tham chiếu chính nó
+    
+class UserOrgResponse(BaseModel):
+    user_id: int
+    full_name: str
+    email: str
+    job_title: Optional[str] = None
+    role: str  # Trả về UserRole (enum) dạng string
+    
+    class Config:
+        from_attributes = True
