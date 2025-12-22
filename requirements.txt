@@ -8,3 +8,11 @@ google-api-python-client==2.111.0
 google-auth-httplib2==0.2.0
 google-auth-oauthlib==1.2.0
 python-multipart==0.0.6
+
+
+# Thêm vào requirements.txt
+llama-parse
+langchain-google-genai
+langchain-core
+nest_asyncio
+python-dotenv

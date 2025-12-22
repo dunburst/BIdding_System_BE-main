@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi import status as http_status
 from sqlalchemy.orm import Session
 from typing import List, Optional
-
+from services.ai_service import analyze_bidding_package
 from database import get_db
 from models import PackageStatus, User
 from utils.security import get_current_user
@@ -280,3 +280,7 @@ def make_bid_decision(
         message=f"Đã cập nhật quyết định: {request.decision.value}",
         data=package
     )
+
+@router.post("/{id}/analyze-ai")
+async def run_ai_analysis(id: int, db: Session = Depends(get_db)):
+    return await analyze_bidding_package(id, db)
