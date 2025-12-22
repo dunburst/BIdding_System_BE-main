@@ -5,7 +5,8 @@ from typing import List
 from database import get_db # Hàm lấy DB session của bạn
 from schemas.task import TaskCreate, TaskResponse, TaskUpdate, TaskStatus
 import cruds.task as task_crud
-from models import User
+from models import User , UserRole
+from utils.abac import check_permission, AbacAction
 from utils.security import get_current_user
 
 
@@ -83,3 +84,50 @@ def delete_existing_task(
     Lưu ý: Nếu Task có Task con (sub-tasks), chúng cũng sẽ bị xóa theo (nếu DB config cascade).
     """
     return task_crud.delete_task(db, task_id, current_user)
+
+# --- API: Xem công việc của chính mình ---
+@router.get("/user/me", response_model=List[TaskResponse])
+def get_my_tasks(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    User xem danh sách task được giao cho chính mình.
+    """
+    is_allowed = check_permission(
+        db=db,
+        user=current_user,
+        resource="bidding_task", 
+        action=AbacAction.LIST # Hoặc "LIST" nếu bạn chưa định nghĩa Enum
+    )
+
+    if not is_allowed:
+        # Nếu DB không có policy nào khớp -> Trả về False -> Chặn
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Bạn không có quyền truy cập danh sách công việc."
+        )
+    
+    # -----------------------------------------------
+    return task_crud.get_all_tasks_by_user_id(db, target_user_id=current_user.user_id)
+
+# --- API: Quản lý xem công việc nhân viên (Optional) ---
+@router.get("/user/{target_user_id}", response_model=List[TaskResponse])
+def get_user_tasks(
+    target_user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Dành cho Quản lý check việc của nhân viên cụ thể.
+    """
+    # Check quyền: Chỉ Manager hoặc Admin mới được soi việc người khác
+    allowed_roles = [UserRole.ADMIN, UserRole.MANAGER, UserRole.BID_MANAGER]
+    
+    if current_user.user_id != target_user_id and current_user.role not in allowed_roles:
+         raise HTTPException(
+             status_code=status.HTTP_403_FORBIDDEN, 
+             detail="Bạn không có quyền xem danh sách công việc của người khác."
+         )
+
+    return task_crud.get_all_tasks_by_user_id(db, target_user_id=target_user_id)

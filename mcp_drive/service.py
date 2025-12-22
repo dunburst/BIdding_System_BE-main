@@ -181,12 +181,18 @@ class GoogleDriveService:
     def search_files(self, query_name: str) -> List[dict]:
         if not self.service: return []
         try:
-            q = f"name contains '{query_name}' and mimeType != 'application/vnd.google-apps.folder' and trashed=false"
+            # --- SỬA Ở ĐÂY ---
+            # Code cũ: mimeType != 'application/vnd.google-apps.folder' (Chặn folder)
+            # Code mới: Xóa đoạn chặn đó đi để tìm tất cả.
+            q = f"name contains '{query_name}' and trashed=false"
+            
             results = self.service.files().list(
-                q=q, pageSize=20,
-                fields="files(id, name, webViewLink, createdTime, parents, properties)", 
-                orderBy="createdTime desc"
+                q=q, pageSize=50, # Tăng số lượng kết quả lên chút
+                # Nhớ lấy thêm trường 'mimeType' để phân biệt đâu là File, đâu là Folder
+                fields="files(id, name, mimeType, webViewLink, createdTime, parents, properties)", 
+                orderBy="folder, createdTime desc" # Ưu tiên hiện Folder trước
             ).execute()
+            
             return results.get('files', [])
         except Exception as e:
             print(f"❌ Lỗi search: {e}")

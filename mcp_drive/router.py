@@ -143,12 +143,60 @@ async def update_drive_file(
             "content_updated": file is not None
         }
     }
-# Tìm kiếm tài liệu kho
+# Tìm kiếm tài liệu kho (Cả File và Folder)
 @router.get("/search-repo")
 def search_repository(query: str, current_user: User = Depends(get_current_user)):
-    results = drive_service.search_files(query)
-    return {"count": len(results), "data": results}
+    # 1. Lấy dữ liệu phẳng từ Google Drive (Service giữ nguyên)
+    # Đảm bảo service.py đã lấy trường 'parents' và 'mimeType'
+    flat_results = drive_service.search_files(query)
+    
+    # 2. Chuẩn bị cấu trúc dữ liệu
+    # Map: { file_id: item_data } để tra cứu O(1)
+    item_map = {}
+    
+    # Bước 2a: Khởi tạo Map và chuẩn hóa dữ liệu
+    for item in flat_results:
+        # Xác định loại icon
+        is_folder = 'application/vnd.google-apps.folder' in item.get('mimeType', '')
+        
+        # Tạo object sạch sẽ
+        clean_item = {
+            "id": item['id'],
+            "name": item['name'],
+            "type": "FOLDER" if is_folder else "FILE",
+            "mime_type": item.get('mimeType'),
+            "link": item['webViewLink'],
+            "created_at": item.get('createdTime'),
+            "parents": item.get('parents', []), # List các ID cha
+            "children": [] # <--- QUAN TRỌNG: Nơi chứa các con
+        }
+        
+        item_map[item['id']] = clean_item
 
+    # 3. Thuật toán Xây dựng cây (Build Tree)
+    tree_roots = []
+    
+    for item_id, item in item_map.items():
+        # Lấy ID cha đầu tiên (Google Drive cho phép nhiều cha, nhưng thường chỉ quan tâm cái đầu)
+        parent_id = item['parents'][0] if item['parents'] else None
+        
+        # LOGIC QUAN TRỌNG NHẤT:
+        # Nếu cha của item này CŨNG ĐƯỢC TÌM THẤY trong đợt search này
+        # -> Thì add item này vào làm con của cha nó
+        if parent_id and parent_id in item_map:
+            item_map[parent_id]['children'].append(item)
+        else:
+            # Nếu cha nó không nằm trong kết quả tìm kiếm (hoặc không có cha)
+            # -> Nó là cấp cao nhất trong hiển thị hiện tại
+            tree_roots.append(item)
+
+    # 4. Trả về
+    return {
+        "query": query,
+        "total_matches": len(flat_results), # Tổng số file tìm thấy
+        "tree_roots_count": len(tree_roots), # Số lượng node gốc
+        "data": tree_roots # Dữ liệu dạng cây
+    }
 # Clone file thủ công (nếu cần)
 @router.post("/clone-file")
 def clone_file_to_project(
