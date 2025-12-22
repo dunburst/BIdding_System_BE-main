@@ -1,39 +1,76 @@
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import select, or_, and_
+from sqlalchemy import select, or_, and_, case
 from fastapi import HTTPException, status
 from models import BiddingTask, TaskAssignment, User, UserRole, TaskStatus
 from schemas.task import TaskCreate, TaskUpdate
+from utils.abac import check_permission, AbacAction
 
 # --- HÀM KIỂM TRA QUYỀN TRUY CẬP (Helper) ---
 def check_access_permission(db: Session, task_id: int, user: User) -> bool:
     """
-    Kiểm tra xem User có quyền thao tác với Task này không.
-    Logic: User phải thuộc Unit được assign vào task, hoặc là đích danh User đó.
-    Admin/Manager dự án có thể được bypass (tùy nghiệp vụ).
+    Kiểm tra quyền truy cập chi tiết Task.
+    - ADMIN, MANAGER, BID_MANAGER: Xem được tất cả (Return True ngay).
+    - Nhân viên khác: Chỉ xem được nếu mình là người được giao (Assignee).
     """
-    if user.role == UserRole.ADMIN:
+    
+    # 1. Nhóm Role Quản lý -> Cho phép luôn
+    VIP_ROLES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.BID_MANAGER]
+    if user.role in VIP_ROLES:
         return True
 
-    # Query kiểm tra tồn tại assignment khớp với user
-    statement = select(TaskAssignment).where(
-        TaskAssignment.task_id == task_id,
+    # 2. Nhóm Nhân viên -> Phải check DB xem có được giao việc không
+    # Logic: User ID phải trùng với assignee_id của Task HOẶC nằm trong bảng assignments
+    query = select(BiddingTask.id).outerjoin(TaskAssignment, BiddingTask.assignments).where(
+        BiddingTask.id == task_id,
         or_(
-            TaskAssignment.assigned_user_id == user.user_id,
-            TaskAssignment.assigned_unit_id == user.org_unit_id
+            BiddingTask.assignee_id == user.user_id,          # Được gán chính
+            TaskAssignment.assigned_user_id == user.user_id   # Được gán phụ
         )
     )
-    assignment = db.execute(statement).scalar_one_or_none()
-    return assignment is not None
+    
+    # Chỉ cần tìm thấy 1 dòng kết quả là có quyền
+    result = db.execute(query).first()
+    return result is not None
 
 # --- CREATE ---
 def create_task(db: Session, task_in: TaskCreate, current_user: User):
-    # 1. Tạo Task
-    real_parent_id = task_in.parent_task_id
-    if real_parent_id == 0:
-        real_parent_id = None
+    # Trường hợp A: Tạo Task Con (Sub-task)
+    if task_in.parent_task_id:
+        parent_task = db.query(BiddingTask).get(task_in.parent_task_id)
+        if not parent_task:
+            raise HTTPException(status_code=404, detail="Task cha không tồn tại")
+
+        # Logic: Để tạo task con, user phải có quyền "Giao việc" (ASSIGN_TASK) trên Task Cha
+        # Ta truyền parent_task vào làm resource cho ABAC
+        is_allowed = check_permission(
+            db=db, 
+            user=current_user, 
+            resource=parent_task, # Check quyền dựa trên context của Task cha
+            action=AbacAction.ASSIGN_TASK 
+        )
+        
+        if not is_allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="Bạn không có quyền giao việc (tạo sub-task) cho đầu mục này."
+            )
+            
+    # Trường hợp B: Tạo Task Cha (Root Task)
+    else:
+        # Check quyền tạo project task thông thường (VD: Chỉ Manager được tạo root)
+        # Resource ở đây là 'project' hoặc check global action
+        is_allowed = check_permission(
+            db=db, 
+            user=current_user, 
+            resource="bidding_task", # Resource name (string)
+            action=AbacAction.CREATE
+        )
+        if not is_allowed:
+             raise HTTPException(status_code=403, detail="Bạn không có quyền khởi tạo đầu việc mới.")
+    # --- BƯỚC 2: TẠO TASK (Logic cũ giữ nguyên)
     new_task = BiddingTask(
         bidding_project_id=task_in.bidding_project_id,
-        parent_task_id=real_parent_id,
+        parent_task_id=task_in.parent_task_id,
         template_id=task_in.template_id,
         task_name=task_in.task_name,
         deadline=task_in.deadline,
@@ -121,8 +158,10 @@ def get_task_detail(db: Session, task_id: int, user: User):
     
     # Kiểm tra quyền
     if not check_access_permission(db, task_id, user):
-        raise HTTPException(status_code=403, detail="Bạn không thuộc phòng ban được giao task này")
-        
+        raise HTTPException(
+            status_code=403, 
+            detail="Bạn không có quyền truy cập vào công việc này (Chỉ dành cho người được phân công hoặc Quản lý)."
+        )
     return task
 
 # --- UPDATE ---
@@ -193,3 +232,35 @@ def delete_task(db: Session, task_id: int, user: User):
     db.delete(task)
     db.commit()
     return {"message": "Task deleted successfully"}
+
+def get_all_tasks_by_user_id(db: Session, target_user_id: int):
+    """
+    Lấy toàn bộ công việc ĐÍCH DANH của một nhân sự (bỏ qua task chung của phòng).
+    Điều kiện:
+    1. assignee_id == user_id (Người thực hiện chính trong bảng Task)
+    2. assigned_user_id == user_id (Được giao cụ thể trong bảng Phân công)
+    """
+    
+    # 1. Join bảng Task với bảng Assignment
+    # Dùng outerjoin vì có thể task chỉ được gán ở assignee_id mà chưa có record trong assignments
+    query = select(BiddingTask).outerjoin(TaskAssignment, BiddingTask.assignments)
+
+    # 2. Điều kiện lọc (Chỉ lấy đích danh)
+    query = query.where(
+        or_(
+            BiddingTask.assignee_id == target_user_id,
+            TaskAssignment.assigned_user_id == target_user_id
+        )
+    ).distinct() # Cần distinct vì 1 user có thể vừa là assignee, vừa có tên trong assignment
+
+    # 3. Nạp sẵn thông tin dự án để hiển thị tên dự án lên UI
+    query = query.options(
+        joinedload(BiddingTask.project), 
+        # joinedload(BiddingTask.assignments) # Uncomment nếu muốn load cả chi tiết phân công
+    )
+
+    # 4. Thực thi query
+    tasks = db.execute(query).unique().scalars().all()
+
+    sorted_tasks = sorted(tasks, key=lambda x: (x.deadline is None, x.deadline))
+    return sorted_tasks

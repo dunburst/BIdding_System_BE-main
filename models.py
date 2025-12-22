@@ -458,6 +458,20 @@ class BiddingTask(Base):
             for assign in self.assignments 
             if assign.assigned_unit_id is not None
         ]
+        
+    @property
+    def assigned_unit_id(self):
+        """
+        Property ảo giúp ABAC lấy được unit_id đã assign cho task này
+        mà không cần query phức tạp trong code ABAC.
+        Nó sẽ lấy unit_id của assignment đầu tiên tìm thấy.
+        """
+        if self.assignments:
+            # Giả sử assignments là list các TaskAssignment
+            for assign in self.assignments:
+                if assign.assigned_unit_id:
+                    return assign.assigned_unit_id
+        return None
 
 # ==========================================
 # 4. PHÂN HỆ BẢO MẬT & ABAC (SECURITY POLICIES)
