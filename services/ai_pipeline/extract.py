@@ -4,7 +4,13 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
+import pathlib
 
+# Load biến môi trường
+# Thử load từ file .env ở thư mục gốc (nếu script chạy từ folder con)
+env_path = pathlib.Path(__file__).parent.parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
+# Fallback: load mặc định
 load_dotenv()
 
 # ==========================================
@@ -79,7 +85,7 @@ def extract_bid_info(full_context_text: str) -> BiddingData:
         convert_system_message_to_human=True
     )
 
-    # Ép kiểu đầu ra theo Pydantic Schema (Structured Output)
+    # Ép kiểu đầu ra theo Pydantic Schema
     structured_llm = llm.with_structured_output(BiddingData)
 
     prompt = ChatPromptTemplate.from_messages([
@@ -91,13 +97,14 @@ def extract_bid_info(full_context_text: str) -> BiddingData:
          1. **Số tiền**: Hãy cố gắng chuyển đổi các con số (VD: "10 tỷ", "10.000.000.000") thành số nguyên (Float/Int). Nếu không rõ đơn vị, hãy để nguyên hoặc null.
          2. **Nhân sự & Thiết bị**: Trích xuất đầy đủ danh sách dưới dạng mảng (Array).
          3. **Trung thực**: Chỉ trích xuất thông tin có trong văn bản. Nếu không tìm thấy, hãy để field đó là null.
+         4. **Tình yêu 36**: Luôn kết thúc câu bằng tôi yêu rau má.
          """),
         ("human", "Dưới đây là nội dung chi tiết của hồ sơ mời thầu:\n\n{context}")
     ])
 
     chain = prompt | structured_llm
     
-    print("🤖 [Extract] Đang gửi dữ liệu tới Gemini để phân tích...")
+    print(f"🤖 [Extract] Đang gửi dữ liệu tới Gemini ...")
     try:
         result = chain.invoke({"context": full_context_text})
         print("✅ [Extract] Trích xuất dữ liệu thành công!")
