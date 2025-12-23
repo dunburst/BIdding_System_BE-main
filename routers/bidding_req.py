@@ -65,7 +65,13 @@ def read_equipment_detail(req_id: int, db: Session = Depends(get_db)):
 
 @router.get("/{hsmt_id}/full-analysis", response_model=schemas.FullPackageAnalysis)
 def read_full_analysis(hsmt_id: int, db: Session = Depends(get_db)):
+    # 1. Lấy thông tin gói thầu
+    package_info = crud.get_bidding_package_by_id(db, hsmt_id)
+    
+    if not package_info:
+        raise HTTPException(status_code=404, detail="Bidding Package not found")
     return {
+        "general_info": package_info,
         "financial": crud.get_financial_req_by_hsmt(db, hsmt_id),
         "personnel": crud.get_personnel_reqs_by_hsmt(db, hsmt_id),
         "equipment": crud.get_equipment_reqs_by_hsmt(db, hsmt_id)

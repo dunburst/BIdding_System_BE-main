@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import select
-from models import BiddingReqFinancialAdmin, BiddingReqPersonnel, BiddingReqEquipment
+from models import BiddingPackage, BiddingReqFinancialAdmin, BiddingReqPersonnel, BiddingReqEquipment
 from typing import List, Optional
 
 # --- 1. FINANCIAL (1-1) ---
@@ -29,4 +29,8 @@ def get_equipment_reqs_by_hsmt(db: Session, hsmt_id: int) -> List[BiddingReqEqui
 def get_equipment_req_detail(db: Session, req_id: int) -> Optional[BiddingReqEquipment]:
     """Xem chi tiết 1 thiết bị cụ thể"""
     stmt = select(BiddingReqEquipment).where(BiddingReqEquipment.id == req_id)
+    return db.scalar(stmt)
+def get_bidding_package_by_id(db: Session, hsmt_id: int) -> Optional[BiddingPackage]:
+    """Lấy thông tin chung của gói thầu từ bảng BiddingPackage"""
+    stmt = select(BiddingPackage).where(BiddingPackage.hsmt_id == hsmt_id)
     return db.scalar(stmt)

@@ -53,7 +53,20 @@ class EquipmentReqRead(EquipmentReqBase):
 
     model_config = ConfigDict(from_attributes=True)
     
+class PackageGeneralInfo(BaseModel):
+    hsmt_id: int
+    ma_tbmt: str
+    ten_goi_thau: Optional[str] = None
+    chu_dau_tu: Optional[str] = None
+    chi_tiet_nguon_von: Optional[str] = None
+    loai_hop_dong: Optional[str] = None
+    dia_diem_thuc_hien_goi_thau: Optional[str] = None
+    thoi_gian_thuc_hien_goi_thau: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+    
 class FullPackageAnalysis(BaseModel):
+    general_info: Optional[PackageGeneralInfo]
     financial: Optional[FinancialReqRead]
     personnel: List[PersonnelReqRead]
     equipment: List[EquipmentReqRead]
