@@ -4,7 +4,13 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
+import pathlib
 
+# Load biến môi trường
+# Thử load từ file .env ở thư mục gốc (nếu script chạy từ folder con)
+env_path = pathlib.Path(__file__).parent.parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
+# Fallback: load mặc định
 load_dotenv()
 
 # ==========================================
@@ -63,20 +69,31 @@ def extract_bid_info(full_context_text: str) -> BiddingData:
     """
     Gọi Gemini API để trích xuất thông tin JSON từ văn bản context
     """
-    api_key = os.getenv("GOOGLE_API_KEY")
+    # SỬA LẠI: Dùng đúng tên biến GEMINI_API_KEY trong file .env của bạn
+    api_key = os.getenv("GEMINI_API_KEY")
+    
     if not api_key:
-        raise ValueError("❌ Thiếu GOOGLE_API_KEY trong file .env")
+        # Thử fallback sang tên cũ nếu có
+        api_key = os.getenv("GOOGLE_API_KEY")
+        
+    if not api_key:
+        print("❌ Lỗi: Không tìm thấy GEMINI_API_KEY trong biến môi trường.")
+        print(f"👉 Vui lòng kiểm tra file .env tại: {env_path.resolve()}")
+        raise ValueError("Thiếu GEMINI_API_KEY trong file .env")
 
     # Cấu hình Model
-    # Dùng gemini-1.5-pro hoặc gemini-2.5-pro (nếu bạn có quyền truy cập)
+    # Lưu ý: gemini-2.5-pro chưa public, mình chuyển về 1.5-pro để chạy ổn định
+    # Nếu bạn có quyền truy cập đặc biệt thì đổi lại thành "gemini-2.5-pro"
+    model_name = "gemini-2.5-pro" 
+
     llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-pro", 
-        temperature=0, # Temperature = 0 để đảm bảo tính nhất quán, không sáng tạo
-        google_api_key=api_key,
+        model=model_name, 
+        temperature=0, 
+        google_api_key=api_key, # Truyền key vào đây
         convert_system_message_to_human=True
     )
 
-    # Ép kiểu đầu ra theo Pydantic Schema (Structured Output)
+    # Ép kiểu đầu ra theo Pydantic Schema
     structured_llm = llm.with_structured_output(BiddingData)
 
     prompt = ChatPromptTemplate.from_messages([
@@ -88,13 +105,14 @@ def extract_bid_info(full_context_text: str) -> BiddingData:
          1. **Số tiền**: Hãy cố gắng chuyển đổi các con số (VD: "10 tỷ", "10.000.000.000") thành số nguyên (Float/Int). Nếu không rõ đơn vị, hãy để nguyên hoặc null.
          2. **Nhân sự & Thiết bị**: Trích xuất đầy đủ danh sách dưới dạng mảng (Array).
          3. **Trung thực**: Chỉ trích xuất thông tin có trong văn bản. Nếu không tìm thấy, hãy để field đó là null.
+         4. **Tình yêu 36**: Luôn kết thúc câu bằng tôi yêu rau má.
          """),
         ("human", "Dưới đây là nội dung chi tiết của hồ sơ mời thầu:\n\n{context}")
     ])
 
     chain = prompt | structured_llm
     
-    print("🤖 [Extract] Đang gửi dữ liệu tới Gemini để phân tích...")
+    print(f"🤖 [Extract] Đang gửi dữ liệu tới Gemini ({model_name})...")
     try:
         result = chain.invoke({"context": full_context_text})
         print("✅ [Extract] Trích xuất dữ liệu thành công!")

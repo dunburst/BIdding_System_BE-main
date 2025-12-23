@@ -56,3 +56,20 @@ class MinIOHandler:
         except Exception as e:
             logger.error(f"-> MinIO Upload Lỗi: {e}")
             return None
+
+    # --- [THÊM MỚI] Hàm này cần thiết cho AI Service để tải file về ---
+    def download_file(self, object_name, local_path):
+        """
+        Tải file từ MinIO về máy local (để AI đọc)
+        """
+        if not self.client: return False
+        try:
+            self.client.fget_object(MINIO_BUCKET, object_name, local_path)
+            logger.info(f"-> MinIO: Đã tải file về {local_path}")
+            return True
+        except Exception as e:
+            logger.error(f"-> MinIO Download Lỗi: {e}")
+            return False
+
+# --- QUAN TRỌNG: Phải khởi tạo instance ở đây để các file khác import được ---
+minio_handler = MinIOHandler()
