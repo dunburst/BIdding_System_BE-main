@@ -581,7 +581,6 @@ class BiddingReqFinancialAdmin(Base):
     # === MỤC 3: TÀI CHÍNH ===
     req_revenue_avg: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))       # Doanh thu bình quân
     req_working_capital: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))   # Nguồn lực tài chính
-    req_net_worth_policy: Mapped[Optional[str]] = mapped_column(Unicode(500))        # Yêu cầu giá trị tài sản ròng
 
     # === MỤC 3: HỢP ĐỒNG TƯƠNG TỰ ===
     req_similar_contract_qty: Mapped[Optional[int]] = mapped_column(Integer)         # Số lượng HĐ tương tự

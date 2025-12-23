@@ -12,7 +12,6 @@ class FinancialReqBase(BaseModel):
     contract_duration_text: Optional[str] = None
     req_revenue_avg: Optional[Decimal] = None
     req_working_capital: Optional[Decimal] = None
-    req_net_worth_policy: Optional[str] = None
     req_similar_contract_qty: Optional[int] = None
     req_similar_contract_value: Optional[Decimal] = None
     req_similar_contract_desc: Optional[str] = None

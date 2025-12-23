@@ -71,9 +71,9 @@ def extract_bid_info(full_context_text: str) -> BiddingData:
         raise ValueError("❌ Thiếu GEMINI_API_KEY trong file .env")
 
     # Cấu hình Model
-    # Dùng gemini-1.5-pro hoặc gemini-2.5-pro (nếu bạn có quyền truy cập)
+    # Dùng gemini-2.5-flash hoặc gemini-2.5-pro (nếu bạn có quyền truy cập)
     llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-pro", 
+        model="gemini-2.5-flash", 
         temperature=0, # Temperature = 0 để đảm bảo tính nhất quán, không sáng tạo
         google_api_key=api_key,
         convert_system_message_to_human=True
