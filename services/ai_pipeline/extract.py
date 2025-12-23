@@ -1,5 +1,5 @@
 import os
-from typing import List, Optional
+from typing import List, Optional, cast
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -26,12 +26,14 @@ class GeneralInfo(BaseModel):
 class AdminRequirements(BaseModel):
     bid_security_value: Optional[str] = Field(None, description="Giá trị bảo đảm dự thầu (VD: 94.000.000 VND)")
     bid_validity_days: Optional[int] = Field(None, description="Số ngày hiệu lực của HSDT")
+    bid_security_duration: Optional[int] = Field(None, description="Thời gian thực hiện bảo đảm dự thầu (ngày)")
     contract_duration: Optional[str] = Field(None, description="Thời gian thực hiện hợp đồng")
     submission_fee: Optional[float] = Field(None, description="Chi phí nộp hồ sơ (nếu có)")
 
 class FinancialRequirements(BaseModel):
     avg_revenue: Optional[float] = Field(None, description="Doanh thu bình quân hằng năm yêu cầu (Chuyển về số VNĐ)")
     min_contract_value: Optional[float] = Field(None, description="Giá trị hợp đồng tương tự tối thiểu (Chuyển về số VNĐ)")
+    similar_contract_qty: Optional[int] = Field(None, description="Số lượng hợp đồng tương tự yêu cầu")
     similar_contract_desc: Optional[str] = Field(None, description="Mô tả tính chất tương tự của hợp đồng đã làm")
     working_capital: Optional[float] = Field(None, description="Yêu cầu nguồn lực tài chính / vốn lưu động (VNĐ)")
 
@@ -40,6 +42,7 @@ class PersonnelReq(BaseModel):
     quantity: int = Field(1, description="Số lượng nhân sự yêu cầu")
     qualification: Optional[str] = Field(None, description="Yêu cầu bằng cấp, chứng chỉ chuyên môn")
     experience_years: Optional[int] = Field(None, description="Số năm kinh nghiệm tối thiểu yêu cầu")
+    similar_project_exp: Optional[int] = Field(None, description="Số lượng dự án tương tự nhân sự đã từng làm")
 
 class EquipmentReq(BaseModel):
     name: str = Field(..., description="Tên máy móc thiết bị")
@@ -69,27 +72,16 @@ def extract_bid_info(full_context_text: str) -> BiddingData:
     """
     Gọi Gemini API để trích xuất thông tin JSON từ văn bản context
     """
-    # SỬA LẠI: Dùng đúng tên biến GEMINI_API_KEY trong file .env của bạn
     api_key = os.getenv("GEMINI_API_KEY")
-    
     if not api_key:
-        # Thử fallback sang tên cũ nếu có
-        api_key = os.getenv("GOOGLE_API_KEY")
-        
-    if not api_key:
-        print("❌ Lỗi: Không tìm thấy GEMINI_API_KEY trong biến môi trường.")
-        print(f"👉 Vui lòng kiểm tra file .env tại: {env_path.resolve()}")
-        raise ValueError("Thiếu GEMINI_API_KEY trong file .env")
+        raise ValueError("❌ Thiếu GEMINI_API_KEY trong file .env")
 
     # Cấu hình Model
-    # Lưu ý: gemini-2.5-pro chưa public, mình chuyển về 1.5-pro để chạy ổn định
-    # Nếu bạn có quyền truy cập đặc biệt thì đổi lại thành "gemini-2.5-pro"
-    model_name = "gemini-2.5-pro" 
-
+    # Dùng gemini-2.5-flash hoặc gemini-2.5-pro (nếu bạn có quyền truy cập)
     llm = ChatGoogleGenerativeAI(
-        model=model_name, 
-        temperature=0, 
-        google_api_key=api_key, # Truyền key vào đây
+        model="gemini-2.5-flash", 
+        temperature=0, # Temperature = 0 để đảm bảo tính nhất quán, không sáng tạo
+        google_api_key=api_key,
         convert_system_message_to_human=True
     )
 
@@ -112,11 +104,11 @@ def extract_bid_info(full_context_text: str) -> BiddingData:
 
     chain = prompt | structured_llm
     
-    print(f"🤖 [Extract] Đang gửi dữ liệu tới Gemini ({model_name})...")
+    print(f"🤖 [Extract] Đang gửi dữ liệu tới Gemini ...")
     try:
         result = chain.invoke({"context": full_context_text})
         print("✅ [Extract] Trích xuất dữ liệu thành công!")
-        return result
+        return cast(BiddingData, result)
     except Exception as e:
         print(f"❌ [Extract] Lỗi khi gọi Gemini API: {e}")
         raise e

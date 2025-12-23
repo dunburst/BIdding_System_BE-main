@@ -2,7 +2,7 @@ import os
 import re
 import nest_asyncio
 from dotenv import load_dotenv
-from llama_parse import LlamaParse
+from llama_parse import LlamaParse, ResultType
 
 # Apply nest_asyncio để tránh lỗi event loop khi chạy trong môi trường async của FastAPI
 nest_asyncio.apply()
@@ -22,7 +22,7 @@ def parse_pdf_to_markdown(file_path: str) -> str:
     
     parser = LlamaParse(
         api_key=api_key,
-        result_type="markdown",
+        result_type=ResultType.MD,
         language="vi", 
         verbose=True
     )

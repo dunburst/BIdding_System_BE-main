@@ -57,19 +57,27 @@ class MinIOHandler:
             logger.error(f"-> MinIO Upload Lỗi: {e}")
             return None
 
-    # --- [THÊM MỚI] Hàm này cần thiết cho AI Service để tải file về ---
-    def download_file(self, object_name, local_path):
+    def download_file(self, object_name, local_file_path):
         """
-        Tải file từ MinIO về máy local (để AI đọc)
+        Tải file từ MinIO về máy local.
+        :param object_name: Đường dẫn file trên MinIO (VD: ho_so_2025/file.pdf)
+        :param local_file_path: Đường dẫn lưu file trên máy (VD: ./temp/file.pdf)
         """
-        if not self.client: return False
+        if not self.client:
+            logger.error("Client MinIO chưa được khởi tạo.")
+            return False
+        
         try:
-            self.client.fget_object(MINIO_BUCKET, object_name, local_path)
-            logger.info(f"-> MinIO: Đã tải file về {local_path}")
+            # Sử dụng hàm fget_object của thư viện Minio để tải file
+            self.client.fget_object(
+                bucket_name=MINIO_BUCKET,
+                object_name=object_name,
+                file_path=local_file_path
+            )
+            logger.info(f"-> MinIO: Đã tải file thành công về {local_file_path}")
             return True
         except Exception as e:
             logger.error(f"-> MinIO Download Lỗi: {e}")
             return False
-
-# --- QUAN TRỌNG: Phải khởi tạo instance ở đây để các file khác import được ---
+        
 minio_handler = MinIOHandler()

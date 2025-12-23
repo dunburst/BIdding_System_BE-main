@@ -2,172 +2,171 @@
 import os
 import uuid
 import logging
+import re
+from sqlalchemy.orm import Session
 from urllib.parse import unquote, urlparse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-# Import Models chuẩn từ file models.py của bạn
-from models import (
-    BiddingPackage,
-    BiddingPackageFile,
-    BiddingReqFinancialAdmin,
-    BiddingReqPersonnel,
-    BiddingReqEquipment
-)
+# Import modules nội bộ
+from models import BiddingPackage, BiddingPackageFile, BiddingReqFinancialAdmin, BiddingReqPersonnel, BiddingReqEquipment
 from minio_client import minio_handler, MINIO_BUCKET
 from services.ai_pipeline.ingest import parse_pdf_to_markdown, chunk_by_chapters
 from services.ai_pipeline.extract import prepare_context, extract_bid_info
 
-# Setup logger
+# Setup Logger
 logger = logging.getLogger(__name__)
 
 async def analyze_bidding_package(hsmt_id: int, db: Session):
     """
-    Service phân tích gói thầu: 
-    1. Tải PDF từ MinIO
-    2. Gọi AI Ingest & Extract
-    3. Lưu vào các bảng BiddingReq...
+    Quy trình phân tích hồ sơ thầu:
+    1. Tải file PDF từ MinIO
+    2. Parse PDF -> Markdown -> Text Chunks
+    3. Gửi cho AI Extract thông tin
+    4. Mapping và lưu vào Database
     """
-    
-    # 1. Lấy thông tin gói thầu (Dùng hsmt_id làm khóa chính)
-    package = db.query(BiddingPackage).filter(BiddingPackage.hsmt_id == hsmt_id).first()
-    if not package:
-        raise ValueError(f"Không tìm thấy gói thầu với hsmt_id={hsmt_id}")
-
-    # 2. Tìm file PDF trong bảng bidding_package_files
-    # Lọc lấy file có đuôi .pdf
-    file_record = db.query(BiddingPackageFile)\
-        .filter(BiddingPackageFile.hsmt_id == hsmt_id)\
-        .filter(BiddingPackageFile.file_path.like('%.pdf'))\
-        .first()
-    
-    if not file_record:
-        raise ValueError("Chưa có file PDF nào được upload cho gói thầu này")
-
-    # 3. Xử lý đường dẫn MinIO để download
-    # DB lưu: http://host:9000/bucket/path/file.pdf HOẶC path/file.pdf
-    file_url = file_record.file_path
-    object_name = ""
-    
-    if MINIO_BUCKET in file_url:
-        try:
-            # Cắt lấy phần sau tên bucket
-            object_name = file_url.split(f"/{MINIO_BUCKET}/")[1]
-        except IndexError:
-            parsed = urlparse(file_url)
-            object_name = parsed.path.lstrip('/')
-            # Nếu path vẫn chứa bucket ở đầu thì cắt bỏ
-            if object_name.startswith(f"{MINIO_BUCKET}/"):
-                 object_name = object_name[len(MINIO_BUCKET)+1:]
-    else:
-        object_name = file_url
-
-    object_name = unquote(object_name) # Decode ký tự đặc biệt (VD: %20 -> space)
-
-    # Tạo thư mục tạm để chứa file download
-    os.makedirs("temp_processing", exist_ok=True)
-    temp_filename = f"temp_{uuid.uuid4()}.pdf"
-    temp_path = os.path.join("temp_processing", temp_filename)
-    
+    temp_path = None
     try:
-        print(f"⬇️ [AI Service] Đang tải file từ MinIO: {object_name}")
-        success = minio_handler.download_file(object_name, temp_path)
-        
-        # Fallback: Nếu download thất bại, thử bỏ prefix bucket nếu có
-        if not success and object_name.startswith(f"{MINIO_BUCKET}/"):
-             retry_name = object_name[len(MINIO_BUCKET)+1:]
-             print(f"⚠️ [AI Service] Thử tải lại với path: {retry_name}")
-             if minio_handler.download_file(retry_name, temp_path):
-                 success = True
-        
-        if not success:
-            raise ValueError(f"Không thể tải file từ MinIO. Path: {object_name}")
+        # 1. KIỂM TRA DỮ LIỆU ĐẦU VÀO
+        package = db.query(BiddingPackage).filter(BiddingPackage.hsmt_id == hsmt_id).first()
+        if not package:
+            raise ValueError(f"Không tìm thấy gói thầu ID: {hsmt_id}")
 
-        print(f"🚀 [AI Service] Bắt đầu xử lý file: {temp_path}")
+        # Lấy file PDF (ưu tiên file E-HSMT)
+        file_record = db.query(BiddingPackageFile)\
+            .filter(BiddingPackageFile.hsmt_id == hsmt_id)\
+            .filter(BiddingPackageFile.file_path.like('%.pdf'))\
+            .first()
         
-        # 4. CHẠY PIPELINE AI
-        # Bước A: Ingest (PDF -> Markdown -> Chunks)
+        if not file_record:
+            raise ValueError(f"Không tìm thấy file PDF cho gói thầu ID: {hsmt_id}")
+
+        # 2. DOWNLOAD FILE TỪ MINIO
+        # Xử lý URL để lấy object_name sạch
+        file_url = file_record.file_path
+        if MINIO_BUCKET in file_url:
+            # Tách lấy phần sau tên bucket
+            object_name = file_url.split(f"/{MINIO_BUCKET}/")[1]
+        else:
+            object_name = urlparse(file_url).path.lstrip('/')
+        
+        object_name = unquote(object_name) # Giải mã URL (%20 -> Space)
+        
+        # Tạo tên file tạm ngẫu nhiên để tránh xung đột
+        temp_path = f"temp_{uuid.uuid4()}.pdf"
+        
+        logger.info(f"⬇️ Đang tải file: {object_name}")
+        if not minio_handler.download_file(object_name, temp_path):
+             raise ValueError("Lỗi tải file từ MinIO (Check lại log MinIO)")
+
+        # 3. CHẠY PIPELINE AI
+        logger.info("🤖 Bắt đầu xử lý AI...")
+        
+        # Bước A: Ingest
         md_text = parse_pdf_to_markdown(temp_path)
         chunks = chunk_by_chapters(md_text)
         
-        # Bước B: Extract (Chunks -> JSON Object)
+        # Bước B: Extract
         context_text = prepare_context(chunks)
-        data = extract_bid_info(context_text)
+        ai_data = extract_bid_info(context_text) # Trả về Pydantic Model (BiddingData)
 
-        # 5. LƯU VÀO DATABASE
-        # Xóa dữ liệu cũ của gói thầu này (nếu có) để tránh duplicate
-        db.query(BiddingReqFinancialAdmin).filter(BiddingReqFinancialAdmin.hsmt_id == hsmt_id).delete()
-        db.query(BiddingReqPersonnel).filter(BiddingReqPersonnel.hsmt_id == hsmt_id).delete()
-        db.query(BiddingReqEquipment).filter(BiddingReqEquipment.hsmt_id == hsmt_id).delete()
-        db.flush() 
+        # 4. LƯU DATABASE (QUAN TRỌNG)
+        logger.info("💾 Đang lưu kết quả vào Database...")
 
-        # --- Helper: Hàm clean tiền tệ ---
-        def parse_money(val):
-            if not val: return None
-            if isinstance(val, (int, float)): return float(val)
-            # Clean string: "94.000.000 VND" -> 94000000.0
-            clean = str(val).replace('.', '').replace(',', '').replace(' VND', '').replace(' đ', '').strip()
-            try:
-                return float(clean)
-            except:
-                return 0.0
-
-        # --- Lưu Tài chính & Thủ tục ---
-        fin_data = data.section_2_admin
-        fin_req = data.section_3_financial
-
-        fin_record = BiddingReqFinancialAdmin(
-            hsmt_id=hsmt_id,
-            # Mapping từ Pydantic model sang SQLAlchemy model
-            bid_security_value=parse_money(fin_data.bid_security_value),
-            bid_validity_days=fin_data.bid_validity_days,
-            submission_fee=parse_money(fin_data.submission_fee),
-            contract_duration_text=fin_data.contract_duration, # Lưu text gốc (vd: 45 ngày)
-            
-            req_revenue_avg=parse_money(fin_req.avg_revenue),
-            req_working_capital=parse_money(fin_req.working_capital),
-            req_similar_contract_value=parse_money(fin_req.min_contract_value),
-            req_similar_contract_desc=fin_req.similar_contract_desc
-        )
-        db.add(fin_record)
-
-        # --- Lưu Nhân sự ---
-        if data.section_4_personnel:
-            for i, p in enumerate(data.section_4_personnel, 1):
-                per_record = BiddingReqPersonnel(
-                    hsmt_id=hsmt_id,
-                    stt=i,
-                    position_name=p.position,
-                    quantity=p.quantity,
-                    qualification_req=p.qualification,
-                    min_exp_years=p.experience_years
-                )
-                db.add(per_record)
-
-        # --- Lưu Thiết bị ---
-        if data.section_5_equipment:
-            for i, e in enumerate(data.section_5_equipment, 1):
-                eq_record = BiddingReqEquipment(
-                    hsmt_id=hsmt_id,
-                    stt=i,
-                    equipment_name=e.name,
-                    quantity=e.quantity,
-                    specifications=e.specs
-                )
-                db.add(eq_record)
-
-        db.commit()
-        print(f"✅ [AI Service] Đã lưu kết quả thành công cho gói thầu {hsmt_id}")
+        # --- Chiến thuật: XÓA CŨ - THÊM MỚI (Để tránh duplicate khi chạy lại) ---
+        db.query(BiddingReqFinancialAdmin).filter_by(hsmt_id=hsmt_id).delete()
+        db.query(BiddingReqPersonnel).filter_by(hsmt_id=hsmt_id).delete()
+        db.query(BiddingReqEquipment).filter_by(hsmt_id=hsmt_id).delete()
         
-        # Trả về data raw để FE hiển thị ngay nếu cần
-        return {"status": "success", "data": data.dict()}
+        def clean_money(value):
+            """
+            Chuyển đổi chuỗi tiền tệ (VD: '160.000.000 VND') thành số thực (160000000.0)
+            """
+            if value is None:
+                return None
+            
+            # Nếu đã là số (int/float) thì trả về luôn
+            if isinstance(value, (int, float)):
+                return value
+                
+            # Nếu là chuỗi: Xóa hết các ký tự không phải số (trừ dấu chấm thập phân nếu cần)
+            # Ở VN thường dùng dấu chấm để ngăn cách hàng nghìn, nên ta xóa dấu chấm đi
+            # VD: "160.000.000" -> "160000000"
+            clean_str = re.sub(r'[^\d]', '', str(value))
+            
+            if not clean_str:
+                return None
+                
+            try:
+                return float(clean_str)
+            except ValueError:
+                return None
+        
+        # A. Lưu bảng Financial & Admin (Gộp mục 2 & 3)
+        admin_section = ai_data.section_2_admin
+        finance_section = ai_data.section_3_financial
+
+        req_fin_admin = BiddingReqFinancialAdmin(
+            hsmt_id=hsmt_id,
+            # Mapping Admin Requirements
+            bid_validity_days=admin_section.bid_validity_days,
+            bid_security_value=clean_money(admin_section.bid_security_value),
+            bid_security_duration=admin_section.bid_security_duration,
+            submission_fee=clean_money(admin_section.submission_fee),
+            contract_duration_text=admin_section.contract_duration,
+            
+            # Mapping Financial Requirements
+            req_revenue_avg=clean_money(finance_section.avg_revenue),
+            req_working_capital=clean_money(finance_section.working_capital),
+            req_similar_contract_qty=finance_section.similar_contract_qty,
+            req_similar_contract_value=clean_money(finance_section.min_contract_value),
+            req_similar_contract_desc=finance_section.similar_contract_desc,
+        )
+        db.add(req_fin_admin)
+
+        # B. Lưu bảng Nhân sự (Personnel) - SỬA LẠI VÒNG LẶP
+        # Dùng enumerate để lấy số thứ tự (i bắt đầu từ 1)
+        for i, p in enumerate(ai_data.section_4_personnel, start=1):
+            req_personnel = BiddingReqPersonnel(
+                hsmt_id=hsmt_id,
+                stt=i,  # <--- Gán số thứ tự vào đây
+                position_name=p.position,
+                quantity=p.quantity,
+                min_exp_years=p.experience_years,
+                qualification_req=p.qualification,
+                similar_project_exp=p.similar_project_exp
+            )
+            db.add(req_personnel)
+
+        # C. Lưu bảng Thiết bị (Equipment) - SỬA LẠI VÒNG LẶP
+        for i, e in enumerate(ai_data.section_5_equipment, start=1):
+            req_equipment = BiddingReqEquipment(
+                hsmt_id=hsmt_id,
+                stt=i,  # <--- Gán số thứ tự vào đây
+                equipment_name=e.name,
+                quantity=e.quantity,
+                specifications=e.specs
+            )
+            db.add(req_equipment)
+
+        # Commit Transaction
+        db.commit()
+        logger.info(f"✅ Phân tích xong gói thầu {hsmt_id}!")
+
+        # Trả về kết quả để hiển thị Frontend (nếu cần)
+        return {
+            "status": "success", 
+            "message": "Phân tích hoàn tất", 
+            "data": ai_data.model_dump() # Pydantic v2 dùng model_dump(), v1 dùng dict()
+        }
 
     except Exception as e:
-        db.rollback()
-        print(f"❌ [AI Service] Lỗi: {e}")
+        db.rollback() # Hoàn tác nếu lỗi database
+        logger.error(f"❌ Lỗi trong quá trình phân tích: {str(e)}")
         raise e
+        
     finally:
-        # 6. Cleanup: Xóa file tạm
-        if os.path.exists(temp_path):
+        # 5. Cleanup file tạm
+        if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
-            print("🧹 [AI Service] Đã xóa file tạm.")
+            logger.info("🧹 Đã dọn dẹp file tạm.")

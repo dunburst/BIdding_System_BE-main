@@ -281,6 +281,6 @@ def make_bid_decision(
         data=package
     )
 
-@router.post("/{id}/analyze-ai")
-async def run_ai_analysis(id: int, db: Session = Depends(get_db)):
-    return await analyze_bidding_package(id, db)
+@router.post("/{hsmt_id}/analyze-ai")
+async def run_ai_analysis(hsmt_id: int, db: Session = Depends(get_db)):
+    return await analyze_bidding_package(hsmt_id, db)
