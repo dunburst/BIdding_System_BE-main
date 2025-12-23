@@ -56,3 +56,28 @@ class MinIOHandler:
         except Exception as e:
             logger.error(f"-> MinIO Upload Lỗi: {e}")
             return None
+
+    def download_file(self, object_name, local_file_path):
+        """
+        Tải file từ MinIO về máy local.
+        :param object_name: Đường dẫn file trên MinIO (VD: ho_so_2025/file.pdf)
+        :param local_file_path: Đường dẫn lưu file trên máy (VD: ./temp/file.pdf)
+        """
+        if not self.client:
+            logger.error("Client MinIO chưa được khởi tạo.")
+            return False
+        
+        try:
+            # Sử dụng hàm fget_object của thư viện Minio để tải file
+            self.client.fget_object(
+                bucket_name=MINIO_BUCKET,
+                object_name=object_name,
+                file_path=local_file_path
+            )
+            logger.info(f"-> MinIO: Đã tải file thành công về {local_file_path}")
+            return True
+        except Exception as e:
+            logger.error(f"-> MinIO Download Lỗi: {e}")
+            return False
+        
+minio_handler = MinIOHandler()
