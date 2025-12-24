@@ -58,6 +58,11 @@ class TaskPriority(str, enum.Enum):
     MEDIUM = "MEDIUM"   # Trung bình
     HIGH = "HIGH"       # Cao/Gấp
     
+class TaskType(str, enum.Enum):
+    AUTO = "AUTO"           # Tự động (Hệ thống/AI tự chạy)
+    SELECTION = "SELECTION" # Chọn (Người dùng chọn options)
+    DRAFTING = "DRAFTING"   # Soạn thảo (Người dùng nhập liệu/Upload file)
+    
 # --- ENUMS CHO ABAC ---
 class PolicyEffect(str, enum.Enum):
     ALLOW = "ALLOW"
@@ -438,6 +443,12 @@ class BiddingTask(Base):
     status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), default=TaskStatus.OPEN)
     
     priority: Mapped[TaskPriority] = mapped_column(Enum(TaskPriority), default=TaskPriority.MEDIUM)
+    # --- THÊM CỘT MỚI TẠI ĐÂY ---
+    task_type: Mapped[TaskType] = mapped_column(
+        Enum(TaskType), 
+        default=TaskType.DRAFTING, # Mặc định là soạn thảo
+        nullable=False
+    )
     source_type: Mapped[Optional[str]] = mapped_column(String(50))
     ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True) # Lý do đánh giá AI
     hsmt_ref_page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True) # Trang tham chiếu trong HSMT
