@@ -233,33 +233,37 @@ def delete_task(db: Session, task_id: int, user: User):
     db.commit()
     return {"message": "Task deleted successfully"}
 
-def get_all_tasks_by_user_id(db: Session, target_user_id: int):
+def get_all_tasks_by_user_id(db: Session, user: User):
     """
-    Lấy toàn bộ công việc ĐÍCH DANH của một nhân sự (bỏ qua task chung của phòng).
-    Điều kiện:
-    1. assignee_id == user_id (Người thực hiện chính trong bảng Task)
-    2. assigned_user_id == user_id (Được giao cụ thể trong bảng Phân công)
+    Lấy công việc của một nhân sự.
+    - Mặc định: Chỉ lấy task đích danh (Assignee hoặc Assignment User).
+    - Nếu là SPECIALIST: Lấy thêm task gán cho phòng ban của họ.
     """
     
     # 1. Join bảng Task với bảng Assignment
-    # Dùng outerjoin vì có thể task chỉ được gán ở assignee_id mà chưa có record trong assignments
     query = select(BiddingTask).outerjoin(TaskAssignment, BiddingTask.assignments)
 
-    # 2. Điều kiện lọc (Chỉ lấy đích danh)
-    query = query.where(
-        or_(
-            BiddingTask.assignee_id == target_user_id,
-            TaskAssignment.assigned_user_id == target_user_id
-        )
-    ).distinct() # Cần distinct vì 1 user có thể vừa là assignee, vừa có tên trong assignment
+    # 2. Xây dựng điều kiện lọc cơ bản (Đích danh)
+    filter_conditions = [
+        BiddingTask.assignee_id == user.user_id,           # Được gán chính
+        TaskAssignment.assigned_user_id == user.user_id    # Được gán phụ
+    ]
 
-    # 3. Nạp sẵn thông tin dự án để hiển thị tên dự án lên UI
+    # --- LOGIC MỚI: Nếu là SPECIALIST thì lấy thêm việc của phòng ban ---
+    # Lưu ý: Đảm bảo UserRole.SPECIALIST khớp với Enum của bạn
+    if user.role == UserRole.SPECIALIST:
+        if user.org_unit_id: # Chỉ thêm điều kiện nếu user đã thuộc về một phòng ban
+            filter_conditions.append(TaskAssignment.assigned_unit_id == user.org_unit_id)
+
+    # 3. Áp dụng bộ lọc với phép OR
+    query = query.where(or_(*filter_conditions)).distinct()
+
+    # 4. Nạp sẵn thông tin dự án
     query = query.options(
-        joinedload(BiddingTask.project), 
-        # joinedload(BiddingTask.assignments) # Uncomment nếu muốn load cả chi tiết phân công
+        joinedload(BiddingTask.project)
     )
 
-    # 4. Thực thi query
+    # 5. Thực thi query
     tasks = db.execute(query).unique().scalars().all()
 
     sorted_tasks = sorted(tasks, key=lambda x: (x.deadline is None, x.deadline))

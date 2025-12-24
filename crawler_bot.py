@@ -445,6 +445,24 @@ class MuasamcongDBBot:
 
             # BƯỚC 1: LẤY THÔNG TIN
             ma_tbmt = get_txt("Mã E-TBMT") or get_txt("Mã TBMT")
+            # Lấy phiên bản đang hiển thị (Mặc định web load là bản mới nhất)
+            phien_ban_str = get_txt("Phiên bản thay đổi")
+            def extract_ver_num(ver_str):
+                if not ver_str: return -1
+                # 1. Tìm TẤT CẢ các cụm số trong chuỗi (VD: "00 01" -> ['00', '01'])
+                numbers = re.findall(r'\d+', str(ver_str))
+                
+                if numbers:
+                    # 2. Chuyển sang int và lấy số LỚN NHẤT (max)
+                    # VD: [0, 1] -> lấy 1
+                    return max(map(int, numbers))
+                    
+                return -1
+            ver_num = extract_ver_num(phien_ban_str)
+            if ver_num >= 0:
+                clean_ver = f"{ver_num:02d}" 
+            else:
+                clean_ver = "00"
             raw_khlcnt = get_txt("Mã KHLCNT")
             ma_khlcnt = raw_khlcnt.strip() if raw_khlcnt else None
             
@@ -455,7 +473,7 @@ class MuasamcongDBBot:
             tbmt_data = {
                 "ma_tbmt": ma_tbmt,
                 "duong_dan_goi_thau": driver.current_url,
-                "phien_ban_thay_doi": get_txt("Phiên bản thay đổi"),
+                "phien_ban_thay_doi": clean_ver,
                 "ngay_dang_tai": self.parse_date(get_txt("Ngày đăng tải")),
                 "ma_khlcnt": ma_khlcnt,
                 "phan_loai_khlcnt": get_txt("Phân loại KHLCNT"),

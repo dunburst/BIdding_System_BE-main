@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 import models
 import schemas.organization as schemas
-from models import User
+from models import User, OrganizationalUnit, UnitType
 
 # 1. Lấy danh sách (Phân trang phẳng)
 def get_units(db: Session, skip: int = 0, limit: int = 100):
@@ -82,3 +82,23 @@ def get_all_members_recursive(db: Session, unit_id: int):
     # Cách đơn giản: Query User có org_unit_id nằm trong list
     # (Để triển khai phần này cần logic duyệt cây, tạm thời dùng hàm get_members_by_unit ở trên là đủ cho nhu cầu cơ bản)
     pass
+
+# --- [NEW] Hàm lấy danh sách tất cả các Ban ---
+def get_all_boards(db: Session):
+    """
+    Lấy tất cả đơn vị có type là BOARD (Ban).
+    """
+    return db.query(OrganizationalUnit)\
+             .filter(OrganizationalUnit.unit_type == UnitType.BOARD)\
+             .all()
+
+# --- [NEW] Hàm lấy danh sách các Phòng thuộc 1 Ban cụ thể ---
+def get_departments_by_board(db: Session, board_id: int):
+    """
+    Lấy tất cả đơn vị có type là DEPARTMENT (Phòng) 
+    VÀ có cha là board_id truyền vào.
+    """
+    return db.query(OrganizationalUnit)\
+             .filter(OrganizationalUnit.parent_unit_id == board_id)\
+             .filter(OrganizationalUnit.unit_type == UnitType.DEPARTMENT)\
+             .all()
