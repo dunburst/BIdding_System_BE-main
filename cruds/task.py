@@ -76,6 +76,7 @@ def create_task(db: Session, task_in: TaskCreate, current_user: User):
         deadline=task_in.deadline,
         status=task_in.status,
         priority=task_in.priority,
+        task_type=task_in.task_type,
         assignee_id=task_in.assignee_id,
         reviewer_id=task_in.reviewer_id,
         source_type=task_in.source_type
