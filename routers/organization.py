@@ -56,6 +56,15 @@ def get_departments_of_board(
     # Bước 3: Lấy danh sách phòng
     return crud_org.get_departments_by_board(db, board_id)
 
+# --- [NEW API] Lấy danh sách các Công ty con ---
+@router.get("/subsidiaries", response_model=List[schemas.OrganizationalUnitResponse])
+def get_all_subsidiaries(db: Session = Depends(get_db)):
+    """
+    Lấy danh sách toàn bộ các Công ty con (SUBSIDIARY).
+    Dùng cho dropdown chọn đơn vị trực thuộc hoặc báo cáo.
+    """
+    return crud_org.get_all_subsidiaries(db)
+
 # API 3: Lấy danh sách phẳng (Dropdown list)
 @router.get("/", response_model=List[schemas.OrganizationalUnitResponse])
 def read_org_units(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
