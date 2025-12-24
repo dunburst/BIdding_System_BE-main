@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 
 # Import Enum từ model gốc (giả sử bạn để file model là models.py)
-from models import TaskStatus, AssignmentType, TaskPriority
+from models import TaskStatus, AssignmentType, TaskPriority, TaskType
 
 # --- 1. SCHEMAS CHO ASSIGNMENT ---
 class TaskAssignmentBase(BaseModel):
@@ -31,6 +31,8 @@ class TaskBase(BaseModel):
     status: TaskStatus = TaskStatus.OPEN
     # Thay đổi is_milestone -> priority
     priority: TaskPriority = TaskPriority.MEDIUM
+    # --- THÊM TRƯỜNG MỚI ---
+    task_type: TaskType = TaskType.DRAFTING
     source_type: Optional[str] = None 
 
 class TaskCreate(TaskBase):
@@ -54,6 +56,8 @@ class TaskUpdate(BaseModel):
     source_type: Optional[str] = None
     # Thêm update priority
     priority: Optional[TaskPriority] = None
+    # --- THÊM VÀO ĐÂY (Optional để không bắt buộc gửi lên khi update cái khác) ---
+    task_type: Optional[TaskType] = None
     # BỔ SUNG: Cho phép gửi kèm danh sách assignments mới để thay thế danh sách cũ
     assignments: Optional[List[TaskAssignmentCreate]] = None
 
