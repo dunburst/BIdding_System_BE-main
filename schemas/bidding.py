@@ -149,3 +149,7 @@ class BidDecision(str, Enum):
 class BidDecisionRequest(BaseModel):
     decision: BidDecision = Field(..., description="Quyết định: GO (Đồng ý) hoặc NO_GO (Từ chối)")
     reason: Optional[str] = Field(None, description="Lý do phê duyệt hoặc từ chối (để lưu log)")
+    
+class CountdownResponse(BaseModel):
+    hsmt_id: int
+    thoi_gian_con_lai: str # Ví dụ: "2 ngày 5 giờ"

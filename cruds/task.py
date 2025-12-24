@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select, or_, and_, case
 from fastapi import HTTPException, status
-from models import BiddingTask, TaskAssignment, User, UserRole, TaskStatus
+from models import BiddingTask, TaskAssignment, User, UserRole, TaskStatus, TaskPriority
 from schemas.task import TaskCreate, TaskUpdate
 from utils.abac import check_permission, AbacAction
 
@@ -75,7 +75,7 @@ def create_task(db: Session, task_in: TaskCreate, current_user: User):
         task_name=task_in.task_name,
         deadline=task_in.deadline,
         status=task_in.status,
-        is_milestone=task_in.is_milestone,
+        priority=task_in.priority,
         assignee_id=task_in.assignee_id,
         reviewer_id=task_in.reviewer_id,
         source_type=task_in.source_type
@@ -233,38 +233,44 @@ def delete_task(db: Session, task_id: int, user: User):
     db.commit()
     return {"message": "Task deleted successfully"}
 
+# --- CẬP NHẬT LOGIC LẤY DANH SÁCH (SORTING) ---
 def get_all_tasks_by_user_id(db: Session, user: User):
     """
-    Lấy công việc của một nhân sự.
-    - Mặc định: Chỉ lấy task đích danh (Assignee hoặc Assignment User).
-    - Nếu là SPECIALIST: Lấy thêm task gán cho phòng ban của họ.
+    Lấy công việc của user.
+    Sắp xếp: Ưu tiên Cao lên đầu -> Deadline gần nhất -> Deadline xa.
     """
-    
-    # 1. Join bảng Task với bảng Assignment
     query = select(BiddingTask).outerjoin(TaskAssignment, BiddingTask.assignments)
 
-    # 2. Xây dựng điều kiện lọc cơ bản (Đích danh)
     filter_conditions = [
-        BiddingTask.assignee_id == user.user_id,           # Được gán chính
-        TaskAssignment.assigned_user_id == user.user_id    # Được gán phụ
+        BiddingTask.assignee_id == user.user_id,
+        TaskAssignment.assigned_user_id == user.user_id
     ]
 
-    # --- LOGIC MỚI: Nếu là SPECIALIST thì lấy thêm việc của phòng ban ---
-    # Lưu ý: Đảm bảo UserRole.SPECIALIST khớp với Enum của bạn
-    if user.role == UserRole.SPECIALIST:
-        if user.org_unit_id: # Chỉ thêm điều kiện nếu user đã thuộc về một phòng ban
-            filter_conditions.append(TaskAssignment.assigned_unit_id == user.org_unit_id)
+    if user.role == UserRole.SPECIALIST and user.org_unit_id:
+         filter_conditions.append(TaskAssignment.assigned_unit_id == user.org_unit_id)
 
-    # 3. Áp dụng bộ lọc với phép OR
     query = query.where(or_(*filter_conditions)).distinct()
 
-    # 4. Nạp sẵn thông tin dự án
-    query = query.options(
-        joinedload(BiddingTask.project)
-    )
+    query = query.options(joinedload(BiddingTask.project))
 
-    # 5. Thực thi query
     tasks = db.execute(query).unique().scalars().all()
 
-    sorted_tasks = sorted(tasks, key=lambda x: (x.deadline is None, x.deadline))
+    # Priority Order Mapping để sort
+    priority_order = {
+        TaskPriority.HIGH: 1,
+        TaskPriority.MEDIUM: 2,
+        TaskPriority.LOW: 3
+    }
+
+    # Sắp xếp:
+    # 1. Priority (HIGH < MEDIUM < LOW -> theo value 1,2,3)
+    # 2. Deadline (None deadline sẽ đẩy xuống cuối hoặc đầu tùy bạn, ở đây để cuối)
+    sorted_tasks = sorted(
+        tasks, 
+        key=lambda x: (
+            priority_order.get(x.priority, 2), # Sort theo Priority trước
+            x.deadline is None,                # Deadline có hay không
+            x.deadline                         # Giá trị Deadline
+        )
+    )
     return sorted_tasks

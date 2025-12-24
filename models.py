@@ -53,6 +53,11 @@ class SecurityLevel(int, enum.Enum):
     CONFIDENTIAL = 3    # Mật (Cấp quản lý/Trưởng ban)
     SECRET = 4          # Tối mật (Lãnh đạo cấp cao)
     
+class TaskPriority(str, enum.Enum):
+    LOW = "LOW"         # Thấp
+    MEDIUM = "MEDIUM"   # Trung bình
+    HIGH = "HIGH"       # Cao/Gấp
+    
 # --- ENUMS CHO ABAC ---
 class PolicyEffect(str, enum.Enum):
     ALLOW = "ALLOW"
@@ -432,7 +437,7 @@ class BiddingTask(Base):
     # Cập nhật Enum status mới
     status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), default=TaskStatus.OPEN)
     
-    is_milestone: Mapped[bool] = mapped_column(Boolean, default=False)
+    priority: Mapped[TaskPriority] = mapped_column(Enum(TaskPriority), default=TaskPriority.MEDIUM)
     source_type: Mapped[Optional[str]] = mapped_column(String(50))
     ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True) # Lý do đánh giá AI
     hsmt_ref_page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True) # Trang tham chiếu trong HSMT

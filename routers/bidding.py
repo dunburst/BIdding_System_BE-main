@@ -11,6 +11,8 @@ from schemas import bidding as schemas
 from cruds import bidding as crud_bidding # Thống nhất dùng tên này
 from utils.abac import check_permission, get_allowed_actions
 from utils.constants import AbacAction
+from schemas.bidding import CountdownResponse
+from cruds.bidding import calculate_time_remaining, get_closing_time
 
 router = APIRouter(
     prefix="/bidding-packages",
@@ -284,3 +286,24 @@ def make_bid_decision(
 @router.post("/{hsmt_id}/analyze-ai")
 async def run_ai_analysis(hsmt_id: int, db: Session = Depends(get_db)):
     return await analyze_bidding_package(hsmt_id, db)
+
+# --- API ENDPOINT ---
+@router.get("/{hsmt_id}/countdown", response_model=CountdownResponse)
+def get_package_countdown(hsmt_id: int, db: Session = Depends(get_db)):
+    """
+    API nhẹ dành riêng cho Frontend để poll thời gian đếm ngược.
+    """
+    # 1. Chỉ lấy đúng thời gian từ DB
+    deadline = get_closing_time(db, hsmt_id)
+    
+    # (Optional) Nếu muốn check ID có tồn tại hay không thì check ở đây. 
+    # Nhưng nếu deadline = None thì hàm calculate đã trả về "Chưa có lịch" rồi.
+    
+    # 2. Tính toán
+    time_str = calculate_time_remaining(deadline)
+    
+    # 3. Trả về JSON
+    return CountdownResponse(
+        hsmt_id=hsmt_id,
+        thoi_gian_con_lai=time_str
+    )

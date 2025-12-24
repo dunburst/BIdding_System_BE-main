@@ -3,7 +3,7 @@ from sqlalchemy import or_, desc
 from models import BiddingPackage, BiddingTask, PackageStatus, BiddingPackageFile
 from schemas import bidding as schemas
 from typing import Optional, List
-
+from datetime import datetime
 # --- Gói thầu (Package) ---
 
 def get_package(db: Session, hsmt_id: int):
@@ -117,3 +117,43 @@ def create_task(db: Session, task: schemas.TaskCreate): # Giả sử bạn có T
     db.commit()
     db.refresh(db_task)
     return db_task
+
+def get_closing_time(db: Session, hsmt_id: int):
+    """
+    Chỉ lấy giá trị thoi_diem_dong_thau của gói thầu.
+    Dùng .scalar() để lấy trực tiếp giá trị thay vì object.
+    """
+    result = db.query(BiddingPackage.thoi_diem_dong_thau)\
+        .filter(BiddingPackage.hsmt_id == hsmt_id)\
+        .first()
+    
+    # result sẽ là một tuple (datetime,) hoặc None nếu không tìm thấy ID
+    if result:
+        return result[0] # Trả về datetime object
+    return None # Không tìm thấy gói thầu
+
+# --- HÀM LOGIC TÍNH TOÁN (Helper nội bộ) ---
+def calculate_time_remaining(deadline: Optional[datetime]) -> str:
+    if not deadline:
+        return "Chưa có lịch"
+    
+    now = datetime.now()
+    if deadline.tzinfo:
+        deadline = deadline.replace(tzinfo=None) # Xử lý timezone nếu cần
+
+    delta = deadline - now
+    total_seconds = int(delta.total_seconds())
+
+    if total_seconds <= 0:
+        return "Đã đóng thầu"
+
+    days = delta.days
+    hours = (total_seconds % 86400) // 3600
+    minutes = (total_seconds % 3600) // 60
+
+    if days > 0:
+        return f"{days} ngày {hours} giờ"
+    elif hours > 0:
+        return f"{hours} giờ {minutes} phút"
+    else:
+        return f"{minutes} phút"

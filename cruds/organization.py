@@ -102,3 +102,12 @@ def get_departments_by_board(db: Session, board_id: int):
              .filter(OrganizationalUnit.parent_unit_id == board_id)\
              .filter(OrganizationalUnit.unit_type == UnitType.DEPARTMENT)\
              .all()
+
+# --- [NEW] Hàm lấy danh sách tất cả Công ty con ---
+def get_all_subsidiaries(db: Session):
+    """
+    Lấy tất cả đơn vị có type là SUBSIDIARY (Công ty con).
+    """
+    return db.query(models.OrganizationalUnit)\
+             .filter(models.OrganizationalUnit.unit_type == models.UnitType.SUBSIDIARY)\
+             .all()
