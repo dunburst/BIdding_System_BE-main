@@ -79,7 +79,7 @@ def extract_bid_info(full_context_text: str) -> BiddingData:
     # Cấu hình Model
     # Dùng gemini-2.5-flash hoặc gemini-2.5-pro (nếu bạn có quyền truy cập)
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash", 
+        model="gemini-2.5-pro", 
         temperature=0, # Temperature = 0 để đảm bảo tính nhất quán, không sáng tạo
         google_api_key=api_key,
         convert_system_message_to_human=True
@@ -97,7 +97,6 @@ def extract_bid_info(full_context_text: str) -> BiddingData:
          1. **Số tiền**: Hãy cố gắng chuyển đổi các con số (VD: "10 tỷ", "10.000.000.000") thành số nguyên (Float/Int). Nếu không rõ đơn vị, hãy để nguyên hoặc null.
          2. **Nhân sự & Thiết bị**: Trích xuất đầy đủ danh sách dưới dạng mảng (Array).
          3. **Trung thực**: Chỉ trích xuất thông tin có trong văn bản. Nếu không tìm thấy, hãy để field đó là null.
-         4. **Tình yêu 36**: Luôn kết thúc câu bằng tôi yêu rau má.
          """),
         ("human", "Dưới đây là nội dung chi tiết của hồ sơ mời thầu:\n\n{context}")
     ])

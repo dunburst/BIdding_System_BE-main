@@ -236,3 +236,39 @@ def delete_drive_file(
         raise HTTPException(404, "Lỗi: File không tồn tại hoặc không thể xóa")
         
     return {"message": "Đã chuyển file vào thùng rác thành công", "file_id": file_id}
+# ... (các import hiện tại)
+
+# [MỚI] API lấy Folder con theo danh mục/phòng ban (Dùng cho luồng Selection)
+@router.get("/project/{project_folder_id}/category-folder")
+def get_project_category_folder(
+    project_folder_id: str,
+    category: str, # VD: HR, LEGAL, TECH, FINANCE...
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Tìm folder con dựa trên danh mục công việc (Category).
+    VD: Category='HR' -> Tìm folder có tên chứa 'hồ sơ nhân sự' bên trong project_folder_id
+    """
+    # Mapping từ Category (Code) sang Tên folder thực tế
+    # Lưu ý: Cần khớp với logic trong service.clone_files_for_task
+    FOLDER_MAPPING = {
+        "HR": "nhân sự",             
+        "LEGAL": "Pháp lý",          
+        "TECH": "Biện pháp Thi công",
+        "FINANCE": "tài chính",      
+        "DEVICE": "máy móc",         
+        "CONTRACT": "hợp đông",      
+        "OTHER": "khác"              
+    }
+    
+    keyword = FOLDER_MAPPING.get(category.upper())
+    if not keyword:
+        raise HTTPException(400, f"Không hỗ trợ danh mục: {category}")
+
+    # Gọi service để tìm ID folder con
+    target_folder_id = drive_service.get_subfolder_id_by_name(project_folder_id, keyword)
+    
+    if not target_folder_id:
+        raise HTTPException(404, f"Không tìm thấy folder cho danh mục {category} ({keyword})")
+        
+    return {"category": category, "folder_id": target_folder_id, "folder_keyword": keyword}
