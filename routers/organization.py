@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 
-from models import OrganizationalUnit
+from models import OrganizationalUnit, UnitType
 from database import get_db
 import schemas.organization as schemas
 import cruds.organization as crud_org
@@ -26,6 +26,35 @@ def create_org_unit(unit: schemas.OrganizationalUnitCreate, db: Session = Depend
 def get_org_tree(db: Session = Depends(get_db)):
     """Trả về cấu trúc cây phân cấp (Tập đoàn -> Khối -> Ban...)"""
     return crud_org.get_organization_tree(db)
+
+# --- [NEW API] Lấy danh sách tất cả các Ban ---
+@router.get("/boards", response_model=List[schemas.OrganizationalUnitResponse])
+def get_all_boards(db: Session = Depends(get_db)):
+    """
+    Lấy danh sách toàn bộ các Ban (BOARD).
+    """
+    return crud_org.get_all_boards(db)
+
+# --- [NEW API] Lấy danh sách Phòng trực thuộc 1 Ban ---
+@router.get("/boards/{board_id}/departments", response_model=List[schemas.OrganizationalUnitResponse])
+def get_departments_of_board(
+    board_id: int, 
+    db: Session = Depends(get_db)
+):
+    """
+    Lấy danh sách các Phòng (DEPARTMENT) thuộc về một Ban (BOARD) cụ thể.
+    """
+    # Bước 1: Kiểm tra xem Ban đó có tồn tại không (Optional nhưng nên làm)
+    board = crud_org.get_unit(db, unit_id=board_id)
+    if not board:
+        raise HTTPException(status_code=404, detail="Ban không tồn tại")
+    
+    # Bước 2: Kiểm tra xem ID đó có đúng là Ban không hay là Khối/Phòng khác? (Optional)
+    if board.unit_type != UnitType.BOARD:
+        raise HTTPException(status_code=400, detail="ID cung cấp không phải là một Ban")
+
+    # Bước 3: Lấy danh sách phòng
+    return crud_org.get_departments_by_board(db, board_id)
 
 # API 3: Lấy danh sách phẳng (Dropdown list)
 @router.get("/", response_model=List[schemas.OrganizationalUnitResponse])
