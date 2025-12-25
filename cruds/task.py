@@ -125,6 +125,8 @@ def get_project_tasks_tree(db: Session, project_id: int, user: User):
         BiddingTask.bidding_project_id == project_id,
         BiddingTask.parent_task_id == None
     ).options(
+        # <--- THÊM joinedload(BiddingTask.project)
+        joinedload(BiddingTask.project),
         joinedload(BiddingTask.assignments),
         joinedload(BiddingTask.sub_tasks).joinedload(BiddingTask.assignments)
     )
@@ -155,7 +157,14 @@ def get_project_tasks_tree(db: Session, project_id: int, user: User):
 
 # --- READ SINGLE ---
 def get_task_detail(db: Session, task_id: int, user: User):
-    task = db.get(BiddingTask, task_id)
+    # Thay vì dùng db.get(), ta dùng select + options để load project
+    query = select(BiddingTask).where(BiddingTask.id == task_id).options(
+        joinedload(BiddingTask.project),    # <--- Load Project
+        joinedload(BiddingTask.assignments),
+        joinedload(BiddingTask.sub_tasks)
+    )
+    
+    task = db.execute(query).unique().scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
