@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from models import User, UserRole
 from schemas.user import UserCreate, UserUpdate
 from sqlalchemy import select
@@ -9,11 +9,14 @@ def get_user_by_email(db: Session, email: str):
     return db.query(User).filter(User.email == email).first()
 
 def get_user(db: Session, user_id: int):
-    return db.execute(select(User).where(User.user_id == user_id).order_by(User.user_id)).scalar_one_or_none()
+    # Thêm .options(joinedload(User.org_unit))
+    query = select(User).options(joinedload(User.org_unit)).where(User.user_id == user_id)
+    return db.execute(query).scalar_one_or_none()
 
 def get_users(db: Session, skip: int = 0, limit: int = 100):
-    return db.execute(select(User).order_by(User.user_id).offset(skip).limit(limit)).scalars().all()
-
+    # Thêm .options(joinedload(User.org_unit))
+    query = select(User).options(joinedload(User.org_unit)).order_by(User.user_id).offset(skip).limit(limit)
+    return db.execute(query).scalars().all()
 # [CẬP NHẬT] Hàm tạo user nhận Schema UserCreate
 def create_user(db: Session, user: UserCreate):
     # 1. Hash password

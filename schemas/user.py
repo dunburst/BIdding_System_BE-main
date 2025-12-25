@@ -1,5 +1,5 @@
-from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from pydantic import BaseModel, EmailStr, Field, computed_field
+from typing import Optional, Any
 from models import UserRole, SecurityLevel # Import Enum từ models
 
 # --- BASE SCHEMA (Dùng chung) ---
@@ -37,6 +37,19 @@ class UserResponse(UserBase):
     
     # Có thể thêm thông tin OrgUnit nếu muốn hiển thị tên phòng ban (cần config ORM)
     # org_unit_name: Optional[str] = None 
+    org_unit: Optional[Any] = Field(None, exclude=True)
 
     class Config:
         from_attributes = True
+        
+    @computed_field
+    @property
+    def org_unit_name(self) -> Optional[str]:
+        """
+        Tự động lấy tên phòng ban từ quan hệ org_unit.
+        Nếu user chưa gán phòng ban, trả về None.
+        """
+        # self.org_unit là truy cập vào relationship trong Model
+        if hasattr(self, "org_unit") and self.org_unit:
+            return self.org_unit.unit_name
+        return None
