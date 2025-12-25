@@ -47,6 +47,15 @@ class TaskStatus(str, enum.Enum):
     COMPLETED = "COMPLETED"
     REJECTED = "REJECTED"
     
+class TaskTag(str, enum.Enum):
+    LEGAL = "LEGAL"           # Hồ sơ pháp lý
+    FINANCE = "FINANCE"       # Hồ sơ tài chính
+    TECH = "TECH"             # Biện pháp thi công
+    CONTRACT = "CONTRACT"     # Hồ sơ hợp đồng tương tự
+    DEVICE = "DEVICE"         # Hồ sơ máy móc thiết bị
+    HR = "HR"                 # Hồ sơ nhân sự
+    OTHER = "OTHER"           # Hồ sơ khác
+    
 class SecurityLevel(int, enum.Enum):
     PUBLIC = 1          # Công khai / Nhân viên thường
     INTERNAL = 2        # Nội bộ phòng ban
@@ -449,6 +458,10 @@ class BiddingTask(Base):
         default=TaskType.DRAFTING, # Mặc định là soạn thảo
         nullable=False
     )
+    
+    # --- TRƯỜNG MỚI THÊM VÀO ---
+    tag: Mapped[Optional[TaskTag]] = mapped_column(Enum(TaskTag), nullable=True)
+    
     source_type: Mapped[Optional[str]] = mapped_column(String(50))
     ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True) # Lý do đánh giá AI
     hsmt_ref_page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True) # Trang tham chiếu trong HSMT
