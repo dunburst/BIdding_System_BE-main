@@ -24,6 +24,37 @@ class TaskAssignmentResponse(TaskAssignmentBase):
     class Config:
         from_attributes = True
 
+# ==========================================
+# 1. SCHEMA CHO COMMENT (Thêm mới)
+# ==========================================
+class TaskCommentBase(BaseModel):
+    content: str
+
+class TaskCommentCreate(TaskCommentBase):
+    parent_id: Optional[int] = None # Nếu có thì là reply, không thì là comment gốc
+
+# Schema hiển thị thông tin người comment (để FE hiển thị avatar/tên)
+class CommentAuthorInfo(BaseModel):
+    user_id: int
+    full_name: str
+    
+    class Config:
+        from_attributes = True
+
+class TaskCommentResponse(TaskCommentBase):
+    id: int
+    task_id: int
+    created_at: datetime
+    author: CommentAuthorInfo
+    
+    # Đệ quy: Danh sách câu trả lời
+    replies: List['TaskCommentResponse'] = [] 
+
+    class Config:
+        from_attributes = True
+
+# Kích hoạt đệ quy
+TaskCommentResponse.update_forward_refs()
 # --- 2. SCHEMAS CHO TASK ---
 class TaskBase(BaseModel):
     task_name: str
@@ -35,6 +66,9 @@ class TaskBase(BaseModel):
     task_type: TaskType = TaskType.DRAFTING
     # <--- THÊM MỚI TRƯỜNG TAG TẠI ĐÂY
     tag: Optional[TaskTag] = None
+    # --- [NEW] ---
+    description: Optional[str] = None
+    attachment_url: Optional[str] = None
     source_type: Optional[str] = None 
 
 class TaskCreate(TaskBase):
@@ -62,6 +96,9 @@ class TaskUpdate(BaseModel):
     task_type: Optional[TaskType] = None
     # <--- THÊM MỚI: CHO PHÉP UPDATE TAG
     tag: Optional[TaskTag] = None
+    # --- [NEW] ---
+    description: Optional[str] = None
+    attachment_url: Optional[str] = None
     # BỔ SUNG: Cho phép gửi kèm danh sách assignments mới để thay thế danh sách cũ
     assignments: Optional[List[TaskAssignmentCreate]] = None
 

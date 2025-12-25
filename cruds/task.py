@@ -1,8 +1,8 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select, or_, and_, case
 from fastapi import HTTPException, status
-from models import BiddingTask, TaskAssignment, User, UserRole, TaskStatus, TaskPriority
-from schemas.task import TaskCreate, TaskUpdate
+from models import BiddingTask, TaskAssignment, User, UserRole, TaskStatus, TaskPriority, TaskComment
+from schemas.task import TaskCreate, TaskUpdate, TaskCommentCreate
 from utils.abac import check_permission, AbacAction
 
 # --- HÀM KIỂM TRA QUYỀN TRUY CẬP (Helper) ---
@@ -286,3 +286,55 @@ def get_all_tasks_by_user_id(db: Session, user: User):
         )
     )
     return sorted_tasks
+
+# --- LOGIC CRUD CHO COMMENT ---
+
+def create_comment(db: Session, task_id: int, comment_in: TaskCommentCreate, user: User):
+    """
+    Tạo comment mới hoặc trả lời comment khác.
+    """
+    # 1. Kiểm tra quyền truy cập Task trước khi comment
+    # (Dùng lại hàm check_access_permission bạn đã có)
+    if not check_access_permission(db, task_id, user):
+        raise HTTPException(status_code=403, detail="Bạn không có quyền thảo luận tại công việc này.")
+
+    # 2. Nếu là reply, kiểm tra parent comment có tồn tại và thuộc task này không
+    if comment_in.parent_id:
+        parent = db.query(TaskComment).filter(
+            TaskComment.id == comment_in.parent_id,
+            TaskComment.task_id == task_id
+        ).first()
+        if not parent:
+            raise HTTPException(status_code=404, detail="Comment cha không tồn tại hoặc không thuộc task này.")
+
+    # 3. Tạo comment
+    new_comment = TaskComment(
+        task_id=task_id,
+        user_id=user.user_id,
+        parent_id=comment_in.parent_id,
+        content=comment_in.content
+    )
+    db.add(new_comment)
+    db.commit()
+    db.refresh(new_comment)
+    return new_comment
+
+def get_task_comments_tree(db: Session, task_id: int, user: User):
+    """
+    Lấy danh sách comment theo dạng cây (Nested).
+    Chỉ lấy các comment gốc (parent_id=None), các reply sẽ được load qua relationship.
+    """
+    if not check_access_permission(db, task_id, user):
+         raise HTTPException(status_code=403, detail="Không có quyền xem thảo luận.")
+
+    # Eager Load: Load luôn author và replies để tránh N+1 query
+    query = select(TaskComment).where(
+        TaskComment.task_id == task_id,
+        TaskComment.parent_id == None # Chỉ lấy gốc
+    ).options(
+        joinedload(TaskComment.author),
+        joinedload(TaskComment.replies).joinedload(TaskComment.author) # Load cấp con
+    ).order_by(TaskComment.created_at.asc())
+
+    comments = db.execute(query).unique().scalars().all()
+    return comments
