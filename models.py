@@ -505,6 +505,15 @@ class BiddingTask(Base):
                 if assign.assigned_unit_id:
                     return assign.assigned_unit_id
         return None
+    
+    # <--- THÊM PROPERTY NÀY VÀO TRONG CLASS BiddingTask
+    @property
+    def project_name(self):
+        """
+        Helper property để lấy tên dự án.
+        Pydantic sẽ tự động map giá trị này vào field 'project_name' trong schema.
+        """
+        return self.project.name if self.project else None
 
 # ==========================================
 # 4. PHÂN HỆ BẢO MẬT & ABAC (SECURITY POLICIES)
