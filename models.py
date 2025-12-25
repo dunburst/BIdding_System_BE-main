@@ -462,6 +462,10 @@ class BiddingTask(Base):
     # --- TRƯỜNG MỚI THÊM VÀO ---
     tag: Mapped[Optional[TaskTag]] = mapped_column(Enum(TaskTag), nullable=True)
     
+    # --- [NEW] CÁC TRƯỜNG MỚI BỔ SUNG ---
+    description: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True) # Mô tả chi tiết công việc
+    attachment_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True) # Link file đính kèm
+    
     source_type: Mapped[Optional[str]] = mapped_column(String(50))
     ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True) # Lý do đánh giá AI
     hsmt_ref_page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True) # Trang tham chiếu trong HSMT
@@ -475,6 +479,12 @@ class BiddingTask(Base):
     # Self-referential relationships
     parent: Mapped[Optional["BiddingTask"]] = relationship(remote_side=[id], back_populates="sub_tasks")
     sub_tasks: Mapped[List["BiddingTask"]] = relationship(back_populates="parent", cascade="all, delete-orphan")
+    # --- [NEW] RELATIONSHIP VỚI COMMENT ---
+    comments: Mapped[List["TaskComment"]] = relationship(
+        back_populates="task", 
+        cascade="all, delete-orphan",
+        order_by="TaskComment.created_at.asc()" # Sắp xếp comment cũ trước
+    )
 
     assignee: Mapped[Optional["User"]] = relationship(foreign_keys=[assignee_id])
     reviewer: Mapped[Optional["User"]] = relationship(foreign_keys=[reviewer_id])
@@ -515,6 +525,30 @@ class BiddingTask(Base):
         """
         return self.project.name if self.project else None
 
+# ==========================================
+# [NEW] BẢNG MỚI: TaskComment (Trao đổi)
+# ==========================================
+class TaskComment(Base):
+    __tablename__ = "task_comments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("bidding_task.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.user_id"), nullable=False)
+    
+    # Self-referencing FK: Comment cha (để trả lời comment khác)
+    parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("task_comments.id"), nullable=True)
+    
+    content: Mapped[str] = mapped_column(UnicodeText, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    task: Mapped["BiddingTask"] = relationship(back_populates="comments")
+    author: Mapped["User"] = relationship(foreign_keys=[user_id])
+    
+    # Quan hệ đệ quy (Hierarchy)
+    parent: Mapped[Optional["TaskComment"]] = relationship(remote_side=[id], back_populates="replies")
+    replies: Mapped[List["TaskComment"]] = relationship(back_populates="parent", cascade="all, delete-orphan")
 # ==========================================
 # 4. PHÂN HỆ BẢO MẬT & ABAC (SECURITY POLICIES)
 # ==========================================

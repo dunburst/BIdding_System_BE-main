@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from database import get_db # Hàm lấy DB session của bạn
-from schemas.task import TaskCreate, TaskResponse, TaskUpdate, TaskStatus
+from schemas.task import TaskCreate, TaskResponse, TaskUpdate, TaskStatus, TaskCommentCreate, TaskCommentResponse
 import cruds.task as task_crud
 from models import User , UserRole
 from utils.abac import check_permission, AbacAction
@@ -72,6 +72,31 @@ def update_existing_task(
     - Nếu không gửi 'assignments': Giữ nguyên assignments cũ.
     """
     return task_crud.update_task(db, task_id, task_in, current_user)
+
+@router.post("/{task_id}/comments", response_model=TaskCommentResponse)
+def add_comment_to_task(
+    task_id: int,
+    comment_in: TaskCommentCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Thêm bình luận vào công việc.
+    Nếu muốn trả lời bình luận khác, truyền 'parent_id'.
+    """
+    # Gọi hàm create_comment trong crud (giả sử bạn để chung trong task_crud)
+    return task_crud.create_comment(db, task_id, comment_in, current_user)
+
+@router.get("/{task_id}/comments", response_model=List[TaskCommentResponse])
+def get_task_comments(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Lấy toàn bộ thảo luận của Task dưới dạng cây phân cấp.
+    """
+    return task_crud.get_task_comments_tree(db, task_id, current_user)
 
 @router.delete("/{task_id}", status_code=status.HTTP_200_OK)
 def delete_existing_task(
