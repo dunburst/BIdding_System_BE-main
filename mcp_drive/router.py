@@ -8,6 +8,7 @@ from database import get_db
 from models import User, SecurityLevel
 from utils.security import get_current_user
 from .service import drive_service
+from utils.permission_service import get_user_allowed_tags
 
 router = APIRouter(
     prefix="/drive",
@@ -61,6 +62,74 @@ def get_root_projects(current_user: User = Depends(get_current_user)):
 # =================================================================
 # 2. API LẤY FILE TRONG 1 FOLDER CỤ THỂ (LOGIC INHERITANCE)
 # =================================================================
+@router.get("/folder/{folder_id}/me")
+def get_folder_by_user(
+    folder_id: str, 
+    project_id: int, # <--- BẮT BUỘC THÊM: Để biết đang ở dự án nào
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db) # <--- Thêm DB Session
+):
+    """Lấy danh sách file/folder con và CHECK QUYỀN TAG"""
+    
+    # 1. Lấy thông tin từ Drive
+    all_items = drive_service.list_files_in_folder(folder_id)
+    
+    # 2. Tính toán danh sách TAG mà user này được phép xem
+    # Kết quả VD: {'FINANCE', 'LEGAL'}
+    allowed_tags = get_user_allowed_tags(db, current_user, project_id)
+    
+    user_clearance = current_user.security_clearance.value 
+    visible_items = []
+    
+    for item in all_items:
+        # A. Xử lý FOLDER
+        if 'application/vnd.google-apps.folder' in item.get('mimeType', ''):
+            folder_tag = _get_folder_tag(item['name']) # VD: "Hồ sơ tài chính" -> "FINANCE"
+
+            # --- LOGIC CHECK QUYỀN MỚI ---
+            # Nếu folder có Tag (là folder nghiệp vụ) VÀ Tag đó không nằm trong danh sách được phép
+            # -> Bỏ qua (Ẩn folder đó đi) hoặc đánh dấu "access": "DENIED"
+            if folder_tag and folder_tag not in allowed_tags:
+                # Cách 1: Ẩn luôn (User không biết sự tồn tại)
+                continue 
+                
+                # Cách 2: Hiện nhưng khóa (nếu muốn)
+                # item['access'] = "DENIED" 
+            # -----------------------------
+
+            visible_items.append({
+                "id": item['id'], 
+                "name": item['name'], 
+                "type": "FOLDER",
+                "link": item['webViewLink'], 
+                "access": "GRANTED",
+                "tag": folder_tag
+            })
+            continue
+
+        # B. Xử lý FILE (Giữ nguyên logic cũ theo Security Level)
+        props = item.get('properties', {})
+        file_level = int(props.get('security_level', 1))
+        
+        if user_clearance >= file_level:
+            visible_items.append({
+                "id": item['id'], 
+                "name": item['name'], 
+                "type": "FILE",
+                "mime_type": item.get('mimeType'),
+                "link": item['webViewLink'], 
+                "level": file_level, 
+                "access": "GRANTED",
+                "tag": None
+            })
+    
+    return {
+        "current_folder_id": folder_id, 
+        "project_id": project_id,
+        "total_items": len(visible_items), 
+        "data": visible_items
+    }
+    
 @router.get("/folder/{folder_id}")
 def get_folder_content(folder_id: str, current_user: User = Depends(get_current_user)):
     """
