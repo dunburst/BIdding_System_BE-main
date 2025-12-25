@@ -8,7 +8,7 @@ from database import get_db
 from models import User, SecurityLevel
 from utils.security import get_current_user
 from .service import drive_service
-from utils.permission_service import get_user_allowed_tags
+from utils.permission_service import get_user_allowed_tags_with_name
 
 router = APIRouter(
     prefix="/drive",
@@ -74,18 +74,18 @@ def get_root_projects(current_user: User = Depends(get_current_user)):
 @router.get("/folder/{folder_id}/me")
 def get_folder_by_user(
     folder_id: str, 
-    project_id: int, # <--- BẮT BUỘC THÊM: Để biết đang ở dự án nào
+    project_id: int, 
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db) # <--- Thêm DB Session
+    db: Session = Depends(get_db)
 ):
-    """Lấy danh sách file/folder con và CHECK QUYỀN TAG"""
+    """Lấy danh sách file/folder con và CHECK QUYỀN TAG + Trả về Tên Project"""
     
     # 1. Lấy thông tin từ Drive
     all_items = drive_service.list_files_in_folder(folder_id)
     
-    # 2. Tính toán danh sách TAG mà user này được phép xem
-    # Kết quả VD: {'FINANCE', 'LEGAL'}
-    allowed_tags = get_user_allowed_tags(db, current_user, project_id)
+    # 2. Lấy danh sách quyền (Dạng Dict: {'TAG': 'Tên Project'})
+    # VD: allowed_tags = {'FINANCE': 'Dự án Cầu Đường', 'HR': 'Dự án Cầu Đường'}
+    allowed_tags_map = get_user_allowed_tags_with_name(db, current_user, project_id)
     
     user_clearance = current_user.security_clearance.value 
     visible_items = []
@@ -93,18 +93,20 @@ def get_folder_by_user(
     for item in all_items:
         # A. Xử lý FOLDER
         if 'application/vnd.google-apps.folder' in item.get('mimeType', ''):
-            folder_tag = _get_folder_tag(item['name']) # VD: "Hồ sơ tài chính" -> "FINANCE"
+            folder_tag = _get_folder_tag(item['name']) 
 
-            # --- LOGIC CHECK QUYỀN MỚI ---
-            # Nếu folder có Tag (là folder nghiệp vụ) VÀ Tag đó không nằm trong danh sách được phép
-            # -> Bỏ qua (Ẩn folder đó đi) hoặc đánh dấu "access": "DENIED"
-            if folder_tag and folder_tag not in allowed_tags:
-                # Cách 1: Ẩn luôn (User không biết sự tồn tại)
-                continue 
+            # Biến lưu tên project cấp quyền (mặc định là None)
+            granted_by_project_name = None
+
+            # --- LOGIC CHECK QUYỀN ---
+            if folder_tag:
+                # Lấy tên project từ dictionary quyền
+                granted_by_project_name = allowed_tags_map.get(folder_tag)
                 
-                # Cách 2: Hiện nhưng khóa (nếu muốn)
-                # item['access'] = "DENIED" 
-            # -----------------------------
+                # Nếu folder có Tag mà user không có quyền (không tìm thấy trong map) -> Ẩn
+                if not granted_by_project_name:
+                    continue 
+            # -------------------------
 
             visible_items.append({
                 "id": item['id'], 
@@ -112,11 +114,14 @@ def get_folder_by_user(
                 "type": "FOLDER",
                 "link": item['webViewLink'], 
                 "access": "GRANTED",
-                "tag": folder_tag
+                "tag": folder_tag,
+                
+                # <--- BỔ SUNG DÒNG NÀY ĐỂ TRẢ VỀ TÊN PROJECT
+                "granted_by_project": granted_by_project_name 
             })
             continue
 
-        # B. Xử lý FILE (Giữ nguyên logic cũ theo Security Level)
+        # B. Xử lý FILE (Giữ nguyên)
         props = item.get('properties', {})
         file_level = int(props.get('security_level', 1))
         
@@ -129,7 +134,8 @@ def get_folder_by_user(
                 "link": item['webViewLink'], 
                 "level": file_level, 
                 "access": "GRANTED",
-                "tag": None
+                "tag": None,
+                "granted_by_project": None # File thì không có project tag context
             })
     
     return {
