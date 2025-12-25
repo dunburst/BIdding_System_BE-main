@@ -20,6 +20,34 @@ class TaskAssignmentRequest(BaseModel):
     task_type: str  # HR, LEGAL, TECH, FINANCE, DEVICE, CONTRACT, OTHER
     template_file_ids: List[str] 
 
+# --- HELPER FUNCTION ---
+def _get_folder_tag(folder_name: str) -> Optional[str]:
+    """
+    Hàm xác định Tag của folder dựa trên tên.
+    Dùng để Frontend tự động mở folder tương ứng với loại công việc.
+    """
+    name_lower = folder_name.lower()
+    
+    # Mapping: Từ khóa (lowercase) -> TAG
+    keywords = {
+        "nhân sự": "HR",
+        "pháp lý": "LEGAL",
+        "biện pháp thi công": "TECH",
+        "kỹ thuật": "TECH",
+        "tài chính": "FINANCE",
+        "máy móc": "DEVICE",
+        "thiết bị": "DEVICE",
+        "hợp đồng": "CONTRACT",
+        "hợp đông": "CONTRACT",
+        "khác": "OTHER"
+    }
+    
+    for key, tag in keywords.items():
+        if key in name_lower:
+            return tag
+            
+    return None
+
 # =================================================================
 # 1. API LẤY DANH SÁCH DỰ ÁN (ROOT)
 # =================================================================
@@ -40,21 +68,28 @@ def get_root_projects(current_user: User = Depends(get_current_user)):
     return {"current_context": "ROOT_PROJECTS", "total": len(visible_items), "data": visible_items}
 
 # =================================================================
-# 2. API LẤY FILE TRONG 1 FOLDER CỤ THỂ
+# 2. API LẤY FILE TRONG 1 FOLDER CỤ THỂ (ĐÃ CẬP NHẬT TAG)
 # =================================================================
 @router.get("/folder/{folder_id}")
 def get_folder_content(folder_id: str, current_user: User = Depends(get_current_user)):
-    """Lấy danh sách file/folder con trong folder_id"""
+    """Lấy danh sách file/folder con trong folder_id kèm theo TAG phân loại"""
     all_items = drive_service.list_files_in_folder(folder_id)
     user_clearance = current_user.security_clearance.value 
     visible_items = []
     
     for item in all_items:
-        # A. Folder con -> Luôn hiện
+        # A. Folder con -> Luôn hiện & Tính toán Tag
         if 'application/vnd.google-apps.folder' in item.get('mimeType', ''):
+            # Tự động gán tag dựa trên tên folder (VD: "Hồ sơ nhân sự" -> "HR")
+            folder_tag = _get_folder_tag(item['name'])
+
             visible_items.append({
-                "id": item['id'], "name": item['name'], "type": "FOLDER",
-                "link": item['webViewLink'], "access": "GRANTED"
+                "id": item['id'], 
+                "name": item['name'], 
+                "type": "FOLDER",
+                "link": item['webViewLink'], 
+                "access": "GRANTED",
+                "tag": folder_tag  # <--- TRƯỜNG MỚI THÊM ĐỂ FRONTEND DÙNG
             })
             continue
 
@@ -64,9 +99,14 @@ def get_folder_content(folder_id: str, current_user: User = Depends(get_current_
         
         if user_clearance >= file_level:
             visible_items.append({
-                "id": item['id'], "name": item['name'], "type": "FILE",
+                "id": item['id'], 
+                "name": item['name'], 
+                "type": "FILE",
                 "mime_type": item.get('mimeType'),
-                "link": item['webViewLink'], "level": file_level, "access": "GRANTED"
+                "link": item['webViewLink'], 
+                "level": file_level, 
+                "access": "GRANTED",
+                "tag": None # File thì không có tag folder
             })
     
     return {"current_folder_id": folder_id, "total_items": len(visible_items), "data": visible_items}
@@ -126,10 +166,6 @@ async def update_drive_file(
     - Có thể up file mới đè lên file cũ
     - Hoặc làm cả 3 cùng lúc
     """
-    # (Optional) Logic kiểm tra quyền: Chỉ Admin hoặc người tạo mới được sửa Level cao
-    # if security_level and security_level > current_user.security_clearance.value:
-    #     raise HTTPException(403, "Bạn không thể set level cao hơn quyền hạn của mình")
-
     success = await drive_service.update_file(file_id, new_name, file, security_level)
     
     if not success:
@@ -143,23 +179,17 @@ async def update_drive_file(
             "content_updated": file is not None
         }
     }
+
 # Tìm kiếm tài liệu kho (Cả File và Folder)
 @router.get("/search-repo")
 def search_repository(query: str, current_user: User = Depends(get_current_user)):
-    # 1. Lấy dữ liệu phẳng từ Google Drive (Service giữ nguyên)
-    # Đảm bảo service.py đã lấy trường 'parents' và 'mimeType'
     flat_results = drive_service.search_files(query)
     
-    # 2. Chuẩn bị cấu trúc dữ liệu
-    # Map: { file_id: item_data } để tra cứu O(1)
     item_map = {}
-    
-    # Bước 2a: Khởi tạo Map và chuẩn hóa dữ liệu
     for item in flat_results:
-        # Xác định loại icon
         is_folder = 'application/vnd.google-apps.folder' in item.get('mimeType', '')
         
-        # Tạo object sạch sẽ
+        # Với kết quả tìm kiếm, ta cũng có thể gán tag nếu cần (nhưng ở đây giữ đơn giản)
         clean_item = {
             "id": item['id'],
             "name": item['name'],
@@ -167,37 +197,27 @@ def search_repository(query: str, current_user: User = Depends(get_current_user)
             "mime_type": item.get('mimeType'),
             "link": item['webViewLink'],
             "created_at": item.get('createdTime'),
-            "parents": item.get('parents', []), # List các ID cha
-            "children": [] # <--- QUAN TRỌNG: Nơi chứa các con
+            "parents": item.get('parents', []),
+            "children": []
         }
-        
         item_map[item['id']] = clean_item
 
-    # 3. Thuật toán Xây dựng cây (Build Tree)
     tree_roots = []
-    
     for item_id, item in item_map.items():
-        # Lấy ID cha đầu tiên (Google Drive cho phép nhiều cha, nhưng thường chỉ quan tâm cái đầu)
         parent_id = item['parents'][0] if item['parents'] else None
-        
-        # LOGIC QUAN TRỌNG NHẤT:
-        # Nếu cha của item này CŨNG ĐƯỢC TÌM THẤY trong đợt search này
-        # -> Thì add item này vào làm con của cha nó
         if parent_id and parent_id in item_map:
             item_map[parent_id]['children'].append(item)
         else:
-            # Nếu cha nó không nằm trong kết quả tìm kiếm (hoặc không có cha)
-            # -> Nó là cấp cao nhất trong hiển thị hiện tại
             tree_roots.append(item)
 
-    # 4. Trả về
     return {
         "query": query,
-        "total_matches": len(flat_results), # Tổng số file tìm thấy
-        "tree_roots_count": len(tree_roots), # Số lượng node gốc
-        "data": tree_roots # Dữ liệu dạng cây
+        "total_matches": len(flat_results),
+        "tree_roots_count": len(tree_roots),
+        "data": tree_roots
     }
-# Clone file thủ công (nếu cần)
+
+# Clone file thủ công
 @router.post("/clone-file")
 def clone_file_to_project(
     source_file_id: str = Form(...), target_folder_id: str = Form(...),
@@ -217,40 +237,25 @@ def download_folder_as_zip(folder_id: str, current_user: User = Depends(get_curr
         headers={"Content-Disposition": f"attachment; filename=Project_{folder_id}.zip"}
     )
 
-# 8. API Xóa file (Mới)
+# Xóa file
 @router.delete("/delete/{file_id}")
 def delete_drive_file(
     file_id: str,
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Chuyển file vào thùng rác của Google Drive
-    """
-    # (Optional) Chỉ cho phép Admin hoặc PM xóa
-    # if current_user.role not in ["ADMIN", "PM"]:
-    #     raise HTTPException(403, "Bạn không có quyền xóa tài liệu")
-
     success = drive_service.delete_file(file_id)
-    
     if not success:
-        raise HTTPException(404, "Lỗi: File không tồn tại hoặc không thể xóa")
-        
+        raise HTTPException(404, "Lỗi: File không tồn tại hoặc không thể xóa") 
     return {"message": "Đã chuyển file vào thùng rác thành công", "file_id": file_id}
-# ... (các import hiện tại)
 
-# [MỚI] API lấy Folder con theo danh mục/phòng ban (Dùng cho luồng Selection)
+# [API DỰ PHÒNG] Tìm Folder con theo Category
+# (Giữ lại để tương thích nếu cần dùng sau này, nhưng Frontend hiện tại sẽ dùng Tag từ API trên)
 @router.get("/project/{project_folder_id}/category-folder")
 def get_project_category_folder(
     project_folder_id: str,
-    category: str, # VD: HR, LEGAL, TECH, FINANCE...
+    category: str,
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Tìm folder con dựa trên danh mục công việc (Category).
-    VD: Category='HR' -> Tìm folder có tên chứa 'hồ sơ nhân sự' bên trong project_folder_id
-    """
-    # Mapping từ Category (Code) sang Tên folder thực tế
-    # Lưu ý: Cần khớp với logic trong service.clone_files_for_task
     FOLDER_MAPPING = {
         "HR": "nhân sự",             
         "LEGAL": "Pháp lý",          
@@ -265,7 +270,6 @@ def get_project_category_folder(
     if not keyword:
         raise HTTPException(400, f"Không hỗ trợ danh mục: {category}")
 
-    # Gọi service để tìm ID folder con
     target_folder_id = drive_service.get_subfolder_id_by_name(project_folder_id, keyword)
     
     if not target_folder_id:
