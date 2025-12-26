@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List
 
 from database import get_db # Hàm lấy DB session của bạn
-from schemas.task import TaskCreate, TaskResponse, TaskUpdate, TaskStatus, TaskCommentCreate, TaskCommentResponse
+from schemas.task import TaskCreate, TaskResponse, TaskUpdate, TaskStatus, TaskCommentCreate, TaskCommentResponse, TaskCommentUpdate
 import cruds.task as task_crud
 from models import User , UserRole
 from utils.abac import check_permission, AbacAction
@@ -73,6 +73,20 @@ def update_existing_task(
     """
     return task_crud.update_task(db, task_id, task_in, current_user)
 
+@router.post("/{task_id}/attachment", response_model=TaskResponse)
+def upload_attachment(
+    task_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Upload file đính kèm cho công việc.
+    - File sẽ được lưu vào bucket 'jkancon' trên MinIO.
+    - URL sẽ được cập nhật vào trường attachment_url của Task.
+    """
+    return task_crud.upload_task_attachment(db, task_id, file, current_user)
+
 @router.post("/{task_id}/comments", response_model=TaskCommentResponse)
 def add_comment_to_task(
     task_id: int,
@@ -98,6 +112,32 @@ def get_task_comments(
     """
     return task_crud.get_task_comments_tree(db, task_id, current_user)
 
+@router.put("/comments/{comment_id}", response_model=TaskCommentResponse)
+def update_comment(
+    comment_id: int,
+    comment_in: TaskCommentUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Sửa nội dung bình luận (Chỉ dành cho chính chủ).
+    """
+    return task_crud.update_comment(db, comment_id, comment_in, current_user)
+
+@router.delete("/comments/{comment_id}", status_code=status.HTTP_200_OK)
+def delete_comment(
+    comment_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Xóa bình luận.
+    - User thường: Chỉ xóa được comment của mình.
+    - Admin/Manager: Xóa được mọi comment.
+    - Lưu ý: Xóa comment cha sẽ xóa luôn các comment trả lời (reply) bên trong.
+    """
+    return task_crud.delete_comment(db, comment_id, current_user)
+
 @router.delete("/{task_id}", status_code=status.HTTP_200_OK)
 def delete_existing_task(
     task_id: int,
@@ -117,19 +157,18 @@ def get_my_tasks(
     current_user: User = Depends(get_current_user)
 ):
     """
-    User xem danh sách task.
-    - Nếu là SPECIALIST: Xem được cả task của phòng ban mình.
-    - Role khác: Chỉ xem task được giao đích danh.
+    Xem danh sách công việc của tôi dưới dạng cây phân cấp.
+    Hệ thống sẽ tự động tìm các task cha để hiển thị ngữ cảnh đầy đủ.
     """
-    # Check quyền truy cập module (giữ nguyên logic cũ của bạn)
+    # Check quyền truy cập module
     is_allowed = check_permission(
         db=db, user=current_user, resource="bidding_task", action=AbacAction.LIST
     )
     if not is_allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Không có quyền.")
     
-    # --- THAY ĐỔI Ở ĐÂY: Truyền nguyên object current_user vào ---
-    return task_crud.get_all_tasks_by_user_id(db, user=current_user)
+    # [THAY ĐỔI] Gọi hàm get_my_tasks_as_tree thay vì hàm cũ
+    return task_crud.get_my_tasks_as_tree(db, user=current_user)
 
 
 # --- API: Quản lý xem công việc nhân viên (Cũng cần sửa để code không bị lỗi) ---
@@ -147,4 +186,4 @@ def get_user_tasks(
          raise HTTPException(status_code=404, detail="Nhân viên không tồn tại")
 
     # 2. Truyền object target_user vào hàm crud
-    return task_crud.get_all_tasks_by_user_id(db, user=target_user)
+    return task_crud.get_my_tasks_as_tree(db, user=target_user)

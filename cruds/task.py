@@ -1,9 +1,17 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select, or_, and_, case
-from fastapi import HTTPException, status
+from fastapi import HTTPException, status, UploadFile
 from models import BiddingTask, TaskAssignment, User, UserRole, TaskStatus, TaskPriority, TaskComment
-from schemas.task import TaskCreate, TaskUpdate, TaskCommentCreate
+from schemas.task import TaskCreate, TaskUpdate, TaskCommentCreate, TaskCommentUpdate, TaskResponse
 from utils.abac import check_permission, AbacAction
+import os
+import uuid
+import shutil
+import logging
+from typing import Optional, List, Dict
+from minio_client import minio_handler
+
+logger = logging.getLogger(__name__)
 
 # --- HÀM KIỂM TRA QUYỀN TRUY CẬP (Helper) ---
 def check_access_permission(db: Session, task_id: int, user: User) -> bool:
@@ -246,11 +254,16 @@ def delete_task(db: Session, task_id: int, user: User):
     return {"message": "Task deleted successfully"}
 
 # --- CẬP NHẬT LOGIC LẤY DANH SÁCH (SORTING) ---
-def get_all_tasks_by_user_id(db: Session, user: User):
+def get_my_tasks_as_tree(db: Session, user: User) -> List[TaskResponse]:
     """
-    Lấy công việc của user.
-    Sắp xếp: Ưu tiên Cao lên đầu -> Deadline gần nhất -> Deadline xa.
+    Lấy công việc của tôi nhưng hiển thị theo cấu trúc Cây (Tree).
+    Logic:
+    1. Tìm tất cả task mà user được giao (Leaf Nodes).
+    2. Truy vết ngược lên tìm cha, ông (Ancestors) để có ngữ cảnh.
+    3. Ghép lại thành cây trong bộ nhớ.
     """
+    
+    # --- BƯỚC 1: LẤY CÁC TASK ĐƯỢC GIAO TRỰC TIẾP ---
     query = select(BiddingTask).outerjoin(TaskAssignment, BiddingTask.assignments)
 
     filter_conditions = [
@@ -258,34 +271,93 @@ def get_all_tasks_by_user_id(db: Session, user: User):
         TaskAssignment.assigned_user_id == user.user_id
     ]
 
+    # Nếu là SPECIALIST thì xem được task của phòng ban
     if user.role == UserRole.SPECIALIST and user.org_unit_id:
          filter_conditions.append(TaskAssignment.assigned_unit_id == user.org_unit_id)
 
     query = query.where(or_(*filter_conditions)).distinct()
-
+    
+    # Eager load project để hiển thị tên dự án
     query = query.options(joinedload(BiddingTask.project))
+    
+    # Danh sách task trực tiếp (My Tasks)
+    my_tasks = db.execute(query).unique().scalars().all()
+    
+    if not my_tasks:
+        return []
 
-    tasks = db.execute(query).unique().scalars().all()
+    # --- BƯỚC 2: TRUY VẾT NGƯỢC TÌM TASK CHA (ANCESTORS) ---
+    # Dùng Dict để lưu unique các task (tránh trùng lặp)
+    all_related_tasks: Dict[int, BiddingTask] = {t.id: t for t in my_tasks}
+    
+    # List chứa các ID cần đi tìm cha
+    ids_to_find_parent = [t.id for t in my_tasks if t.parent_task_id is not None]
+    
+    while ids_to_find_parent:
+        # Query lấy các task cha của danh sách ID hiện tại
+        parent_query = select(BiddingTask).where(
+            BiddingTask.id.in_(
+                select(BiddingTask.parent_task_id).where(BiddingTask.id.in_(ids_to_find_parent))
+            )
+        ).options(joinedload(BiddingTask.project))
+        
+        parents = db.execute(parent_query).unique().scalars().all()
+        
+        ids_to_find_parent = [] # Reset để chứa các ID của vòng lặp tiếp theo
+        
+        for p in parents:
+            if p.id not in all_related_tasks:
+                all_related_tasks[p.id] = p
+                # Nếu ông này vẫn còn cha, thì thêm vào list để tìm tiếp
+                if p.parent_task_id:
+                    ids_to_find_parent.append(p.id)
 
-    # Priority Order Mapping để sort
-    priority_order = {
-        TaskPriority.HIGH: 1,
-        TaskPriority.MEDIUM: 2,
-        TaskPriority.LOW: 3
-    }
+    # --- BƯỚC 3: DỰNG CÂY (IN-MEMORY BUILD) ---
+    # Chuyển đổi ORM Object sang Pydantic Schema để thao tác list `sub_tasks`
+    
+    schema_map: Dict[int, TaskResponse] = {}
+    
+    # 3.1 Convert sang Schema
+    for t_id, t_orm in all_related_tasks.items():
+        # Validate model, quan trọng là set sub_tasks = [] để ta tự fill
+        t_schema = TaskResponse.model_validate(t_orm)
+        t_schema.sub_tasks = [] 
+        
+        # Helper: Gán tên project vào schema (nếu schema có trường project_name)
+        if t_orm.project:
+            t_schema.project_name = t_orm.project.name
+            
+        schema_map[t_id] = t_schema
 
-    # Sắp xếp:
-    # 1. Priority (HIGH < MEDIUM < LOW -> theo value 1,2,3)
-    # 2. Deadline (None deadline sẽ đẩy xuống cuối hoặc đầu tùy bạn, ở đây để cuối)
-    sorted_tasks = sorted(
-        tasks, 
-        key=lambda x: (
-            priority_order.get(x.priority, 2), # Sort theo Priority trước
-            x.deadline is None,                # Deadline có hay không
-            x.deadline                         # Giá trị Deadline
-        )
-    )
-    return sorted_tasks
+    # 3.2 Ráp nối Cha - Con
+    roots = []
+    for t_id, t_schema in schema_map.items():
+        # Nếu có cha và cha cũng nằm trong danh sách đã lấy
+        if t_schema.parent_task_id and t_schema.parent_task_id in schema_map:
+            parent = schema_map[t_schema.parent_task_id]
+            parent.sub_tasks.append(t_schema)
+        else:
+            # Nếu không có cha (hoặc cha không thuộc scope lấy về) -> Nó là Root của nhánh này
+            roots.append(t_schema)
+
+    # 3.3 (Tùy chọn) Sắp xếp lại danh sách theo Priority hoặc Deadline
+    def recursive_sort(tasks_list):
+        # Map độ ưu tiên ra số
+        prio_map = {TaskPriority.HIGH: 1, TaskPriority.MEDIUM: 2, TaskPriority.LOW: 3}
+        
+        tasks_list.sort(key=lambda x: (
+            prio_map.get(x.priority, 2), # 1. Ưu tiên
+            x.deadline is None,          # 2. Có deadline hay không (None xuống dưới)
+            x.deadline                   # 3. Ngày deadline
+        ))
+        
+        for task in tasks_list:
+            if task.sub_tasks:
+                recursive_sort(task.sub_tasks)
+
+    recursive_sort(roots)
+    
+    return roots
 
 # --- LOGIC CRUD CHO COMMENT ---
 
@@ -295,8 +367,8 @@ def create_comment(db: Session, task_id: int, comment_in: TaskCommentCreate, use
     """
     # 1. Kiểm tra quyền truy cập Task trước khi comment
     # (Dùng lại hàm check_access_permission bạn đã có)
-    if not check_access_permission(db, task_id, user):
-        raise HTTPException(status_code=403, detail="Bạn không có quyền thảo luận tại công việc này.")
+    # if not check_access_permission(db, task_id, user):
+    #     raise HTTPException(status_code=403, detail="Bạn không có quyền thảo luận tại công việc này.")
 
     # 2. Nếu là reply, kiểm tra parent comment có tồn tại và thuộc task này không
     if comment_in.parent_id:
@@ -324,8 +396,8 @@ def get_task_comments_tree(db: Session, task_id: int, user: User):
     Lấy danh sách comment theo dạng cây (Nested).
     Chỉ lấy các comment gốc (parent_id=None), các reply sẽ được load qua relationship.
     """
-    if not check_access_permission(db, task_id, user):
-         raise HTTPException(status_code=403, detail="Không có quyền xem thảo luận.")
+    # if not check_access_permission(db, task_id, user):
+    #      raise HTTPException(status_code=403, detail="Không có quyền xem thảo luận.")
 
     # Eager Load: Load luôn author và replies để tránh N+1 query
     query = select(TaskComment).where(
@@ -338,3 +410,111 @@ def get_task_comments_tree(db: Session, task_id: int, user: User):
 
     comments = db.execute(query).unique().scalars().all()
     return comments
+
+# --- UPDATE COMMENT ---
+def update_comment(db: Session, comment_id: int, comment_in: TaskCommentUpdate, user: User):
+    # 1. Tìm comment
+    comment = db.query(TaskComment).filter(TaskComment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Bình luận không tồn tại.")
+
+    # 2. Kiểm tra quyền sở hữu (Chỉ chủ nhân mới được sửa)
+    if comment.user_id != user.user_id:
+        raise HTTPException(status_code=403, detail="Bạn không có quyền sửa bình luận của người khác.")
+
+    # 3. Cập nhật
+    comment.content = comment_in.content
+    db.commit()
+    db.refresh(comment)
+    return comment
+
+# --- DELETE COMMENT ---
+def delete_comment(db: Session, comment_id: int, user: User):
+    # 1. Tìm comment
+    comment = db.query(TaskComment).filter(TaskComment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Bình luận không tồn tại.")
+
+    # 2. Kiểm tra quyền:
+    # - Chủ nhân comment được xóa
+    # - Hoặc Admin/Manager được xóa (để kiểm duyệt nội dung xấu)
+    is_author = comment.user_id == user.user_id
+    is_admin = user.role in [UserRole.ADMIN, UserRole.MANAGER]
+    
+    if not (is_author or is_admin):
+        raise HTTPException(status_code=403, detail="Bạn không có quyền xóa bình luận này.")
+
+    # 3. Xóa
+    # Lưu ý: Do đã cấu hình cascade ở DB và Model, 
+    # các comment con (reply) của comment này cũng sẽ tự động bị xóa theo.
+    db.delete(comment)
+    db.commit()
+    return {"message": "Đã xóa bình luận thành công."}
+
+def upload_task_attachment(db: Session, task_id: int, file: UploadFile, user: User):
+    # 1. Lấy thông tin Task & Check quyền (Sử dụng lại hàm check access có sẵn)
+    task = get_task_detail(db, task_id, user) # Hàm này đã bao gồm check quyền truy cập cơ bản
+    
+    # Check thêm quyền sửa: Chỉ người được giao (Assignee) hoặc Quản lý mới được up file
+    # (Nếu logic của bạn cho phép người xem cũng được up thì bỏ đoạn này)
+    is_assignee = (task.assignee_id == user.user_id)
+    is_manager = user.role in [UserRole.ADMIN, UserRole.MANAGER, UserRole.BID_MANAGER]
+    
+    if not (is_assignee or is_manager):
+         raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Chỉ người được phân công hoặc quản lý mới được tải lên tài liệu đính kèm."
+        )
+
+    # 2. Chuẩn bị thư mục tạm để lưu file trước khi upload MinIO
+    # (MinIO fput_object cần file path thực tế)
+    # Đoạn xử lý tên file tạm
+    # 1. Xử lý tên file (Tránh lỗi splitext nhận None)
+    # Nếu file.filename là None thì dùng "unknown_file"
+    original_filename = file.filename or "unknown_file" 
+    
+    # 2. Xử lý Content-Type (Tránh lỗi upload_file nhận None)
+    # Nếu file.content_type là None thì dùng "application/octet-stream"
+    safe_content_type = file.content_type or "application/octet-stream"
+
+    # -----------------------
+
+    temp_dir = "temp_uploads"
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    # Dùng original_filename đã xử lý ở trên (đảm bảo là string)
+    file_extension = os.path.splitext(original_filename)[1]
+    unique_filename = f"task_{task_id}_{uuid.uuid4().hex}{file_extension}"
+    temp_file_path = os.path.join(temp_dir, unique_filename)
+
+    try:
+        with open(temp_file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        minio_object_name = f"projects/{task.bidding_project_id}/tasks/{unique_filename}"
+        
+        # Truyền safe_content_type vào
+        minio_url = minio_handler.upload_file(
+            file_path=temp_file_path,
+            object_name=minio_object_name,
+            content_type=safe_content_type, # <--- Đã đảm bảo là string
+            bucket_name="jkancon"
+        )
+
+        if not minio_url:
+            raise HTTPException(status_code=500, detail="Lỗi MinIO Upload")
+
+        task.attachment_url = minio_url
+        db.commit()
+        db.refresh(task)
+        
+        logger.info(f"User {user.user_id} uploaded file to task {task_id}: {minio_url}")
+        return task
+
+    except Exception as e:
+        logger.error(f"Upload task attachment error: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+        
+    finally:
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)

@@ -9,7 +9,8 @@ from urllib.parse import quote
 MINIO_ENDPOINT = "10.10.0.158:9000"  
 MINIO_ACCESS_KEY = "admin_user"    
 MINIO_SECRET_KEY = "MinioStrongPassword2024!" 
-MINIO_BUCKET = "files"             
+MINIO_BUCKET = "files"
+MINIO_BUCKET_JKANCON = "jkancon" # Bucket mới             
 MINIO_SECURE = False               # False vì chạy http (chưa có SSL)
 
 logger = logging.getLogger("MinIO")
@@ -28,19 +29,24 @@ class MinIOHandler:
             if not self.client.bucket_exists(MINIO_BUCKET):
                 self.client.make_bucket(MINIO_BUCKET)
                 logger.info(f"Đã tạo bucket: {MINIO_BUCKET}")
-            
+            # 2. [THÊM] Tạo luôn bucket "jkancon" lúc khởi tạo cho chắc ăn
+            if not self.client.bucket_exists(MINIO_BUCKET_JKANCON):
+                self.client.make_bucket(MINIO_BUCKET_JKANCON)
+                logger.info(f"Đã tạo bucket dự án: {MINIO_BUCKET_JKANCON}")
+                
             logger.info("-> MinIO: Kết nối thành công!")
         except Exception as e:
             logger.error(f"-> MinIO LỖI KẾT NỐI: {e}")
 
-    def upload_file(self, file_path, object_name, content_type="application/octet-stream"):
+    def upload_file(self, file_path, object_name, content_type="application/octet-stream",bucket_name=None):
         if not self.client:
             return None
         
         try:
+            target_bucket = bucket_name if bucket_name else MINIO_BUCKET
             # Upload file lên MinIO (MinIO hỗ trợ UTF-8 nên tên file tiếng Việt vẫn OK)
             self.client.fput_object(
-                MINIO_BUCKET,
+                target_bucket,
                 object_name,
                 file_path,
                 content_type=content_type
@@ -51,7 +57,7 @@ class MinIOHandler:
             safe_object_name = quote(object_name, safe='/')
 
             protocol = "https" if MINIO_SECURE else "http"
-            url = f"{protocol}://{MINIO_ENDPOINT}/{MINIO_BUCKET}/{safe_object_name}"
+            url = f"{protocol}://{MINIO_ENDPOINT}/{target_bucket}/{safe_object_name}"
             return url
         except Exception as e:
             logger.error(f"-> MinIO Upload Lỗi: {e}")

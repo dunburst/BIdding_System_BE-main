@@ -32,6 +32,9 @@ class TaskCommentBase(BaseModel):
 
 class TaskCommentCreate(TaskCommentBase):
     parent_id: Optional[int] = None # Nếu có thì là reply, không thì là comment gốc
+    
+class TaskCommentUpdate(BaseModel):
+    content: str
 
 # Schema hiển thị thông tin người comment (để FE hiển thị avatar/tên)
 class CommentAuthorInfo(BaseModel):
