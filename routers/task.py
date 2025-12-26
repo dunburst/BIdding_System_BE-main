@@ -73,19 +73,49 @@ def update_existing_task(
     """
     return task_crud.update_task(db, task_id, task_in, current_user)
 
-@router.post("/{task_id}/attachment", response_model=TaskResponse)
-def upload_attachment(
+@router.post("/{task_id}/attachments", response_model=TaskResponse)
+def upload_attachments(
     task_id: int,
-    file: UploadFile = File(...),
+    # [THAY ĐỔI] Nhận vào một List files
+    files: List[UploadFile] = File(...), 
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Upload file đính kèm cho công việc.
-    - File sẽ được lưu vào bucket 'jkancon' trên MinIO.
-    - URL sẽ được cập nhật vào trường attachment_url của Task.
+    Upload NHIỀU file đính kèm cho công việc.
+    - Files sẽ được lưu vào bucket 'jkancon' trong thư mục tên là ID của Task.
+    - Cập nhật danh sách URL vào DB.
     """
-    return task_crud.upload_task_attachment(db, task_id, file, current_user)
+    return task_crud.upload_task_attachments(db, task_id, files, current_user)
+
+@router.delete("/{task_id}/attachments", response_model=TaskResponse)
+def remove_all_attachments(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    XÓA TẤT CẢ file đính kèm của một Task.
+    - Xóa toàn bộ folder {task_id} trên MinIO.
+    - Reset danh sách file trong DB về rỗng.
+    CẢNH BÁO: Hành động này không thể hoàn tác.
+    """
+    return task_crud.delete_all_task_attachments(db, task_id, current_user)
+
+@router.delete("/{task_id}/attachments/{filename}", response_model=TaskResponse)
+def remove_attachment(
+    task_id: int,
+    filename: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Xóa file đính kèm của Task.
+    - Xóa file trên MinIO (Bucket jkancon).
+    - Xóa link khỏi Database.
+    User cần truyền đúng tên file (VD: tai_lieu.pdf).
+    """
+    return task_crud.delete_task_attachment(db, task_id, filename, current_user)
 
 @router.post("/{task_id}/comments", response_model=TaskCommentResponse)
 def add_comment_to_task(

@@ -6,6 +6,17 @@ from enum import Enum
 # Import Enum từ model gốc (giả sử bạn để file model là models.py)
 from models import TaskStatus, AssignmentType, TaskPriority, TaskType, TaskTag
 
+
+# Định nghĩa Schema nhỏ để lấy tên
+class SimpleUser(BaseModel):
+    full_name: str
+    class Config:
+        from_attributes = True
+
+class SimpleUnit(BaseModel):
+    unit_name: str
+    class Config:
+        from_attributes = True
 # --- 1. SCHEMAS CHO ASSIGNMENT ---
 class TaskAssignmentBase(BaseModel):
     assigned_unit_id: Optional[int] = None
@@ -20,6 +31,9 @@ class TaskAssignmentCreate(TaskAssignmentBase):
 class TaskAssignmentResponse(TaskAssignmentBase):
     assignment_id: int
     is_accepted: bool
+    # Model TaskAssignment có relationship 'user' và 'unit'
+    user: Optional[SimpleUser] = None 
+    unit: Optional[SimpleUnit] = None
 
     class Config:
         from_attributes = True
@@ -71,7 +85,7 @@ class TaskBase(BaseModel):
     tag: Optional[TaskTag] = None
     # --- [NEW] ---
     description: Optional[str] = None
-    attachment_url: Optional[str] = None
+    attachment_url: Optional[List[str]] = []
     source_type: Optional[str] = None 
 
 class TaskCreate(TaskBase):
@@ -101,7 +115,7 @@ class TaskUpdate(BaseModel):
     tag: Optional[TaskTag] = None
     # --- [NEW] ---
     description: Optional[str] = None
-    attachment_url: Optional[str] = None
+    attachment_url: Optional[List[str]] = []
     # BỔ SUNG: Cho phép gửi kèm danh sách assignments mới để thay thế danh sách cũ
     assignments: Optional[List[TaskAssignmentCreate]] = None
 

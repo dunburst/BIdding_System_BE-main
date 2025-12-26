@@ -136,7 +136,14 @@ def get_project_tasks_tree(db: Session, project_id: int, user: User):
         # <--- THÊM joinedload(BiddingTask.project)
         joinedload(BiddingTask.project),
         joinedload(BiddingTask.assignments),
-        joinedload(BiddingTask.sub_tasks).joinedload(BiddingTask.assignments)
+        joinedload(BiddingTask.sub_tasks).joinedload(BiddingTask.assignments),
+        # [SỬA ĐOẠN NÀY] Load Assignments kèm theo User và Unit
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit),
+        
+        # Load Sub-tasks và Assignments của Sub-tasks cũng phải kèm User/Unit
+        joinedload(BiddingTask.sub_tasks).joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
+        joinedload(BiddingTask.sub_tasks).joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit)
     )
 
     # 2. Kiểm tra quyền hạn
@@ -169,6 +176,8 @@ def get_task_detail(db: Session, task_id: int, user: User):
     query = select(BiddingTask).where(BiddingTask.id == task_id).options(
         joinedload(BiddingTask.project),    # <--- Load Project
         joinedload(BiddingTask.assignments),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit),
         joinedload(BiddingTask.sub_tasks)
     )
     
@@ -278,7 +287,11 @@ def get_my_tasks_as_tree(db: Session, user: User) -> List[TaskResponse]:
     query = query.where(or_(*filter_conditions)).distinct()
     
     # Eager load project để hiển thị tên dự án
-    query = query.options(joinedload(BiddingTask.project))
+    query = query.options(
+        joinedload(BiddingTask.project),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit)
+    )
     
     # Danh sách task trực tiếp (My Tasks)
     my_tasks = db.execute(query).unique().scalars().all()
@@ -299,7 +312,11 @@ def get_my_tasks_as_tree(db: Session, user: User) -> List[TaskResponse]:
             BiddingTask.id.in_(
                 select(BiddingTask.parent_task_id).where(BiddingTask.id.in_(ids_to_find_parent))
             )
-        ).options(joinedload(BiddingTask.project))
+        ).options(
+            joinedload(BiddingTask.project),
+            joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
+            joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit)
+        )
         
         parents = db.execute(parent_query).unique().scalars().all()
         
@@ -451,70 +468,167 @@ def delete_comment(db: Session, comment_id: int, user: User):
     db.commit()
     return {"message": "Đã xóa bình luận thành công."}
 
-def upload_task_attachment(db: Session, task_id: int, file: UploadFile, user: User):
-    # 1. Lấy thông tin Task & Check quyền (Sử dụng lại hàm check access có sẵn)
-    task = get_task_detail(db, task_id, user) # Hàm này đã bao gồm check quyền truy cập cơ bản
-    
-    # Check thêm quyền sửa: Chỉ người được giao (Assignee) hoặc Quản lý mới được up file
-    # (Nếu logic của bạn cho phép người xem cũng được up thì bỏ đoạn này)
+def upload_task_attachments(db: Session, task_id: int, files: List[UploadFile], user: User):
+    # 1. Lấy thông tin Task & Check quyền
+    from cruds.task import get_task_detail 
+    task = get_task_detail(db, task_id, user) 
+
+    # Check quyền (Assignee hoặc Manager)
     is_assignee = (task.assignee_id == user.user_id)
     is_manager = user.role in [UserRole.ADMIN, UserRole.MANAGER, UserRole.BID_MANAGER]
     
     if not (is_assignee or is_manager):
          raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Chỉ người được phân công hoặc quản lý mới được tải lên tài liệu đính kèm."
+            detail="Bạn không có quyền tải lên tài liệu cho công việc này."
         )
 
-    # 2. Chuẩn bị thư mục tạm để lưu file trước khi upload MinIO
-    # (MinIO fput_object cần file path thực tế)
-    # Đoạn xử lý tên file tạm
-    # 1. Xử lý tên file (Tránh lỗi splitext nhận None)
-    # Nếu file.filename là None thì dùng "unknown_file"
-    original_filename = file.filename or "unknown_file" 
-    
-    # 2. Xử lý Content-Type (Tránh lỗi upload_file nhận None)
-    # Nếu file.content_type là None thì dùng "application/octet-stream"
-    safe_content_type = file.content_type or "application/octet-stream"
-
-    # -----------------------
-
+    # 2. Chuẩn bị thư mục tạm
     temp_dir = "temp_uploads"
     os.makedirs(temp_dir, exist_ok=True)
     
-    # Dùng original_filename đã xử lý ở trên (đảm bảo là string)
-    file_extension = os.path.splitext(original_filename)[1]
-    unique_filename = f"task_{task_id}_{uuid.uuid4().hex}{file_extension}"
-    temp_file_path = os.path.join(temp_dir, unique_filename)
+    # Danh sách để chứa các URL sau khi upload thành công
+    uploaded_urls = []
+    
+    # Nếu task.attachment_url đang là None, khởi tạo list rỗng. 
+    # Nếu đã có data (JSON), lấy data cũ ra để append thêm.
+    current_urls = task.attachment_url if task.attachment_url else []
+    # Đảm bảo current_urls là list (phòng trường hợp DB lưu sai format)
+    if not isinstance(current_urls, list):
+        current_urls = []
 
     try:
-        with open(temp_file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # 3. [VÒNG LẶP] Xử lý từng file
+        for file in files:
+            # Xử lý tên file & content type
+            original_filename = file.filename or f"unknown_{uuid.uuid4().hex}"
+            safe_content_type = file.content_type or "application/octet-stream"
             
-        minio_object_name = f"projects/{task.bidding_project_id}/tasks/{unique_filename}"
+            # Tạo file tạm
+            # Giữ nguyên tên gốc hoặc thêm UUID để tránh trùng file trong cùng folder
+            # Cách 1: Giữ nguyên tên gốc (nếu upload trùng tên sẽ ghi đè):
+            # clean_filename = original_filename
+            # Cách 2: Thêm UUID (an toàn hơn):
+            file_ext = os.path.splitext(original_filename)[1]
+            clean_filename = f"{uuid.uuid4().hex}_{original_filename}"
+            
+            temp_file_path = os.path.join(temp_dir, clean_filename)
+
+            # Lưu xuống đĩa tạm
+            with open(temp_file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            
+            # --- [QUAN TRỌNG] Tạo đường dẫn theo yêu cầu: {task_id}/{filename} ---
+            # Bucket: jkancon
+            # Object: 102/tai_lieu_hop.pdf
+            minio_object_name = f"{task_id}/{original_filename}" 
+            
+            # Upload MinIO
+            minio_url = minio_handler.upload_file(
+                file_path=temp_file_path,
+                object_name=minio_object_name,
+                content_type=safe_content_type,
+                bucket_name="jkancon"
+            )
+
+            if minio_url:
+                uploaded_urls.append(minio_url)
+            
+            # Xóa file tạm ngay sau khi up xong file đó
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
+        # 4. Cập nhật DB
+        # Nối list mới vào list cũ
+        updated_list = current_urls + uploaded_urls
         
-        # Truyền safe_content_type vào
-        minio_url = minio_handler.upload_file(
-            file_path=temp_file_path,
-            object_name=minio_object_name,
-            content_type=safe_content_type, # <--- Đã đảm bảo là string
-            bucket_name="jkancon"
-        )
-
-        if not minio_url:
-            raise HTTPException(status_code=500, detail="Lỗi MinIO Upload")
-
-        task.attachment_url = minio_url
+        # Lưu lại vào DB (SQLAlchemy sẽ tự convert list -> JSON array)
+        task.attachment_url = updated_list
+        
         db.commit()
         db.refresh(task)
         
-        logger.info(f"User {user.user_id} uploaded file to task {task_id}: {minio_url}")
+        logger.info(f"User {user.user_id} added {len(uploaded_urls)} files to task {task_id}")
         return task
 
     except Exception as e:
-        logger.error(f"Upload task attachment error: {e}")
+        logger.error(f"Batch upload error: {e}")
+        # Dọn dẹp folder tạm nếu lỗi
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-        
-    finally:
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+    
+def delete_task_attachment(db: Session, task_id: int, filename: str, user: User):
+    # 1. Lấy task và check quyền
+    from cruds.task import get_task_detail
+    task = get_task_detail(db, task_id, user)
+
+    # Check quyền (Chỉ Assignee hoặc Manager được xóa)
+    is_assignee = (task.assignee_id == user.user_id)
+    is_manager = user.role in [UserRole.ADMIN, UserRole.MANAGER, UserRole.BID_MANAGER]
+    
+    if not (is_assignee or is_manager):
+         raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Bạn không có quyền xóa tài liệu của công việc này."
+        )
+
+    # 2. Xác định Object Name trên MinIO
+    # Cấu trúc folder: {task_id}/{filename}
+    minio_object_name = f"{task_id}/{filename}"
+
+    # 3. Xử lý danh sách URL trong Database
+    current_urls = task.attachment_url if isinstance(task.attachment_url, list) else []
+    
+    # Tạo list mới KHÔNG chứa file cần xóa
+    # Logic: Giữ lại các URL mà trong chuỗi KHÔNG chứa "task_id/filename"
+    # (Cách này an toàn hơn so sánh chuỗi tuyệt đối vì URL có thể chứa domain thay đổi)
+    new_urls = [url for url in current_urls if minio_object_name not in url]
+
+    # Nếu độ dài không đổi nghĩa là không tìm thấy file trong DB
+    if len(new_urls) == len(current_urls):
+        raise HTTPException(status_code=404, detail="Không tìm thấy file này trong dữ liệu công việc.")
+
+    # 4. Gọi MinIO xóa file vật lý
+    is_deleted = minio_handler.delete_file(minio_object_name, bucket_name="jkancon")
+    
+    if not is_deleted:
+        # Tùy chọn: Có thể throw lỗi hoặc vẫn cho qua nếu muốn ưu tiên sạch DB
+        logger.warning(f"Không thể xóa file trên MinIO (hoặc file không tồn tại): {minio_object_name}")
+
+    # 5. Cập nhật DB
+    task.attachment_url = new_urls
+    db.commit()
+    db.refresh(task)
+    
+    return task
+def delete_all_task_attachments(db: Session, task_id: int, user: User):
+    # 1. Lấy task và check quyền
+    from cruds.task import get_task_detail
+    task = get_task_detail(db, task_id, user)
+
+    # Check quyền (Chỉ Assignee hoặc Manager)
+    is_assignee = (task.assignee_id == user.user_id)
+    is_manager = user.role in [UserRole.ADMIN, UserRole.MANAGER, UserRole.BID_MANAGER]
+    
+    if not (is_assignee or is_manager):
+         raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Bạn không có quyền xóa tài liệu của công việc này."
+        )
+
+    # 2. Gọi MinIO xóa folder "{task_id}/"
+    # Lưu ý: Cần thêm dấu "/" ở cuối để đảm bảo chỉ xóa đúng folder task đó
+    # Nếu không có dấu "/", task_id="1" có thể xóa nhầm file của task_id="10", "11"...
+    folder_prefix = f"{task_id}/"
+    
+    minio_handler.delete_folder(folder_prefix, bucket_name="jkancon")
+
+    # 3. Làm sạch dữ liệu trong DB (Set về mảng rỗng)
+    task.attachment_url = []
+    
+    db.commit()
+    db.refresh(task)
+    
+    logger.info(f"User {user.user_id} deleted ALL attachments of task {task_id}")
+    return task

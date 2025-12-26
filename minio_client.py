@@ -1,4 +1,5 @@
 from minio import Minio
+from minio.deleteobjects import DeleteObject
 import logging
 import os
 from urllib.parse import quote
@@ -86,4 +87,62 @@ class MinIOHandler:
             logger.error(f"-> MinIO Download Lỗi: {e}")
             return False
         
+    def delete_file(self, object_name, bucket_name="jkancon"):
+        """
+        Xóa file trên MinIO.
+        :param object_name: Đường dẫn file (VD: 102/bao_cao.pdf)
+        """
+        if not self.client:
+            return False
+            
+        try:
+            self.client.remove_object(bucket_name, object_name)
+            logger.info(f"-> MinIO: Đã xóa file {object_name} trong bucket {bucket_name}")
+            return True
+        except Exception as e:
+            logger.error(f"-> MinIO Delete Error: {e}")
+            return False
+        
+    def delete_folder(self, folder_prefix, bucket_name="jkancon"):
+        """
+        Xóa toàn bộ file có prefix (coi như là folder).
+        """
+        if not self.client:
+            return False
+            
+        try:
+            # 1. Liệt kê tất cả đối tượng
+            objects_to_delete = self.client.list_objects(bucket_name, prefix=folder_prefix, recursive=True)
+            
+            # --- [SỬA LỖI TẠI ĐÂY] ---
+            # Thay vì dùng map/lambda, ta dùng List Comprehension.
+            # Logic: "if obj.object_name" đảm bảo tên file không phải None, lúc đó Type Checker sẽ hiểu đây chắc chắn là str.
+            delete_list = [
+                DeleteObject(obj.object_name) 
+                for obj in objects_to_delete 
+                if obj.object_name
+            ]
+            # -------------------------
+            
+            # Nếu folder rỗng (không có file nào để xóa) thì return True luôn
+            if not delete_list:
+                return True
+
+            # 2. Thực hiện xóa
+            errors = self.client.remove_objects(bucket_name, delete_list)
+            
+            error_count = 0
+            for error in errors:
+                logger.error(f"Lỗi khi xóa file {error.name}: {error.message}")
+                error_count += 1
+            
+            if error_count > 0:
+                return False
+                
+            logger.info(f"-> MinIO: Đã dọn sạch folder {folder_prefix} trong bucket {bucket_name}")
+            return True
+
+        except Exception as e:
+            logger.error(f"-> MinIO Delete Folder Error: {e}")
+            return False
 minio_handler = MinIOHandler()
