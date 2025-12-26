@@ -464,7 +464,7 @@ class BiddingTask(Base):
     
     # --- [NEW] CÁC TRƯỜNG MỚI BỔ SUNG ---
     description: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True) # Mô tả chi tiết công việc
-    attachment_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True) # Link file đính kèm
+    attachment_url: Mapped[Optional[List[str]]] = mapped_column(JSON, default=list, nullable=True) # Danh sách URL file đính kèm
     
     source_type: Mapped[Optional[str]] = mapped_column(String(50))
     ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True) # Lý do đánh giá AI
