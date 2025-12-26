@@ -185,12 +185,12 @@ def get_task_detail(db: Session, task_id: int, user: User):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    # Kiểm tra quyền
-    if not check_access_permission(db, task_id, user):
-        raise HTTPException(
-            status_code=403, 
-            detail="Bạn không có quyền truy cập vào công việc này (Chỉ dành cho người được phân công hoặc Quản lý)."
-        )
+    # # Kiểm tra quyền
+    # if not check_access_permission(db, task_id, user):
+    #     raise HTTPException(
+    #         status_code=403, 
+    #         detail="Bạn không có quyền truy cập vào công việc này (Chỉ dành cho người được phân công hoặc Quản lý)."
+    #     )
     return task
 
 # --- UPDATE ---
