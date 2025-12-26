@@ -200,6 +200,18 @@ def get_my_tasks(
     # [THAY ĐỔI] Gọi hàm get_my_tasks_as_tree thay vì hàm cũ
     return task_crud.get_my_tasks_as_tree(db, user=current_user)
 
+@router.get("/user/assigned", response_model=List[TaskResponse])
+def get_assigned_tasks_only(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Lấy danh sách task được giao ĐÍCH DANH cho user hiện tại (Assignee).
+    - Chỉ lấy các task mà user là người chịu trách nhiệm chính (assignee_id).
+    - Trả về danh sách phẳng, không bao gồm task cha/con không liên quan.
+    """
+    return task_crud.get_tasks_by_assignee_id(db, user=current_user)
+
 
 # --- API: Quản lý xem công việc nhân viên (Cũng cần sửa để code không bị lỗi) ---
 @router.get("/user/{target_user_id}", response_model=List[TaskResponse])
