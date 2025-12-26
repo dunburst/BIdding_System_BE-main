@@ -9,7 +9,7 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
-from google_auth_httplib2 import AuthorizedHttp # <--- THÊM IMPORT NÀY
+from google_auth_httplib2 import AuthorizedHttp
 
 from fastapi import UploadFile
 from dotenv import load_dotenv
@@ -42,10 +42,10 @@ class GoogleDriveService:
                 except Exception as e:
                     print(f"⚠️ Lỗi refresh token: {e}")
 
-            # 3. Tạo Http object với Timeout 60s (Fix lỗi EOF/SSL)
+            # 3. Tạo Http object với Timeout 60s
             http = httplib2.Http(timeout=60)
             
-            # 4. Wrap Http bằng AuthorizedHttp (Thay cho .authorize cũ)
+            # 4. Wrap Http bằng AuthorizedHttp
             authorized_http = AuthorizedHttp(self.creds, http=http)
 
             # 5. Build service
@@ -54,14 +54,25 @@ class GoogleDriveService:
                 http=authorized_http, 
                 cache_discovery=False
             )
-            print("✅ Kết nối Drive thành công (Đã tối ưu mạng)!")
+            print("✅ Kết nối Drive thành công!")
         else:
             print("❌ Lỗi: Thiếu cấu hình OAuth")
 
     # --- NHÓM 1: QUẢN LÝ FOLDER & FILE CƠ BẢN ---
+    
+    # [MỚI] Hàm lấy thông tin chi tiết của 1 file/folder (Để check tên folder cha)
+    def get_file_metadata(self, file_id: str):
+        if not self.service: return None
+        try:
+            return self.service.files().get(
+                fileId=file_id, 
+                fields='id, name, mimeType, properties'
+            ).execute()
+        except Exception as e:
+            print(f"❌ Lỗi get metadata: {e}")
+            return None
 
     def create_folder(self, folder_name: str, parent_id: Optional[str] = None) -> Optional[str]:
-        """Tạo folder mới và trả về ID"""
         try:
             target_parent = parent_id if parent_id else self.ROOT_FOLDER_ID
             file_metadata = {
@@ -129,33 +140,19 @@ class GoogleDriveService:
             return None
 
     async def update_file(self, file_id: str, new_name: Optional[str] = None, new_file: Optional[UploadFile] = None, security_level: Optional[int] = None):
-        """
-        Cập nhật thông tin file: Tên, Nội dung, và Level bảo mật
-        """
         try:
-            # 1. Chuẩn bị body để update Metadata (Tên, Level)
             body = {}
-            if new_name:
-                body['name'] = new_name
-            
-            if security_level is not None:
-                body['properties'] = {'security_level': str(security_level)}
+            if new_name: body['name'] = new_name
+            if security_level is not None: body['properties'] = {'security_level': str(security_level)}
 
-            # Gọi API update nếu có thông tin metadata cần sửa
             if body:
                 self.service.files().update(fileId=file_id, body=body).execute()
 
-            # 2. Update Content (Nếu có file mới thì upload đè lên)
             if new_file:
                 content = await new_file.read()
                 file_stream = io.BytesIO(content)
                 media = MediaIoBaseUpload(file_stream, mimetype=new_file.content_type, resumable=True)
-                
-                self.service.files().update(
-                    fileId=file_id,
-                    media_body=media
-                ).execute()
-            
+                self.service.files().update(fileId=file_id, media_body=media).execute()
             return True
         except Exception as e:
             print(f"❌ Lỗi update file: {e}")
@@ -176,67 +173,41 @@ class GoogleDriveService:
             print(f"❌ Lỗi list file: {str(e)}")
             return []
 
-    # --- NHÓM 2: NGHIỆP VỤ MỞ RỘNG (SEARCH, COPY, ZIP, ASSIGN) ---
+    # --- NHÓM 2: NGHIỆP VỤ MỞ RỘNG ---
 
     def search_files(self, query_name: str) -> List[dict]:
         if not self.service: return []
         try:
-            # --- SỬA Ở ĐÂY ---
-            # Code cũ: mimeType != 'application/vnd.google-apps.folder' (Chặn folder)
-            # Code mới: Xóa đoạn chặn đó đi để tìm tất cả.
             q = f"name contains '{query_name}' and trashed=false"
-            
             results = self.service.files().list(
-                q=q, pageSize=50, # Tăng số lượng kết quả lên chút
-                # Nhớ lấy thêm trường 'mimeType' để phân biệt đâu là File, đâu là Folder
+                q=q, pageSize=50,
                 fields="files(id, name, mimeType, webViewLink, createdTime, parents, properties)", 
-                orderBy="folder, createdTime desc" # Ưu tiên hiện Folder trước
+                orderBy="folder, createdTime desc"
             ).execute()
-            
             return results.get('files', [])
         except Exception as e:
             print(f"❌ Lỗi search: {e}")
             return []
 
     def copy_file(self, file_id: str, target_folder_id: str, new_name: Optional[str] = None):
-        """Sao chép file và giữ nguyên security_level"""
         try:
-            # 1. Lấy thông tin file gốc (Name + Properties)
-            source = self.service.files().get(
-                fileId=file_id, 
-                fields='name, properties'
-            ).execute()
-            
-            source_props = source.get('properties', {})
-            
-            # 2. Tạo metadata cho file mới
+            source = self.service.files().get(fileId=file_id, fields='name, properties').execute()
             file_metadata = {
                 'parents': [target_folder_id],
                 'name': new_name if new_name else source.get('name'),
-                'properties': source_props # <--- COPY LEVEL Ở ĐÂY
+                'properties': source.get('properties', {})
             }
-
-            # 3. Gọi lệnh Copy
             new_file = self.service.files().copy(
-                fileId=file_id, 
-                body=file_metadata, 
-                fields='id, name, webViewLink, properties'
+                fileId=file_id, body=file_metadata, fields='id, name, webViewLink, properties'
             ).execute()
-            
             return new_file
         except Exception as e:
             print(f"❌ Lỗi copy file: {e}")
             return None
         
     def delete_file(self, file_id: str):
-        """
-        Xóa file bằng cách chuyển vào thùng rác (Trash).
-        An toàn hơn xóa vĩnh viễn.
-        """
         try:
-            body = {'trashed': True}
-            self.service.files().update(fileId=file_id, body=body).execute()
-            print(f"🗑️ Đã chuyển file {file_id} vào thùng rác.")
+            self.service.files().update(fileId=file_id, body={'trashed': True}).execute()
             return True
         except Exception as e:
             print(f"❌ Lỗi xóa file: {e}")
@@ -251,17 +222,14 @@ class GoogleDriveService:
             with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
                 for file in files:
                     if 'application/vnd.google-apps.folder' in file['mimeType']: continue
-                    
                     print(f"⬇️ Zipping: {file['name']}")
                     request = self.service.files().get_media(fileId=file['id'])
                     file_io = io.BytesIO()
                     downloader = MediaIoBaseDownload(file_io, request)
                     done = False
                     while not done: _, done = downloader.next_chunk()
-                    
                     file_io.seek(0)
                     zip_file.writestr(file['name'], file_io.read())
-
             zip_buffer.seek(0)
             return zip_buffer
         except Exception as e:
@@ -283,26 +251,17 @@ class GoogleDriveService:
 
     def clone_files_for_task(self, project_id: str, category: str, source_file_ids: list):
         FOLDER_MAPPING = {
-            "HR": "nhân sự",             
-            "LEGAL": "Pháp lý",          
-            "TECH": "Biện pháp Thi công",
-            "FINANCE": "tài chính",      
-            "DEVICE": "máy móc",         
-            "CONTRACT": "hợp đông",      
-            "OTHER": "khác"              
+            "HR": "nhân sự", "LEGAL": "Pháp lý", "TECH": "Biện pháp Thi công",
+            "FINANCE": "tài chính", "DEVICE": "máy móc", "CONTRACT": "hợp đông", "OTHER": "khác"
         }
-        
         target_keyword = FOLDER_MAPPING.get(category)
         if not target_keyword: return None
-
         target_folder_id = self.get_subfolder_id_by_name(project_id, target_keyword)
         if not target_folder_id: return None
-
         cloned_files = []
         for file_id in source_file_ids:
             new_file = self.copy_file(file_id, target_folder_id)
             if new_file: cloned_files.append(new_file)
-                
         return {"category": category, "target_folder_id": target_folder_id, "files": cloned_files}
 
 drive_service = GoogleDriveService()
