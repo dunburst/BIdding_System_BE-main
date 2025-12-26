@@ -329,7 +329,7 @@ def get_my_tasks_as_tree(db: Session, user: User) -> List[TaskResponse]:
                 if p.parent_task_id:
                     ids_to_find_parent.append(p.id)
 
-    # --- BƯỚC 3: DỰNG CÂY (IN-MEMORY BUILD) ---
+    # --- BƯỚC 3: DỰNG CÂY (IN-MEMORY BUILD) ---    
     # Chuyển đổi ORM Object sang Pydantic Schema để thao tác list `sub_tasks`
     
     schema_map: Dict[int, TaskResponse] = {}
@@ -376,6 +376,49 @@ def get_my_tasks_as_tree(db: Session, user: User) -> List[TaskResponse]:
     
     return roots
 
+def get_tasks_by_assignee_id(db: Session, user: User) -> List[TaskResponse]:
+    """
+    Lấy danh sách task mà user là người thực hiện chính (Assignee).
+    Trả về dạng danh sách phẳng (Flat list).
+    """
+    # 1. Query DB
+    query = select(BiddingTask).where(
+        BiddingTask.assignee_id == user.user_id
+    )
+
+    query = query.options(
+        joinedload(BiddingTask.project),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit)
+    )
+
+    tasks = db.execute(query).unique().scalars().all()
+
+    # 2. Sắp xếp (Logic cũ)
+    prio_map = {TaskPriority.HIGH: 1, TaskPriority.MEDIUM: 2, TaskPriority.LOW: 3}
+    sorted_tasks = sorted(tasks, key=lambda x: (
+        prio_map.get(x.priority, 2), 
+        x.deadline is None,          
+        x.deadline                   
+    ))
+
+    # 3. [FIX LỖI TẠI ĐÂY] Convert ORM -> Pydantic List
+    results = []
+    for task_orm in sorted_tasks:
+        # Sử dụng model_validate để chuyển đổi (tương đương from_orm trong Pydantic v1)
+        task_schema = TaskResponse.model_validate(task_orm)
+        
+        # Vì đây là danh sách phẳng, ta nên reset sub_tasks thành rỗng 
+        # để tránh việc response trả về cả cây con (nếu có), gây rối data.
+        task_schema.sub_tasks = [] 
+        
+        # Nếu property project_name trong Model chưa tự map được, có thể gán thủ công:
+        if task_orm.project:
+            task_schema.project_name = task_orm.project.name
+            
+        results.append(task_schema)
+
+    return results
 # --- LOGIC CRUD CHO COMMENT ---
 
 def create_comment(db: Session, task_id: int, comment_in: TaskCommentCreate, user: User):
