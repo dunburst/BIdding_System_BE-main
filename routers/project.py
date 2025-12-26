@@ -1,10 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Path
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from models import BiddingPackage, BiddingProject, TaskAssignment, User, BiddingTask, TaskStatus, UserRole
 from utils.security import get_current_user
 from utils.abac import check_permission
 from utils.constants import AbacAction
+from utils.permission_service import get_user_allowed_tags_with_name
+from mcp_drive.service import drive_service
+from mcp_drive.router import _get_folder_tag
+
 
 # Giả sử bạn có file dependencies để lấy DB session (get_db)
 from database import get_db 
@@ -264,3 +268,88 @@ def stop_project(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Lỗi khi dừng dự án: {str(e)}")
+    
+@router.get("/folder/{project_id}/me")
+def get_project_files_by_user(
+    project_id: int = Path(..., title="ID của dự án trong Database"), 
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Lấy danh sách file/folder gốc của dự án dựa trên Project ID.
+    Hệ thống sẽ tự lookup drive_folder_id từ Database.
+    """
+    
+    # --- BƯỚC 1: TÌM PROJECT TRONG DB ĐỂ LẤY FOLDER ID ---
+    project = db.query(BiddingProject).filter(BiddingProject.id == project_id).first()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy dự án ID: {project_id}")
+    
+    folder_id = project.drive_folder_id
+    
+    if not folder_id:
+        raise HTTPException(status_code=400, detail="Dự án này chưa được khởi tạo thư mục trên Google Drive (drive_folder_id is NULL)")
+
+    # --- BƯỚC 2: LOGIC CŨ (LẤY FILE TỪ DRIVE & CHECK QUYỀN) ---
+    
+    # 2.1. Lấy thông tin từ Drive dùng folder_id vừa tìm được
+    all_items = drive_service.list_files_in_folder(folder_id)
+    
+    # 2.2. Lấy danh sách quyền
+    allowed_tags_map = get_user_allowed_tags_with_name(db, current_user, project_id)
+    
+    user_clearance = current_user.security_clearance.value 
+    visible_items = []
+    
+    for item in all_items:
+        # A. Xử lý FOLDER
+        if 'application/vnd.google-apps.folder' in item.get('mimeType', ''):
+            folder_tag = _get_folder_tag(item['name']) 
+
+            granted_by_project_name = None
+
+            # --- LOGIC CHECK QUYỀN ---
+            if folder_tag:
+                granted_by_project_name = allowed_tags_map.get(folder_tag)
+                
+                # Nếu folder có Tag mà user không có quyền -> Ẩn
+                if not granted_by_project_name:
+                    continue 
+            # -------------------------
+
+            visible_items.append({
+                "id": item['id'], 
+                "name": item['name'], 
+                "type": "FOLDER",
+                "link": item['webViewLink'], 
+                "access": "GRANTED",
+                "tag": folder_tag,
+                "granted_by_project": granted_by_project_name 
+            })
+            continue
+
+        # B. Xử lý FILE
+        props = item.get('properties', {})
+        file_level = int(props.get('security_level', 1))
+        
+        if user_clearance >= file_level:
+            visible_items.append({
+                "id": item['id'], 
+                "name": item['name'], 
+                "type": "FILE",
+                "mime_type": item.get('mimeType'),
+                "link": item['webViewLink'], 
+                "level": file_level, 
+                "access": "GRANTED",
+                "tag": None,
+                "granted_by_project": None
+            })
+    
+    return {
+        "project_id": project_id,
+        "project_name": project.name, # Trả thêm tên dự án cho tiện
+        "current_folder_id": folder_id, 
+        "total_items": len(visible_items), 
+        "data": visible_items
+    }
