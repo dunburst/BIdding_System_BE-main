@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from mcp_drive.router import router as drive_router
 from starlette.middleware.sessions import SessionMiddleware
-
+from routers import drafting
 from crawler_bot import start_scheduler_service
 # 1. Tự động tạo các bảng trong Database nếu chưa tồn tại
 models.Base.metadata.create_all(bind=engine)
@@ -47,6 +47,7 @@ app.include_router(project.router)
 app.include_router(googlelogin.router) # Gắn router Google Login
 app.include_router(task.router)
 app.include_router(drive_router)
+app.include_router(drafting.router)
 
 # API Test kết nối
 @app.get("/")

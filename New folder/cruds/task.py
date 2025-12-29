@@ -8,10 +8,107 @@ import os
 import uuid
 import shutil
 import logging
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Set # <--- [FIX] Thêm Set
 from minio_client import minio_handler
 
 logger = logging.getLogger(__name__)
+
+# --- HÀM HELPER: XỬ LÝ KẾ THỪA TAG KHI HIỂN THỊ (VIEW ONLY) ---
+def _fill_inherited_tags(tasks, parent_tag=None):
+    """
+    Đệ quy: Nếu task con không có tag, tự động lấy tag của cha để hiển thị.
+    """
+    for task in tasks:
+        # 1. Xác định tag hiệu lực (Ưu tiên của chính nó, nếu không có thì lấy của cha)
+        effective_tag = task.tag if task.tag else parent_tag
+        
+        # 2. Gán tạm vào object (Chỉ trong bộ nhớ, không lưu DB ở hàm này)
+        if not task.tag and parent_tag:
+            task.tag = parent_tag
+        
+        # 3. Tiếp tục đệ quy xuống các task con (sub_tasks)
+        # Kiểm tra xem list sub_tasks có tồn tại và có dữ liệu không
+        if hasattr(task, 'sub_tasks') and task.sub_tasks:
+            _fill_inherited_tags(task.sub_tasks, effective_tag)
+
+def _fill_inherited_tags_pydantic(tasks: List[TaskResponse], parent_tag=None):
+    """
+    Đệ quy tương tự nhưng dành cho danh sách Pydantic Model (get_my_tasks_as_tree)
+    """
+    for task in tasks:
+        effective_tag = task.tag if task.tag else parent_tag
+        if not task.tag and parent_tag:
+            task.tag = parent_tag
+        
+        if task.sub_tasks:
+            _fill_inherited_tags_pydantic(task.sub_tasks, effective_tag)
+
+def _resolve_tags_for_flat_list(db: Session, tasks: List[TaskResponse]):
+    """
+    [MỚI] Điền tag cho danh sách task PHẲNG bằng cách truy vấn ngược lên cha/ông.
+    Dùng cho API get_tasks_by_assignee_id.
+    """
+    # 1. Lọc ra những task cần tìm tag (Tag hiện tại là None và có Parent)
+    tasks_to_update = [t for t in tasks if not t.tag and t.parent_task_id]
+    
+    if not tasks_to_update:
+        return
+
+    # 2. Thu thập dữ liệu các node cha/ông từ DB
+    # Set chứa các ID cần query (ban đầu là parent_id của các task đang thiếu tag)
+    needed_ids: Set[int] = {t.parent_task_id for t in tasks_to_update}
+    
+    # Dictionary lưu info: ID -> {tag: str, parent_id: int}
+    node_info = {} 
+    
+    # Vòng lặp để query ngược lên các cấp (Ông, Cụ...) đến khi hết hoặc tìm thấy tag
+    while needed_ids:
+        # Query DB lấy thông tin: id, tag, parent_task_id
+        # Chỉ lấy những ID chưa có trong node_info để tránh query lại
+        ids_to_fetch = [nid for nid in needed_ids if nid not in node_info]
+        if not ids_to_fetch:
+            break
+
+        rows = db.query(BiddingTask.id, BiddingTask.tag, BiddingTask.parent_task_id)\
+                 .filter(BiddingTask.id.in_(ids_to_fetch)).all()
+        
+        if not rows:
+            break
+
+        # Reset needed_ids để chứa các parent của cấp tiếp theo (nếu cần)
+        needed_ids = set()
+
+        for r_id, r_tag, r_pid in rows:
+            node_info[r_id] = {'tag': r_tag, 'parent_id': r_pid}
+            
+            # Logic: Nếu node này chưa có tag và còn có cha -> Cần tìm tiếp cha của nó
+            if not r_tag and r_pid:
+                # Nếu cha chưa có trong kho thì thêm vào danh sách cần tìm
+                if r_pid not in node_info:
+                    needed_ids.add(r_pid)
+
+    # 3. Gán Tag cho từng task trong danh sách ban đầu
+    for task in tasks_to_update:
+        current_pid = task.parent_task_id
+        
+        # Traverse up (Leo ngược lên cây phả hệ trong memory)
+        # Limit loop để tránh infinite loop nếu dữ liệu lỗi (circular)
+        for _ in range(10): 
+            if current_pid not in node_info:
+                break
+                
+            info = node_info[current_pid]
+            
+            # Nếu tìm thấy Tag ở cấp này -> Gán và dừng
+            if info['tag']:
+                task.tag = info['tag'] 
+                break
+            
+            # Nếu chưa thấy -> Leo tiếp lên cấp trên
+            current_pid = info['parent_id']
+            if not current_pid:
+                break
+
 
 # --- HÀM KIỂM TRA QUYỀN TRUY CẬP (Helper) ---
 def check_access_permission(db: Session, task_id: int, user: User) -> bool:
@@ -63,6 +160,11 @@ def create_task(db: Session, task_in: TaskCreate, current_user: User):
                 detail="Bạn không có quyền giao việc (tạo sub-task) cho đầu mục này."
             )
             
+        # [NEW LOGIC] KẾ THỪA TAG TỪ CHA (Fix Database)
+        # Nếu task con không được chỉ định Tag -> Lấy Tag của cha
+        if not task_in.tag and parent_task.tag:
+            task_in.tag = parent_task.tag
+
     # Trường hợp B: Tạo Task Cha (Root Task)
     else:
         # Check quyền tạo project task thông thường (VD: Chỉ Manager được tạo root)
@@ -75,6 +177,7 @@ def create_task(db: Session, task_in: TaskCreate, current_user: User):
         )
         if not is_allowed:
              raise HTTPException(status_code=403, detail="Bạn không có quyền khởi tạo đầu việc mới.")
+    
     # --- BƯỚC 2: TẠO TASK (Logic cũ giữ nguyên)
     new_task = BiddingTask(
         bidding_project_id=task_in.bidding_project_id,
@@ -85,8 +188,9 @@ def create_task(db: Session, task_in: TaskCreate, current_user: User):
         status=task_in.status,
         priority=task_in.priority,
         task_type=task_in.task_type,
-        # <--- THÊM MỚI DÒNG NÀY
-        tag=task_in.tag,
+        
+        tag=task_in.tag, # Đã được xử lý kế thừa ở trên
+        
         assignee_id=task_in.assignee_id,
         reviewer_id=task_in.reviewer_id,
         source_type=task_in.source_type
@@ -168,6 +272,10 @@ def get_project_tasks_tree(db: Session, project_id: int, user: User):
 
     # 3. Thực thi query
     result = db.execute(query).unique().scalars().all()
+
+    # [NEW LOGIC] FILL TAG CHO VIEW (Fix hiển thị task cũ bị null)
+    _fill_inherited_tags(result)
+
     return result
 
 # --- READ SINGLE ---
@@ -185,12 +293,6 @@ def get_task_detail(db: Session, task_id: int, user: User):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    # # Kiểm tra quyền
-    # if not check_access_permission(db, task_id, user):
-    #     raise HTTPException(
-    #         status_code=403, 
-    #         detail="Bạn không có quyền truy cập vào công việc này (Chỉ dành cho người được phân công hoặc Quản lý)."
-    #     )
     return task
 
 # --- UPDATE ---
@@ -329,7 +431,7 @@ def get_my_tasks_as_tree(db: Session, user: User) -> List[TaskResponse]:
                 if p.parent_task_id:
                     ids_to_find_parent.append(p.id)
 
-    # --- BƯỚC 3: DỰNG CÂY (IN-MEMORY BUILD) ---
+    # --- BƯỚC 3: DỰNG CÂY (IN-MEMORY BUILD) ---    
     # Chuyển đổi ORM Object sang Pydantic Schema để thao tác list `sub_tasks`
     
     schema_map: Dict[int, TaskResponse] = {}
@@ -374,8 +476,59 @@ def get_my_tasks_as_tree(db: Session, user: User) -> List[TaskResponse]:
 
     recursive_sort(roots)
     
+    # [NEW LOGIC] FILL TAG CHO VIEW (Fix hiển thị My Tasks)
+    _fill_inherited_tags_pydantic(roots)
+    
     return roots
 
+def get_tasks_by_assignee_id(db: Session, user: User) -> List[TaskResponse]:
+    """
+    Lấy danh sách task mà user là người thực hiện chính (Assignee).
+    Trả về dạng danh sách phẳng (Flat list).
+    """
+    # 1. Query DB
+    query = select(BiddingTask).where(
+        BiddingTask.assignee_id == user.user_id
+    )
+
+    query = query.options(
+        joinedload(BiddingTask.project),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit)
+    )
+
+    tasks = db.execute(query).unique().scalars().all()
+
+    # 2. Sắp xếp (Logic cũ)
+    prio_map = {TaskPriority.HIGH: 1, TaskPriority.MEDIUM: 2, TaskPriority.LOW: 3}
+    sorted_tasks = sorted(tasks, key=lambda x: (
+        prio_map.get(x.priority, 2), 
+        x.deadline is None,          
+        x.deadline                   
+    ))
+
+    # 3. Convert ORM -> Pydantic List
+    results = []
+    for task_orm in sorted_tasks:
+        # Sử dụng model_validate để chuyển đổi (tương đương from_orm trong Pydantic v1)
+        task_schema = TaskResponse.model_validate(task_orm)
+        
+        # Vì đây là danh sách phẳng, ta nên reset sub_tasks thành rỗng 
+        # để tránh việc response trả về cả cây con (nếu có), gây rối data.
+        task_schema.sub_tasks = [] 
+        
+        # Nếu property project_name trong Model chưa tự map được, có thể gán thủ công:
+        if task_orm.project:
+            task_schema.project_name = task_orm.project.name
+            
+        results.append(task_schema)
+
+    # 4. [FIX] Fill Tag kế thừa cho danh sách phẳng
+    _resolve_tags_for_flat_list(db, results)
+
+    return results
+
+# ... (Giữ nguyên các hàm CRUD Comment và Attachment cũ) ...
 # --- LOGIC CRUD CHO COMMENT ---
 
 def create_comment(db: Session, task_id: int, comment_in: TaskCommentCreate, user: User):

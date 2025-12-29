@@ -157,3 +157,10 @@ def calculate_time_remaining(deadline: Optional[datetime]) -> str:
         return f"{hours} giờ {minutes} phút"
     else:
         return f"{minutes} phút"
+
+
+def get_package_by_project_id(db: Session, project_id: int):
+    """
+    Tìm gói thầu thuộc về một dự án cụ thể.
+    """
+    return db.query(BiddingPackage).filter(BiddingPackage.project_id == project_id).first()

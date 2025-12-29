@@ -1,11 +1,11 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form, Path
 from fastapi.responses import StreamingResponse
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from database import get_db
-from models import User, SecurityLevel
+from models import User, SecurityLevel, BiddingProject
 from utils.security import get_current_user
 from .service import drive_service
 from utils.permission_service import get_user_allowed_tags_with_name
@@ -62,79 +62,6 @@ def get_root_projects(current_user: User = Depends(get_current_user)):
 # =================================================================
 # 2. API LẤY FILE TRONG 1 FOLDER CỤ THỂ (LOGIC INHERITANCE)
 # =================================================================
-@router.get("/folder/{folder_id}/me")
-def get_folder_by_user(
-    folder_id: str, 
-    project_id: int, 
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Lấy danh sách file/folder con và CHECK QUYỀN TAG + Trả về Tên Project"""
-    
-    # 1. Lấy thông tin từ Drive
-    all_items = drive_service.list_files_in_folder(folder_id)
-    
-    # 2. Lấy danh sách quyền (Dạng Dict: {'TAG': 'Tên Project'})
-    # VD: allowed_tags = {'FINANCE': 'Dự án Cầu Đường', 'HR': 'Dự án Cầu Đường'}
-    allowed_tags_map = get_user_allowed_tags_with_name(db, current_user, project_id)
-    
-    user_clearance = current_user.security_clearance.value 
-    visible_items = []
-    
-    for item in all_items:
-        # A. Xử lý FOLDER
-        if 'application/vnd.google-apps.folder' in item.get('mimeType', ''):
-            folder_tag = _get_folder_tag(item['name']) 
-
-            # Biến lưu tên project cấp quyền (mặc định là None)
-            granted_by_project_name = None
-
-            # --- LOGIC CHECK QUYỀN ---
-            if folder_tag:
-                # Lấy tên project từ dictionary quyền
-                granted_by_project_name = allowed_tags_map.get(folder_tag)
-                
-                # Nếu folder có Tag mà user không có quyền (không tìm thấy trong map) -> Ẩn
-                if not granted_by_project_name:
-                    continue 
-            # -------------------------
-
-            visible_items.append({
-                "id": item['id'], 
-                "name": item['name'], 
-                "type": "FOLDER",
-                "link": item['webViewLink'], 
-                "access": "GRANTED",
-                "tag": folder_tag,
-                
-                # <--- BỔ SUNG DÒNG NÀY ĐỂ TRẢ VỀ TÊN PROJECT
-                "granted_by_project": granted_by_project_name 
-            })
-            continue
-
-        # B. Xử lý FILE (Giữ nguyên)
-        props = item.get('properties', {})
-        file_level = int(props.get('security_level', 1))
-        
-        if user_clearance >= file_level:
-            visible_items.append({
-                "id": item['id'], 
-                "name": item['name'], 
-                "type": "FILE",
-                "mime_type": item.get('mimeType'),
-                "link": item['webViewLink'], 
-                "level": file_level, 
-                "access": "GRANTED",
-                "tag": None,
-                "granted_by_project": None # File thì không có project tag context
-            })
-    
-    return {
-        "current_folder_id": folder_id, 
-        "project_id": project_id,
-        "total_items": len(visible_items), 
-        "data": visible_items
-    }
     
 @router.get("/folder/{folder_id}")
 def get_folder_content(folder_id: str, current_user: User = Depends(get_current_user)):
@@ -198,10 +125,39 @@ def get_folder_content(folder_id: str, current_user: User = Depends(get_current_
 # =================================================================
 
 @router.post("/init-project")
-def create_project_structure(project_name: str = Form(...), current_user: User = Depends(get_current_user)):
-    result = drive_service.create_project_tree(project_name)
-    if not result: raise HTTPException(500, "Lỗi tạo cấu trúc dự án")
-    return {"message": "Tạo dự án thành công", "data": result}
+def create_project_structure(
+    project_id: int = Form(...),  # <--- Thay đổi: Nhận ID thay vì Name
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    # 1. Tìm dự án trong Database dựa vào ID
+    project = db.query(BiddingProject).filter(BiddingProject.id == project_id).first()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy dự án với ID: {project_id}")
+
+    # 2. Lấy tên dự án từ DB để tạo folder
+    project_name = project.name
+    
+    # 3. Gọi service tạo cấu trúc trên Google Drive
+    drive_result = drive_service.create_project_tree(project_name)
+    
+    if not drive_result: 
+        raise HTTPException(500, "Lỗi tạo cấu trúc dự án trên Google Drive")
+    
+    # 4. (Tùy chọn) Cập nhật lại Drive ID vào Database nếu Model có cột này
+    # Lưu ý: Trong model bạn gửi chưa có cột drive_folder_id, bạn nên thêm vào.
+    project.drive_folder_id = drive_result["project_id"] 
+    db.commit() 
+
+    # 5. Trả về kết quả
+    return {
+        "message": "Đã khởi tạo folder dự án trên Drive thành công",
+        "project_id": project.id,              # ID trong Database
+        "project_name": project.name,          # Tên lấy từ DB
+        "drive_folder_id": drive_result["project_id"], # ID trên Google Drive
+        "drive_data": drive_result
+    }
 
 @router.post("/assign-task-files")
 def provision_files_for_task(payload: TaskAssignmentRequest, current_user: User = Depends(get_current_user)):
@@ -277,3 +233,80 @@ def get_project_category_folder(project_folder_id: str, category: str, current_u
     target_folder_id = drive_service.get_subfolder_id_by_name(project_folder_id, keyword)
     if not target_folder_id: raise HTTPException(404, f"Không tìm thấy folder {category}")
     return {"category": category, "folder_id": target_folder_id, "folder_keyword": keyword}
+
+
+# [Thêm vào New folder/mcp_drive/router.py]
+
+@router.get("/project/{project_folder_id}/me/target-folder")
+def get_current_user_target_folder(
+    project_folder_id: str,
+    project_id: int, # ID trong Database để check quyền
+    category: Optional[str] = None, # Tùy chọn: Nếu user có nhiều quyền (VD: vừa HR vừa Legal) thì cần truyền vào
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Lấy target_folder_id của đúng thư mục mà User hiện tại có quyền thao tác.
+    Dùng để làm đích đến cho hành động Clone File.
+    """
+    
+    # 1. Lấy danh sách quyền (Tag) của User trong dự án này
+    # Kết quả trả về dạng: {'HR': 'Tên Dự Án', 'TECH': 'Tên Dự Án'}
+    allowed_tags_map = get_user_allowed_tags_with_name(db, current_user, project_id)
+    
+    if not allowed_tags_map:
+        raise HTTPException(status_code=403, detail="Bạn không được phân công nhiệm vụ nào trong dự án này.")
+
+    # 2. Xác định Tag (Danh mục) cụ thể
+    selected_tag = None
+    available_tags = list(allowed_tags_map.keys())
+
+    if category:
+        # Nếu Client truyền category lên, check xem User có quyền đó không
+        if category.upper() in available_tags:
+            selected_tag = category.upper()
+        else:
+            raise HTTPException(status_code=403, detail=f"Bạn không có quyền truy cập vào thư mục '{category}' trong dự án này.")
+    else:
+        # Nếu Client KHÔNG truyền category
+        if len(available_tags) == 1:
+            # Nếu User chỉ có đúng 1 quyền -> Tự động chọn
+            selected_tag = available_tags[0]
+        else:
+            # Nếu User có nhiều quyền (VD: Manager có cả HR, TECH, FINANCE) -> Bắt buộc chọn
+            return {
+                "success": False,
+                "message": "Bạn có quyền ở nhiều bộ phận, vui lòng chỉ định rõ 'category' muốn lưu file.",
+                "available_categories": available_tags,
+                "folder_id": None
+            }
+
+    # 3. Map từ Tag sang Tên thư mục thực tế trên Drive
+    # (Mapping này phải đồng bộ với hàm _get_folder_tag hoặc get_project_category_folder)
+    FOLDER_MAPPING = {
+        "HR": "nhân sự", 
+        "LEGAL": "Pháp lý", 
+        "TECH": "Biện pháp Thi công",
+        "FINANCE": "tài chính", 
+        "DEVICE": "máy móc", 
+        "CONTRACT": "hợp đông", 
+        "OTHER": "khác"
+    }
+    
+    folder_keyword = FOLDER_MAPPING.get(selected_tag)
+    if not folder_keyword:
+        raise HTTPException(status_code=400, detail=f"Không tìm thấy cấu hình tên thư mục cho tag: {selected_tag}")
+
+    # 4. Tìm ID thư mục con trong Drive
+    target_folder_id = drive_service.get_subfolder_id_by_name(project_folder_id, folder_keyword)
+    
+    if not target_folder_id:
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy thư mục '{folder_keyword}' trên Drive của dự án này.")
+
+    return {
+        "success": True,
+        "project_id": project_id,
+        "category": selected_tag,
+        "folder_name_keyword": folder_keyword,
+        "target_folder_id": target_folder_id # <--- Đây là cái bạn cần cho API clone
+    }

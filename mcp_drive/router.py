@@ -233,3 +233,80 @@ def get_project_category_folder(project_folder_id: str, category: str, current_u
     target_folder_id = drive_service.get_subfolder_id_by_name(project_folder_id, keyword)
     if not target_folder_id: raise HTTPException(404, f"Không tìm thấy folder {category}")
     return {"category": category, "folder_id": target_folder_id, "folder_keyword": keyword}
+
+
+# [Thêm vào New folder/mcp_drive/router.py]
+
+@router.get("/project/{project_folder_id}/me/target-folder")
+def get_current_user_target_folder(
+    project_folder_id: str,
+    project_id: int, # ID trong Database để check quyền
+    category: Optional[str] = None, # Tùy chọn: Nếu user có nhiều quyền (VD: vừa HR vừa Legal) thì cần truyền vào
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Lấy target_folder_id của đúng thư mục mà User hiện tại có quyền thao tác.
+    Dùng để làm đích đến cho hành động Clone File.
+    """
+    
+    # 1. Lấy danh sách quyền (Tag) của User trong dự án này
+    # Kết quả trả về dạng: {'HR': 'Tên Dự Án', 'TECH': 'Tên Dự Án'}
+    allowed_tags_map = get_user_allowed_tags_with_name(db, current_user, project_id)
+    
+    if not allowed_tags_map:
+        raise HTTPException(status_code=403, detail="Bạn không được phân công nhiệm vụ nào trong dự án này.")
+
+    # 2. Xác định Tag (Danh mục) cụ thể
+    selected_tag = None
+    available_tags = list(allowed_tags_map.keys())
+
+    if category:
+        # Nếu Client truyền category lên, check xem User có quyền đó không
+        if category.upper() in available_tags:
+            selected_tag = category.upper()
+        else:
+            raise HTTPException(status_code=403, detail=f"Bạn không có quyền truy cập vào thư mục '{category}' trong dự án này.")
+    else:
+        # Nếu Client KHÔNG truyền category
+        if len(available_tags) == 1:
+            # Nếu User chỉ có đúng 1 quyền -> Tự động chọn
+            selected_tag = available_tags[0]
+        else:
+            # Nếu User có nhiều quyền (VD: Manager có cả HR, TECH, FINANCE) -> Bắt buộc chọn
+            return {
+                "success": False,
+                "message": "Bạn có quyền ở nhiều bộ phận, vui lòng chỉ định rõ 'category' muốn lưu file.",
+                "available_categories": available_tags,
+                "folder_id": None
+            }
+
+    # 3. Map từ Tag sang Tên thư mục thực tế trên Drive
+    # (Mapping này phải đồng bộ với hàm _get_folder_tag hoặc get_project_category_folder)
+    FOLDER_MAPPING = {
+        "HR": "nhân sự", 
+        "LEGAL": "Pháp lý", 
+        "TECH": "Biện pháp Thi công",
+        "FINANCE": "tài chính", 
+        "DEVICE": "máy móc", 
+        "CONTRACT": "hợp đông", 
+        "OTHER": "khác"
+    }
+    
+    folder_keyword = FOLDER_MAPPING.get(selected_tag)
+    if not folder_keyword:
+        raise HTTPException(status_code=400, detail=f"Không tìm thấy cấu hình tên thư mục cho tag: {selected_tag}")
+
+    # 4. Tìm ID thư mục con trong Drive
+    target_folder_id = drive_service.get_subfolder_id_by_name(project_folder_id, folder_keyword)
+    
+    if not target_folder_id:
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy thư mục '{folder_keyword}' trên Drive của dự án này.")
+
+    return {
+        "success": True,
+        "project_id": project_id,
+        "category": selected_tag,
+        "folder_name_keyword": folder_keyword,
+        "target_folder_id": target_folder_id # <--- Đây là cái bạn cần cho API clone
+    }
