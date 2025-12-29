@@ -42,22 +42,20 @@ class GoogleDriveService:
                 except Exception as e:
                     print(f"⚠️ Lỗi refresh token: {e}")
 
-            # 3. Tạo Http object với Timeout 60s
-            http = httplib2.Http(timeout=60)
-            
-            # 4. Wrap Http bằng AuthorizedHttp
-            authorized_http = AuthorizedHttp(self.creds, http=http)
-
-            # 5. Build service
-            self.service = build(
-                'drive', 'v3', 
-                http=authorized_http, 
-                cache_discovery=False
-            )
-            print("✅ Kết nối Drive thành công!")
+            # 3. [THAY ĐỔI LỚN] Build service trực tiếp với credentials
+            # Không tạo thủ công httplib2 và AuthorizedHttp nữa
+            try:
+                self.service = build(
+                    'drive', 'v3', 
+                    credentials=self.creds, # Truyền thẳng credentials vào đây
+                    cache_discovery=False,
+                    static_discovery=False # Thêm dòng này giúp tăng tốc khởi động
+                )
+                print("✅ Kết nối Drive thành công (Simple Mode)!")
+            except Exception as e:
+                print(f"❌ Lỗi build service: {e}")
         else:
             print("❌ Lỗi: Thiếu cấu hình OAuth")
-
     # --- NHÓM 1: QUẢN LÝ FOLDER & FILE CƠ BẢN ---
     
     # [MỚI] Hàm lấy thông tin chi tiết của 1 file/folder (Để check tên folder cha)

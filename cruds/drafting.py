@@ -1,9 +1,9 @@
 from sqlalchemy.orm import Session
 from models import DocumentTemplate, BiddingTask
 from schemas.drafting import TemplateCreate
-
+from typing import Optional
 # 1. Lấy danh sách template (có lọc theo category)
-def get_templates(db: Session, category: str = None):
+def get_templates(db: Session, category: Optional[str] = None):
     query = db.query(DocumentTemplate).filter(DocumentTemplate.is_active == True)
     if category:
         query = query.filter(DocumentTemplate.category == category.upper())

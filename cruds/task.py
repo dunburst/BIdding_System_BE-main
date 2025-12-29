@@ -56,7 +56,8 @@ def _resolve_tags_for_flat_list(db: Session, tasks: List[TaskResponse]):
 
     # 2. Thu thập dữ liệu các node cha/ông từ DB
     # Set chứa các ID cần query (ban đầu là parent_id của các task đang thiếu tag)
-    needed_ids: Set[int] = {t.parent_task_id for t in tasks_to_update}
+    # Thêm điều kiện `if t.parent_task_id is not None` ở cuối
+    needed_ids: Set[int] = {t.parent_task_id for t in tasks_to_update if t.parent_task_id is not None}
     
     # Dictionary lưu info: ID -> {tag: str, parent_id: int}
     node_info = {} 
@@ -188,9 +189,9 @@ def create_task(db: Session, task_in: TaskCreate, current_user: User):
         status=task_in.status,
         priority=task_in.priority,
         task_type=task_in.task_type,
-        
-        tag=task_in.tag, # Đã được xử lý kế thừa ở trên
-        
+        # <--- THÊM MỚI DÒNG NÀY
+        tag=task_in.tag,
+        description=task_in.description,
         assignee_id=task_in.assignee_id,
         reviewer_id=task_in.reviewer_id,
         source_type=task_in.source_type
