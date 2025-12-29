@@ -89,6 +89,8 @@ def get_folder_content(folder_id: str, current_user: User = Depends(get_current_
         # Nếu cha chưa có tag (VD: Root Project) -> Con tự check tên nó (Chỉ áp dụng cho Folder)
         if not item_tag and 'application/vnd.google-apps.folder' in item.get('mimeType', ''):
             item_tag = _get_folder_tag(item['name'])
+            
+        web_link = item.get('webViewLink', '#')
 
         # A. Folder con -> Luôn hiện
         if 'application/vnd.google-apps.folder' in item.get('mimeType', ''):
@@ -96,7 +98,7 @@ def get_folder_content(folder_id: str, current_user: User = Depends(get_current_
                 "id": item['id'], 
                 "name": item['name'], 
                 "type": "FOLDER",
-                "link": item['webViewLink'], 
+                "link": web_link, 
                 "access": "GRANTED",
                 "tag": item_tag # <--- Tag đã được xử lý thừa kế
             })
@@ -112,7 +114,7 @@ def get_folder_content(folder_id: str, current_user: User = Depends(get_current_
                 "name": item['name'], 
                 "type": "FILE",
                 "mime_type": item.get('mimeType'),
-                "link": item['webViewLink'], 
+                "link": web_link, 
                 "level": file_level, 
                 "access": "GRANTED",
                 "tag": item_tag # <--- File con cũng thừa kế Tag của folder cha
