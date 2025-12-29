@@ -87,6 +87,7 @@ def create_task(db: Session, task_in: TaskCreate, current_user: User):
         task_type=task_in.task_type,
         # <--- THÊM MỚI DÒNG NÀY
         tag=task_in.tag,
+        description=task_in.description,
         assignee_id=task_in.assignee_id,
         reviewer_id=task_in.reviewer_id,
         source_type=task_in.source_type
