@@ -9,7 +9,9 @@ from typing import Optional, List
 from database import Base
 from datetime import date, datetime
 
-# --- ENUMS (Định nghĩa các trạng thái nghiệp vụ) [cite: 64, 140, 150] ---
+# ==========================================
+# 0. ENUMS (Định nghĩa các trạng thái nghiệp vụ)
+# ==========================================
 class UserRole(str, enum.Enum):
     ADMIN = "ADMIN"
     MANAGER = "MANAGER"             # Lãnh đạo
@@ -38,7 +40,6 @@ class AssignmentType(str, enum.Enum):
     SUPPORT = "SUPPORT" # Phối hợp
     REVIEW = "REVIEW"   # Duyệt
 
-# Cập nhật lại TaskStatus theo yêu cầu 3.1
 class TaskStatus(str, enum.Enum):
     OPEN = "OPEN"             # Chưa ai nhận
     ASSIGNED = "ASSIGNED"     # Đã giao (có người/đơn vị cụ thể)
@@ -93,6 +94,7 @@ class AbacAction(str, enum.Enum):
     APPROVE = "APPROVE"     # Phê duyệt (Action đặc biệt)
     REJECT = "REJECT"       # Từ chối
     ASSIGN = "ASSIGN"       # Giao việc
+
 # ==========================================
 # 1. PHÂN HỆ TỔ CHỨC & QUẢN TRỊ (ORGANIZATION & ADMIN)
 # ==========================================
@@ -228,8 +230,9 @@ class CrawlLog(Base):
     
     # Quan hệ
     rule: Mapped["CrawlRule"] = relationship()
+
 # ==========================================
-# 3. PHÂN HỆ ĐẦU VÀO (INPUT & HSMT) [cite: 44, 46]
+# 3. PHÂN HỆ ĐẦU VÀO (INPUT & HSMT)
 # ==========================================
 class BiddingPackage(Base):
     __tablename__ = "bidding_packages"
@@ -314,7 +317,7 @@ class BiddingPackage(Base):
         cascade="all, delete-orphan"
     )
     
-class BiddingPackageFile(Base): # [cite: 183]
+class BiddingPackageFile(Base):
     __tablename__ = "bidding_package_files"
     
     file_id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -357,6 +360,19 @@ class TemplateStructure(Base):
     
     project_template: Mapped["BiddingProjectTemplate"] = relationship()
     task_template: Mapped["BiddingTaskTemplate"] = relationship()
+
+# [MỚI] 1. Bảng lưu trữ các mẫu văn bản (Template) - Dùng cho Drafting Workspace
+class DocumentTemplate(Base):
+    __tablename__ = "document_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    title: Mapped[str] = mapped_column(Unicode(255), nullable=False)       # Tên mẫu (VD: Biên bản nghiệm thu)
+    content: Mapped[str] = mapped_column(UnicodeText, nullable=False)      # Nội dung HTML
+    category: Mapped[Optional[str]] = mapped_column(String(50), index=True) # Phân loại: HR, TECH, LEGAL...
+    description: Mapped[Optional[str]] = mapped_column(Unicode(500), nullable=True)  # Mô tả ngắn
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)         # Ẩn/Hiện
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
 # ==========================================
 # GROUP 3: INTERNAL PROJECT MANAGEMENT (Quản lý dự án nội bộ)
 # ==========================================
@@ -368,7 +384,7 @@ class BiddingProject(Base):
     bid_team_leader_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id")) # Trưởng nhóm thầu
     name: Mapped[str] = mapped_column(Unicode(255), nullable=False)
     status: Mapped[Optional[str]] = mapped_column(String(50))
-    # Trong models.py -> class BiddingProject
+    
     drive_folder_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(),onupdate=func.now())
@@ -376,16 +392,11 @@ class BiddingProject(Base):
     # Quan hệ với gói thầu (One-to-Many hoặc One-to-One tùy nghiệp vụ)
     packages: Mapped[List["BiddingPackage"]] = relationship(back_populates="project")
     tasks: Mapped[List["BiddingTask"]] = relationship(back_populates="project", cascade="all, delete-orphan")
-    # --- BỔ SUNG RELATIONSHIPS MỚI ---
-    # 1. Quan hệ với User (Người chủ trì)
+    
+    # Relationships
     host: Mapped["User"] = relationship(foreign_keys=[host_id])
-    
-    # 2. Quan hệ với User (Trưởng nhóm thầu)
     team_leader: Mapped[Optional["User"]] = relationship(foreign_keys=[bid_team_leader_id])
-    
-    # 3. Quan hệ với Log nộp thầu (BidSubmitLog)
     submit_logs: Mapped[List["BidSubmitLog"]] = relationship(back_populates="project", cascade="all, delete-orphan")
-
 
 
 class BidSubmitLog(Base):
@@ -398,7 +409,6 @@ class BidSubmitLog(Base):
     archive_file_path: Mapped[Optional[str]] = mapped_column(Unicode(500))
     file_checksum: Mapped[Optional[str]] = mapped_column(String(64)) # MD5/SHA256 checksum của file nộp
     
-    # --- BỔ SUNG RELATIONSHIP ---
     project: Mapped["BiddingProject"] = relationship(back_populates="submit_logs")
     
 # ==========================================
@@ -450,42 +460,35 @@ class BiddingTask(Base):
     
     deadline: Mapped[Optional[datetime]] = mapped_column(DateTime)
     
-    # Cập nhật Enum status mới
     status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), default=TaskStatus.OPEN)
-    
     priority: Mapped[TaskPriority] = mapped_column(Enum(TaskPriority), default=TaskPriority.MEDIUM)
-    # --- THÊM CỘT MỚI TẠI ĐÂY ---
+    
     task_type: Mapped[TaskType] = mapped_column(
         Enum(TaskType), 
-        default=TaskType.DRAFTING, # Mặc định là soạn thảo
+        default=TaskType.DRAFTING,
         nullable=False
     )
     
-    # --- TRƯỜNG MỚI THÊM VÀO ---
     tag: Mapped[Optional[TaskTag]] = mapped_column(Enum(TaskTag), nullable=True)
-    
-    # --- [NEW] CÁC TRƯỜNG MỚI BỔ SUNG ---
-    description: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True) # Mô tả chi tiết công việc
-    attachment_url: Mapped[Optional[List[str]]] = mapped_column(JSON, default=list, nullable=True) # Danh sách URL file đính kèm
+    description: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True)
+    attachment_url: Mapped[Optional[List[str]]] = mapped_column(JSON, default=list, nullable=True)
     
     source_type: Mapped[Optional[str]] = mapped_column(String(50))
-    ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True) # Lý do đánh giá AI
-    hsmt_ref_page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True) # Trang tham chiếu trong HSMT
+    ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    hsmt_ref_page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # [MỚI] Thêm cột này để lưu bản nháp html nhân viên đang soạn
+    draft_content: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True) 
 
     # Relationships
     project: Mapped["BiddingProject"] = relationship(back_populates="tasks")
-    
-    # Quan hệ với bảng Assignments mới
     assignments: Mapped[List["TaskAssignment"]] = relationship(back_populates="task", cascade="all, delete-orphan")
-
-    # Self-referential relationships
     parent: Mapped[Optional["BiddingTask"]] = relationship(remote_side=[id], back_populates="sub_tasks")
     sub_tasks: Mapped[List["BiddingTask"]] = relationship(back_populates="parent", cascade="all, delete-orphan")
-    # --- [NEW] RELATIONSHIP VỚI COMMENT ---
     comments: Mapped[List["TaskComment"]] = relationship(
         back_populates="task", 
         cascade="all, delete-orphan",
-        order_by="TaskComment.created_at.asc()" # Sắp xếp comment cũ trước
+        order_by="TaskComment.created_at.asc()"
     )
 
     assignee: Mapped[Optional["User"]] = relationship(foreign_keys=[assignee_id])
@@ -494,10 +497,6 @@ class BiddingTask(Base):
     
     @property
     def assigned_unit_ids_list(self):
-        """
-        Trả về danh sách ID các phòng ban được assign vào task này.
-        Dùng cho ABAC Engine so sánh tệp tin 'IN'.
-        """
         return [
             assign.assigned_unit_id 
             for assign in self.assignments 
@@ -506,25 +505,14 @@ class BiddingTask(Base):
         
     @property
     def assigned_unit_id(self):
-        """
-        Property ảo giúp ABAC lấy được unit_id đã assign cho task này
-        mà không cần query phức tạp trong code ABAC.
-        Nó sẽ lấy unit_id của assignment đầu tiên tìm thấy.
-        """
         if self.assignments:
-            # Giả sử assignments là list các TaskAssignment
             for assign in self.assignments:
                 if assign.assigned_unit_id:
                     return assign.assigned_unit_id
         return None
     
-    # <--- THÊM PROPERTY NÀY VÀO TRONG CLASS BiddingTask
     @property
     def project_name(self):
-        """
-        Helper property để lấy tên dự án.
-        Pydantic sẽ tự động map giá trị này vào field 'project_name' trong schema.
-        """
         return self.project.name if self.project else None
 
 # ==========================================
@@ -537,7 +525,6 @@ class TaskComment(Base):
     task_id: Mapped[int] = mapped_column(ForeignKey("bidding_task.id"), nullable=False)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.user_id"), nullable=False)
     
-    # Self-referencing FK: Comment cha (để trả lời comment khác)
     parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("task_comments.id"), nullable=True)
     
     content: Mapped[str] = mapped_column(UnicodeText, nullable=False)
@@ -548,82 +535,35 @@ class TaskComment(Base):
     task: Mapped["BiddingTask"] = relationship(back_populates="comments")
     author: Mapped["User"] = relationship(foreign_keys=[user_id])
     
-    # Quan hệ đệ quy (Hierarchy)
     parent: Mapped[Optional["TaskComment"]] = relationship(remote_side=[id], back_populates="replies")
     replies: Mapped[List["TaskComment"]] = relationship(back_populates="parent", cascade="all, delete-orphan")
+
 # ==========================================
 # 4. PHÂN HỆ BẢO MẬT & ABAC (SECURITY POLICIES)
 # ==========================================
 
 class AbacAttribute(Base):
-    """
-    Bảng từ điển thuộc tính (Dictionary):
-    Giúp Admin biết có những biến nào để viết luật.
-    VD: user.department_id, resource.total_amount
-    """
     __tablename__ = "attributes"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    
-    # Tên biến dùng trong JSON (VD: user.org_unit_id)
     attr_key: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
-    
-    # Kiểu dữ liệu để Parser biết cách so sánh
     attr_type: Mapped[AttributeType] = mapped_column(Enum(AttributeType), default=AttributeType.STRING, nullable=False)
-    
-    # Nguồn dữ liệu (VD: users, bidding_packages) - Dùng để document
     source_table: Mapped[Optional[str]] = mapped_column(String(50))
-    
-    # Mô tả chi tiết (VD: "ID phòng ban của người dùng hiện tại")
     description: Mapped[Optional[str]] = mapped_column(Unicode(255))
-    
     mapping_path: Mapped[Optional[str]] = mapped_column(String)
 
 
 class AbacPolicy(Base):
-    """
-    Bảng chứa các luật truy cập (Policies).
-    Đây là trái tim của hệ thống phân quyền động.
-    """
     __tablename__ = "policies"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    
-    # Tên chính sách (VD: "Trưởng phòng duyệt bài nội bộ")
     name: Mapped[str] = mapped_column(Unicode(255), nullable=False)
-    
-    # Mô tả chi tiết mục đích của policy
     description: Mapped[Optional[str]] = mapped_column(UnicodeText)
-    
-    # Đối tượng chịu tác động (VD: bidding_task, bidding_package)
-    # Có thể index trường này để query policy nhanh hơn theo resource
     target_resource: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
-    
-    # Hành động (VD: VIEW, UPDATE, APPROVE, DELETE)
-    # --- THAY ĐỔI QUAN TRỌNG Ở ĐÂY ---
-    # 1. Dùng kiểu JSON của SQLAlchemy
-    # 2. Python type là List[str]
-    # 3. Mặc định là list rỗng []
     action: Mapped[List[str]] = mapped_column(JSON, nullable=False, default=list)
-    
-    # Kết quả: ALLOW (Cho phép) hoặc DENY (Chặn)
     effect: Mapped[PolicyEffect] = mapped_column(Enum(PolicyEffect), default=PolicyEffect.ALLOW, nullable=False)
-    
-    # Độ ưu tiên: Số càng lớn càng ưu tiên (Giải quyết xung đột nếu có 2 luật trái ngược)
     priority: Mapped[int] = mapped_column(Integer, default=1)
-    
-    # Điều kiện logic (Lõi ABAC)
-    # Lưu cấu trúc logic. Ví dụ:
-    # {
-    #   "condition": "AND",
-    #   "rules": [
-    #       {"field": "user.role", "operator": "eq", "value": "MANAGER"},
-    #       {"field": "user.org_unit_id", "operator": "eq", "value": "resource.unit_id"}
-    #   ]
-    # }
     condition_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    
-    # Trạng thái bật tắt policy
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -634,80 +574,63 @@ class AbacPolicy(Base):
 # ==========================================
 
 class BiddingReqFinancialAdmin(Base):
-    """
-    Bảng Yêu cầu Tài chính & Thủ tục (Quan hệ 1-1 với BiddingPackage)
-    Lưu dữ liệu Mục 2 & Mục 3 trong báo cáo.
-    """
     __tablename__ = "bidding_req_financial_admin"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    
-    # Quan hệ 1-1: unique=True để đảm bảo 1 gói thầu chỉ có 1 bản ghi tài chính
     hsmt_id: Mapped[int] = mapped_column(ForeignKey("bidding_packages.hsmt_id"), unique=True, nullable=False)
 
     # === MỤC 2: THỦ TỤC & BẢO ĐẢM ===
-    bid_validity_days: Mapped[Optional[int]] = mapped_column(Integer)                # Hiệu lực HSDT (ngày)
-    bid_security_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))    # Bảo đảm dự thầu (VND)
-    bid_security_duration: Mapped[Optional[int]] = mapped_column(Integer)            # Thời gian bảo đảm (ngày)
-    submission_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))        # Chi phí nộp (VND)
-    contract_duration_text: Mapped[Optional[str]] = mapped_column(Unicode(255))      # Thời gian thực hiện HĐ (Text gốc)
+    bid_validity_days: Mapped[Optional[int]] = mapped_column(Integer)                
+    bid_security_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))    
+    bid_security_duration: Mapped[Optional[int]] = mapped_column(Integer)            
+    submission_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))        
+    contract_duration_text: Mapped[Optional[str]] = mapped_column(Unicode(255))      
 
     # === MỤC 3: TÀI CHÍNH ===
-    req_revenue_avg: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))       # Doanh thu bình quân
-    req_working_capital: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))   # Nguồn lực tài chính
+    req_revenue_avg: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))       
+    req_working_capital: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))   
 
     # === MỤC 3: HỢP ĐỒNG TƯƠNG TỰ ===
-    req_similar_contract_qty: Mapped[Optional[int]] = mapped_column(Integer)         # Số lượng HĐ tương tự
-    req_similar_contract_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2)) # Giá trị tối thiểu 1 HĐ
-    req_similar_contract_desc: Mapped[Optional[str]] = mapped_column(UnicodeText)    # Mô tả tính chất tương tự
+    req_similar_contract_qty: Mapped[Optional[int]] = mapped_column(Integer)         
+    req_similar_contract_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2)) 
+    req_similar_contract_desc: Mapped[Optional[str]] = mapped_column(UnicodeText)    
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    # Relationship (Back reference)
+    # Relationship
     package: Mapped["BiddingPackage"] = relationship(back_populates="financial_req")
 
 
 class BiddingReqPersonnel(Base):
-    """
-    Bảng Yêu cầu Nhân sự (Quan hệ 1-N với BiddingPackage)
-    Lưu dữ liệu Mục 4.
-    """
     __tablename__ = "bidding_req_personnel"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     hsmt_id: Mapped[int] = mapped_column(ForeignKey("bidding_packages.hsmt_id"), nullable=False)
 
-    stt: Mapped[Optional[int]] = mapped_column(Integer)                          # Số thứ tự
-    position_name: Mapped[Optional[str]] = mapped_column(Unicode(255))           # Vị trí
-    quantity: Mapped[Optional[int]] = mapped_column(Integer)                     # Số lượng
+    stt: Mapped[Optional[int]] = mapped_column(Integer)                              
+    position_name: Mapped[Optional[str]] = mapped_column(Unicode(255))               
+    quantity: Mapped[Optional[int]] = mapped_column(Integer)                         
 
-    # Các tiêu chí chi tiết để AI so sánh
-    min_exp_years: Mapped[Optional[int]] = mapped_column(Integer)                # Số năm kinh nghiệm tối thiểu
-    qualification_req: Mapped[Optional[str]] = mapped_column(UnicodeText)        # Yêu cầu bằng cấp/chứng chỉ
-    similar_project_exp: Mapped[Optional[int]] = mapped_column(Integer)          # Số công trình tương tự đã làm
+    min_exp_years: Mapped[Optional[int]] = mapped_column(Integer)                    
+    qualification_req: Mapped[Optional[str]] = mapped_column(UnicodeText)            
+    similar_project_exp: Mapped[Optional[int]] = mapped_column(Integer)              
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    # Relationship
     package: Mapped["BiddingPackage"] = relationship(back_populates="personnel_reqs")
 
 
 class BiddingReqEquipment(Base):
-    """
-    Bảng Yêu cầu Thiết bị (Quan hệ 1-N với BiddingPackage)
-    Lưu dữ liệu Mục 5.
-    """
     __tablename__ = "bidding_req_equipment"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     hsmt_id: Mapped[int] = mapped_column(ForeignKey("bidding_packages.hsmt_id"), nullable=False)
 
     stt: Mapped[Optional[int]] = mapped_column(Integer)
-    equipment_name: Mapped[Optional[str]] = mapped_column(Unicode(255))          # Tên thiết bị
-    quantity: Mapped[Optional[int]] = mapped_column(Integer)                     # Số lượng
-    specifications: Mapped[Optional[str]] = mapped_column(UnicodeText)           # Thông số kỹ thuật (Max)
+    equipment_name: Mapped[Optional[str]] = mapped_column(Unicode(255))              
+    quantity: Mapped[Optional[int]] = mapped_column(Integer)                         
+    specifications: Mapped[Optional[str]] = mapped_column(UnicodeText)               
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    # Relationship
     package: Mapped["BiddingPackage"] = relationship(back_populates="equipment_reqs")

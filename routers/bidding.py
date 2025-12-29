@@ -307,3 +307,32 @@ def get_package_countdown(hsmt_id: int, db: Session = Depends(get_db)):
         hsmt_id=hsmt_id,
         thoi_gian_con_lai=time_str
     )
+
+@router.get("/by-project/{project_id}", response_model=BaseResponse[schemas.BiddingPackageResponse])
+def get_package_info_by_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # 1. Tìm gói thầu theo Project ID
+    package = crud_bidding.get_package_by_project_id(db, project_id=project_id)
+    
+    if not package:
+        # Trường hợp dự án này chưa được gán hoặc chưa tạo gói thầu
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Chưa tìm thấy gói thầu nào liên kết với dự án ID {project_id}"
+        )
+
+    # 2. Convert sang Schema response (đã có sẵn hsmt_id)
+    pkg_response = schemas.BiddingPackageResponse.model_validate(package)
+    
+    # 3. Tính toán quyền (nếu cần thiết cho nút bấm)
+    pkg_response.allowed_actions = get_allowed_actions(db, current_user, package)
+
+    return BaseResponse(
+        success=True,
+        status=200,
+        message="Lấy thông tin gói thầu theo dự án thành công",
+        data=pkg_response
+    )
