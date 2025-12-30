@@ -53,3 +53,17 @@ class UserResponse(UserBase):
         if hasattr(self, "org_unit") and self.org_unit:
             return self.org_unit.unit_name
         return None
+    # --- [MỚI] THÊM PHẦN NÀY ---
+    @computed_field
+    @property
+    def parent_org_unit_name(self) -> Optional[str]:
+        """Lấy tên phòng ban CHA (nếu có)"""
+        # Kiểm tra user có phòng ban không -> Kiểm tra phòng ban đó có cha không
+        if (
+            hasattr(self, "org_unit") 
+            and self.org_unit 
+            and hasattr(self.org_unit, "parent") 
+            and self.org_unit.parent
+        ):
+            return self.org_unit.parent.unit_name
+        return None
