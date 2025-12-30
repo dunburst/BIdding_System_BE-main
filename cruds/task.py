@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select, or_, and_, case
 from fastapi import HTTPException, status, UploadFile
-from models import BiddingTask, TaskAssignment, User, UserRole, TaskStatus, TaskPriority, TaskComment
+from models import BiddingTask, TaskAssignment, User, UserRole, TaskStatus, TaskPriority, TaskComment, OrganizationalUnit
 from schemas.task import TaskCreate, TaskUpdate, TaskCommentCreate, TaskCommentUpdate, TaskResponse
 from utils.abac import check_permission, AbacAction
 import os
@@ -10,7 +10,7 @@ import shutil
 import logging
 from typing import Optional, List, Dict, Set # <--- [FIX] Thêm Set
 from minio_client import minio_handler
-
+from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # --- HÀM HELPER: XỬ LÝ KẾ THỪA TAG KHI HIỂN THỊ (VIEW ONLY) ---
@@ -129,8 +129,11 @@ def check_access_permission(db: Session, task_id: int, user: User) -> bool:
     query = select(BiddingTask.id).outerjoin(TaskAssignment, BiddingTask.assignments).where(
         BiddingTask.id == task_id,
         or_(
-            BiddingTask.assignee_id == user.user_id,          # Được gán chính
-            TaskAssignment.assigned_user_id == user.user_id   # Được gán phụ
+            BiddingTask.assignee_id == user.user_id, 
+            BiddingTask.reviewer_id == user.user_id,# Được gán chính
+            BiddingTask.created_by == user.user_id,
+            TaskAssignment.assigned_user_id == user.user_id,
+            TaskAssignment.assigned_unit_id == user.org_unit_id# Được gán phụ
         )
     )
     
@@ -179,6 +182,43 @@ def create_task(db: Session, task_in: TaskCreate, current_user: User):
         if not is_allowed:
              raise HTTPException(status_code=403, detail="Bạn không có quyền khởi tạo đầu việc mới.")
     
+    # 2. --- [NEW LOGIC] XỬ LÝ STATUS VÀ REVIEWER TỰ ĐỘNG ---
+    
+    final_status = TaskStatus.OPEN
+    final_reviewer_id = task_in.reviewer_id
+    
+    # CASE A: Gán cho NGƯỜI CỤ THỂ (assignee_id có giá trị)
+    if task_in.assignee_id:
+        final_status = TaskStatus.ASSIGNED # Status là ASSIGNED
+        
+        # Nếu chưa chọn reviewer thủ công, hệ thống tự tìm Manager của assignee
+        if not final_reviewer_id:
+            assignee_user = db.get(User, task_in.assignee_id)
+            if assignee_user and assignee_user.org_unit_id:
+                # Tìm Unit của người được gán
+                org_unit = db.get(OrganizationalUnit, assignee_user.org_unit_id)
+                # Lấy manager_id của Unit đó làm reviewer (Trưởng phòng)
+                if org_unit and org_unit.manager_id:
+                    final_reviewer_id = org_unit.manager_id
+
+    # CASE B: CHỈ Gán cho PHÒNG BAN (assignment có unit, không có assignee_id)
+    elif not task_in.assignee_id and task_in.assignments:
+        # Kiểm tra xem có assignment nào gán cho Unit không
+        unit_assignment = next((a for a in task_in.assignments if a.assigned_unit_id), None)
+        
+        if unit_assignment:
+            final_status = TaskStatus.OPEN # Status là OPEN
+            
+            # Nếu chưa chọn reviewer thủ công, tìm SPECIALIST trong phòng đó
+            if not final_reviewer_id:
+                # Tìm 1 user có Role = SPECIALIST trong Unit đó
+                specialist_in_unit = db.query(User).filter(
+                    User.org_unit_id == unit_assignment.assigned_unit_id,
+                    User.role == UserRole.SPECIALIST
+                ).first()
+                
+                if specialist_in_unit:
+                    final_reviewer_id = specialist_in_unit.user_id
     # --- BƯỚC 2: TẠO TASK (Logic cũ giữ nguyên)
     new_task = BiddingTask(
         bidding_project_id=task_in.bidding_project_id,
@@ -186,14 +226,16 @@ def create_task(db: Session, task_in: TaskCreate, current_user: User):
         template_id=task_in.template_id,
         task_name=task_in.task_name,
         deadline=task_in.deadline,
-        status=task_in.status,
         priority=task_in.priority,
         task_type=task_in.task_type,
         # <--- THÊM MỚI DÒNG NÀY
         tag=task_in.tag,
         description=task_in.description,
         assignee_id=task_in.assignee_id,
-        reviewer_id=task_in.reviewer_id,
+        status=final_status,
+        reviewer_id=final_reviewer_id,
+        # [NEW] Lưu người tạo chính là người đang login
+        created_by=current_user.user_id,
         source_type=task_in.source_type
     )
     db.add(new_task)
@@ -265,9 +307,12 @@ def get_project_tasks_tree(db: Session, project_id: int, user: User):
                 
                 # 2. Giao đích danh qua bảng phụ Assignment
                 TaskAssignment.assigned_user_id == user.user_id,
+                BiddingTask.reviewer_id == user.user_id,
+                BiddingTask.created_by == user.user_id, # <--- [NEW] Thêm dòng này
                 
                 # 3. Giao cho phòng ban của user
                 TaskAssignment.assigned_unit_id == user.org_unit_id
+                
             )
         ).distinct() # Quan trọng: Loại bỏ trùng lặp do phép Join
 
@@ -293,22 +338,83 @@ def get_task_detail(db: Session, task_id: int, user: User):
     task = db.execute(query).unique().scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    
+    if task.status == TaskStatus.ASSIGNED and task.assignee_id == user.user_id:
+        task.status = TaskStatus.IN_PROGRESS
+        db.commit()
+        db.refresh(task) # Refresh để trả về status mới nhất cho FE
     return task
+#Cập nhật Status
+def update_task_status(db: Session, task_id: int, status_in: TaskStatus, user: User):
+    """
+    Cập nhật trạng thái Task.
+    - Quyền: CHỈ REVIEWER mới được thực hiện.
+    - Logic: 
+        + Đồng ý (COMPLETED) -> Task thành COMPLETED.
+        + Từ chối (REJECTED) -> Task quay về IN_PROGRESS (Yêu cầu làm lại).
+    """
+    # 1. Lấy thông tin Task
+    task = db.query(BiddingTask).get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Công việc không tồn tại")
 
-# --- UPDATE ---
-def update_task_status(db: Session, task_id: int, status: TaskStatus, user: User):
-    task = get_task_detail(db, task_id, user) # Đã check quyền trong hàm này
-    
-    task.status = status
-    # Nếu user nhận task, cập nhật assignee
-    if status == TaskStatus.IN_PROGRESS and not task.assignee_id:
-        task.assignee_id = user.user_id
+    # 2. [QUYỀN HẠN] Chỉ cho phép Reviewer
+    # Lưu ý: Nếu muốn Admin cũng làm được thì thêm: or user.role == UserRole.ADMIN
+    if task.reviewer_id != user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Bạn không phải là người duyệt (Reviewer) của công việc này."
+        )
+
+    # 3. [LOGIC NGHIỆP VỤ] Xử lý trạng thái
+    if status_in == TaskStatus.COMPLETED:
+        # Trường hợp Đồng ý duyệt
+        task.status = TaskStatus.COMPLETED
+        # (Optional) Có thể set luôn tiến độ là 100% nếu có cột progress
         
+    elif status_in == TaskStatus.REJECTED:
+        # Trường hợp Từ chối -> Quay về trạng thái Đang làm để nhân viên sửa
+        task.status = TaskStatus.IN_PROGRESS
+        
+    else:
+        # Các trạng thái khác (nếu có logic update thủ công khác)
+        task.status = status_in
+
     db.commit()
     db.refresh(task)
     return task
 
+def submit_task_for_review(db: Session, task_id: int, user: User):
+    """
+    Nhân viên nộp bài: Chuyển từ IN_PROGRESS -> PENDING_REVIEW.
+    """
+    # 1. Lấy Task
+    task = db.query(BiddingTask).get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Công việc không tồn tại")
+
+    # 2. [QUYỀN HẠN] Chỉ người được giao (Assignee) mới được nộp
+    if task.assignee_id != user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Bạn không phải là người thực hiện công việc này nên không thể nộp duyệt."
+        )
+
+    # 3. [LOGIC TRẠNG THÁI] Chỉ cho phép khi đang làm
+    if task.status != TaskStatus.IN_PROGRESS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail=f"Chỉ có thể nộp duyệt khi công việc đang thực hiện (Hiện tại: {task.status})."
+        )
+
+    # 4. Cập nhật
+    task.status = TaskStatus.PENDING_REVIEW
+    
+    # (Tùy chọn) Lưu thời điểm hoàn thành thực tế nếu cần
+    # task.actual_finish_date = func.now()
+
+    db.commit()
+    db.refresh(task)
+    return task
 # --- UPDATE ---
 def update_task(db: Session, task_id: int, task_in: TaskUpdate, user: User):
     # 1. Lấy task và check quyền (dùng lại hàm get_task_detail đã có check quyền)
@@ -785,4 +891,116 @@ def delete_all_task_attachments(db: Session, task_id: int, user: User):
     db.refresh(task)
     
     logger.info(f"User {user.user_id} deleted ALL attachments of task {task_id}")
+    return task
+
+# --- 2. [MỚI] GET LIST FOR REVIEWER ---
+def get_tasks_for_reviewer(db: Session, user: User) -> List[TaskResponse]:
+    """
+    Lấy danh sách các task mà user hiện tại đóng vai trò là REVIEWER.
+    Hiển thị dạng cây (để thấy ngữ cảnh cha con).
+    """
+    # Bước 1: Tìm tất cả task mà user là reviewer (Leaf/Target Nodes)
+    # Thường reviewer quan tâm nhất các task đang chờ duyệt (PENDING_REVIEW) hoặc đang làm (IN_PROGRESS)
+    # Nhưng ở đây ta lấy hết để họ quản lý.
+    query = select(BiddingTask).where(
+        BiddingTask.reviewer_id == user.user_id
+    ).options(
+        joinedload(BiddingTask.project),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit)
+    )
+    
+    review_tasks = db.execute(query).unique().scalars().all()
+    
+    if not review_tasks:
+        return []
+
+    # Bước 2: Truy vết ngược lên tìm Task Cha (Ancestors) để dựng cây ngữ cảnh
+    # (Copy logic từ get_my_tasks_as_tree)
+    all_related_tasks: Dict[int, BiddingTask] = {t.id: t for t in review_tasks}
+    ids_to_find_parent = [t.id for t in review_tasks if t.parent_task_id is not None]
+
+    while ids_to_find_parent:
+        parent_query = select(BiddingTask).where(
+            BiddingTask.id.in_(
+                select(BiddingTask.parent_task_id).where(BiddingTask.id.in_(ids_to_find_parent))
+            )
+        ).options(
+            joinedload(BiddingTask.project),
+            joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
+            joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit)
+        )
+        parents = db.execute(parent_query).unique().scalars().all()
+        ids_to_find_parent = []
+        
+        for p in parents:
+            if p.id not in all_related_tasks:
+                all_related_tasks[p.id] = p
+                if p.parent_task_id:
+                    ids_to_find_parent.append(p.id)
+
+    # Bước 3: Dựng cây (In-memory)
+    schema_map = {}
+    for t_id, t_orm in all_related_tasks.items():
+        t_schema = TaskResponse.model_validate(t_orm)
+        t_schema.sub_tasks = []
+        if t_orm.project:
+            t_schema.project_name = t_orm.project.name
+        schema_map[t_id] = t_schema
+
+    roots = []
+    for t_id, t_schema in schema_map.items():
+        if t_schema.parent_task_id and t_schema.parent_task_id in schema_map:
+            parent = schema_map[t_schema.parent_task_id]
+            parent.sub_tasks.append(t_schema)
+        else:
+            roots.append(t_schema)
+
+    # Bước 4: Sắp xếp & Fill tags
+    # Reviewer thường ưu tiên xem task PENDING_REVIEW lên đầu
+    def recursive_sort_reviewer(tasks_list):
+        tasks_list.sort(key=lambda x: (
+            0 if x.status == TaskStatus.PENDING_REVIEW else 1, # Ưu tiên PENDING_REVIEW
+            0 if x.deadline and x.deadline < datetime.now() else 1, # Ưu tiên quá hạn
+            x.deadline if x.deadline else datetime.max
+        ))
+        for task in tasks_list:
+            if task.sub_tasks:
+                recursive_sort_reviewer(task.sub_tasks)
+
+    recursive_sort_reviewer(roots)
+    _fill_inherited_tags_pydantic(roots)
+    
+    return roots
+
+# --- 3. [MỚI] GET DETAIL FOR REVIEWER ---
+def get_task_detail_for_reviewer(db: Session, task_id: int, user: User):
+    """
+    Xem chi tiết dành riêng cho Reviewer.
+    CHỈ CHO PHÉP người được gán là Reviewer (reviewer_id) truy cập.
+    """
+    # 1. Query load đầy đủ thông tin
+    query = select(BiddingTask).where(BiddingTask.id == task_id).options(
+        joinedload(BiddingTask.project),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit),
+        joinedload(BiddingTask.sub_tasks).joinedload(BiddingTask.assignments),
+        joinedload(BiddingTask.comments).joinedload(TaskComment.author)
+    )
+    
+    task = db.execute(query).unique().scalar_one_or_none()
+    
+    if not task:
+        raise HTTPException(status_code=404, detail="Công việc không tồn tại")
+
+    # 2. [QUAN TRỌNG] Kiểm tra quyền STRICT (Chặt chẽ)
+    # Logic cũ: Cho phép Reviewer HOẶC Admin
+    # Logic MỚI: Chỉ cho phép Reviewer (Reviewer ID phải khớp với User ID hiện tại)
+    
+    if task.reviewer_id != user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Bạn không có quyền duyệt công việc này (Sai Reviewer)."
+        )
+
     return task

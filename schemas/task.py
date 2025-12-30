@@ -126,6 +126,8 @@ class TaskResponse(TaskBase):
     parent_task_id: Optional[int] = None
     assignee_id: Optional[int] = None
     reviewer_id: Optional[int] = None
+    # [NEW]
+    created_at: datetime
     # <--- THÊM DÒNG NÀY:
     project_name: Optional[str] = None
     # Danh sách phân công
