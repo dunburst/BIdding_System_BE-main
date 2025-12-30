@@ -42,7 +42,7 @@ def get_user_allowed_tags_with_name(db: Session, user: User, project_id: int) ->
     
     filter_conditions = [
         BiddingTask.assignee_id == user.user_id,
-        TaskAssignment.assigned_user_id == user.user_id,
+        TaskAssignment.assigned_user_id == user.user_id 
     ]
     
     if user.org_unit_id is not None:
