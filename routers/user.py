@@ -5,12 +5,38 @@ from typing import List
 from database import get_db
 import cruds.user as crud_user
 import schemas.user as schemas
+from schemas.task import TaskResponse
+from utils.security import get_current_user
+from models import User
+import cruds.task as task_crud
 
 router = APIRouter(
     prefix="/users",
     tags=["User Management (Quản lý người dùng)"]
 )
+@router.get("/reviewer-list", response_model=List[TaskResponse])
+def get_tasks_i_need_to_review(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Lấy danh sách các công việc mà tôi được chỉ định là REVIEWER (Người duyệt/giám sát).
+    Danh sách trả về dạng cây, ưu tiên các task đang chờ duyệt (PENDING_REVIEW).
+    """
+    # (Có thể thêm check quyền nếu cần: chỉ Manager/Specialist mới dc gọi)
+    return task_crud.get_tasks_for_reviewer(db, user=current_user)
 
+@router.get("/reviewer/{task_id}", response_model=TaskResponse)
+def get_task_detail_reviewer_view(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Xem chi tiết task dưới góc độ Reviewer.
+    Hàm này kiểm tra chặt chẽ quyền Reviewer_id.
+    """
+    return task_crud.get_task_detail_for_reviewer(db, task_id, current_user)
 # 1. Tạo User mới (Admin tạo)
 @router.post("/", response_model=schemas.UserResponse)
 def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):

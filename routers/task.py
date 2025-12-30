@@ -46,18 +46,35 @@ def get_task_detail(
 ):
     return task_crud.get_task_detail(db, task_id, current_user)
 
-@router.patch("/{task_id}/status")
+@router.patch("/{task_id}/status", response_model=TaskResponse)
 def update_status(
     task_id: int,
-    status: TaskStatus,
+    status: TaskStatus, # Mặc định FastAPI sẽ hiểu đây là Query Param (?status=COMPLETED)
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Cập nhật trạng thái Task. 
-    Chỉ nhân viên thuộc phòng ban được assign mới update được.
+    Cập nhật trạng thái duyệt Task.
+    - Quyền: CHỈ REVIEWER mới được gọi.
+    - Logic:
+        + Gửi status='COMPLETED' -> Task thành Completed.
+        + Gửi status='REJECTED' -> Task quay về In_Progress.
     """
     return task_crud.update_task_status(db, task_id, status, current_user)
+
+@router.post("/{task_id}/submit", response_model=TaskResponse)
+def submit_task_review(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Nhân viên báo cáo hoàn thành công việc và gửi yêu cầu duyệt.
+    - Điều kiện: Task phải đang IN_PROGRESS.
+    - Quyền: Chỉ Assignee thực hiện.
+    - Kết quả: Status chuyển thành PENDING_REVIEW -> Reviewer sẽ thấy.
+    """
+    return task_crud.submit_task_for_review(db, task_id, current_user)
 
 @router.put("/{task_id}", response_model=TaskResponse)
 def update_existing_task(

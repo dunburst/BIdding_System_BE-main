@@ -1,7 +1,6 @@
 import os
 import io
 import zipfile
-# import httplib2
 from typing import List, Optional, Any
 
 # --- CÁC IMPORT CHÍNH ---
@@ -9,8 +8,6 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
-# from google_auth_httplib2 import AuthorizedHttp
-
 from fastapi import UploadFile
 from dotenv import load_dotenv
 

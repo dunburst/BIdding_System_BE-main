@@ -475,12 +475,17 @@ class BiddingTask(Base):
     
     source_type: Mapped[Optional[str]] = mapped_column(String(50))
     ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    hsmt_ref_page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # [NEW] Thêm ngày tạo
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # [NEW] Thêm cột này để lưu ID người tạo task
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.user_id"), nullable=False)
 
     # [MỚI] Thêm cột này để lưu bản nháp html nhân viên đang soạn
     draft_content: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True) 
 
     # Relationships
+    # Relationship để truy vấn ngược lại info người tạo
+    creator: Mapped["User"] = relationship(foreign_keys=[created_by])
     project: Mapped["BiddingProject"] = relationship(back_populates="tasks")
     assignments: Mapped[List["TaskAssignment"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     parent: Mapped[Optional["BiddingTask"]] = relationship(remote_side=[id], back_populates="sub_tasks")
