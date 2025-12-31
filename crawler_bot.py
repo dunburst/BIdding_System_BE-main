@@ -738,4 +738,16 @@ def run_scheduler_system():
             scheduler.shutdown()
             
 if __name__ == "__main__":
+    # print("!!! ĐANG CHẠY CHẾ ĐỘ THỦ CÔNG (KHÔNG PHẢI SCHEDULER) !!!") 
+    
+    # target_url = "https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=detail-v2&type=es-notify-contractor&stepCode=notify-contractor-step-4-kqlcnt&id=f52bc5cf-190f-4fff-bb87-d0c52541878a&notifyId=f52bc5cf-190f-4fff-bb87-d0c52541878a&inputResultId=2db49aae-6032-4670-b49c-90a0a09f1d71&bidOpenId=2fb73de9-333e-4c02-89cb-c6d486b5bd7f&techReqId=undefined&bidPreNotifyResultId=undefined&bidPreOpenId=undefined&processApply=LDT&bidMode=1_MTHS&notifyNo=IB2500025040&planNo=PL2500010121&pno=undefined&step=tbmt&isInternet=1&caseKHKQ=undefined&bidForm=DTRR" # (Link của bạn)
+
+    # print(f"🚀 BẮT ĐẦU CHẠY NGAY LẬP TỨC CHO LINK:\n{target_url}")
+    
+    # try:
+    #     bot = MuasamcongDBBot()
+    #     bot.process_package(target_url)
+    #     print("✅ ĐÃ CHẠY XONG!")
+    # except Exception as e:
+    #     print(f"❌ CÓ LỖI XẢY RA: {e}")
     run_scheduler_system()
