@@ -45,14 +45,18 @@ def get_packages(
     # --- Lọc theo trạng thái ---
     if status:
         query = query.filter(BiddingPackage.trang_thai == status)
+    # --- BƯỚC QUAN TRỌNG: Đếm tổng số lượng trước khi phân trang ---
+    total = query.count()
         
     # --- Sắp xếp & Phân trang (BẮT BUỘC CÓ ORDER BY) ---
     # Sắp xếp theo ngày tạo mới nhất lên đầu
-    return query.order_by(desc(BiddingPackage.created_at))\
+    items = query.order_by(desc(BiddingPackage.created_at))\
                 .offset(skip)\
                 .limit(limit)\
                 .all()
-
+    
+    # Trả về cả items và total
+    return items, total
 # 3. Tạo mới gói thầu
 def create_package(db: Session, package: schemas.BiddingPackageBase):
     # Chuyển Pydantic model sang dict
