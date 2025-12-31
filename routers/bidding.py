@@ -13,6 +13,7 @@ from utils.abac import check_permission, get_allowed_actions
 from utils.constants import AbacAction
 from schemas.bidding import CountdownResponse
 from cruds.bidding import calculate_time_remaining, get_closing_time
+from math import ceil
 
 router = APIRouter(
     prefix="/bidding-packages",
@@ -45,7 +46,7 @@ def create_package(
 # ==========================================
 # 2. LẤY DANH SÁCH (GET LIST - CÓ FILTER & SEARCH)
 # ==========================================
-@router.get("/", response_model=BaseResponse[List[schemas.BiddingPackageResponse]])
+@router.get("/", response_model=BaseResponse[schemas.BiddingPackagePagination])
 def get_packages(
     skip: int = Query(0, ge=0), 
     limit: int = Query(100, ge=1),
@@ -70,7 +71,7 @@ def get_packages(
         
 
     # Logic lấy dữ liệu...
-    packages = crud_bidding.get_packages(
+    packages, total_count= crud_bidding.get_packages(
         db, 
         skip=skip, 
         limit=limit, 
@@ -90,12 +91,24 @@ def get_packages(
         pkg_response.allowed_actions = get_allowed_actions(db, current_user, pkg)
         
         results.append(pkg_response)
+        
+    # Tính toán thông tin phân trang
+    current_page = (skip // limit) + 1
+    total_pages = ceil(total_count / limit) if limit > 0 else 0
+    # Tạo object pagination
+    pagination_data = schemas.BiddingPackagePagination(
+        items=results,
+        total=total_count,
+        page=current_page,
+        size=limit,
+        pages=total_pages
+    )
     
     return BaseResponse(
         success=True,
         status=200,
         message="Lấy danh sách gói thầu thành công",
-        data=results
+        data=pagination_data
     )
 # ==========================================
 # 3. LẤY CHI TIẾT (GET DETAIL)
