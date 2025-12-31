@@ -194,27 +194,65 @@ async def update_drive_file(
 @router.get("/search-repo")
 def search_repository(
     query: str, 
-    folder_id: Optional[str] = None,  # <--- Thêm tham số này (không bắt buộc)
+    folder_id: Optional[str] = None, 
     current_user: User = Depends(get_current_user)
 ):
-    # Truyền folder_id vào hàm search của service
+    # 1. Lấy danh sách file thô từ Google
     flat_results = drive_service.search_files(query, folder_id=folder_id)
     
-    # --- Code xử lý tree bên dưới giữ nguyên ---
+    # 2. Chuẩn bị Cache để lưu tên các Folder cha (Tránh gọi API lặp lại)
+    # Nếu đang search trong 1 folder cụ thể, ta lấy luôn tên folder đó làm "vốn"
+    parent_cache = {} 
+    if folder_id:
+        root_name = drive_service.get_folder_name(folder_id)
+        parent_cache[folder_id] = root_name
+
     item_map = {}
+
+    # 3. Duyệt và xử lý dữ liệu
     for item in flat_results:
+        # Xác định ID cha
+        parents_list = item.get('parents', [])
+        parent_id = parents_list[0] if parents_list else None
+        
+        # --- LOGIC MỚI: LẤY TÊN FOLDER CHA ---
+        parent_name = None
+        if parent_id:
+            # Kiểm tra xem đã có trong cache chưa
+            if parent_id in parent_cache:
+                parent_name = parent_cache[parent_id]
+            else:
+                # Nếu chưa có, gọi API lấy tên và lưu vào cache
+                fetched_name = drive_service.get_folder_name(parent_id)
+                parent_cache[parent_id] = fetched_name
+                parent_name = fetched_name
+        # -------------------------------------
+
         is_folder = 'application/vnd.google-apps.folder' in item.get('mimeType', '')
+        
         clean_item = {
-            "id": item['id'], "name": item['name'], "type": "FOLDER" if is_folder else "FILE",
-            "mime_type": item.get('mimeType'), "link": item['webViewLink'],
-            "created_at": item.get('createdTime'), "parents": item.get('parents', []), "children": []
+            "id": item['id'], 
+            "name": item['name'], 
+            "type": "FOLDER" if is_folder else "FILE",
+            "mime_type": item.get('mimeType'), 
+            "link": item['webViewLink'],
+            "created_at": item.get('createdTime'), 
+            "parents": parents_list,
+            
+            # Trả thêm trường này
+            "parent_id": parent_id,
+            "parent_name": parent_name, 
+
+            "children": []
         }
         item_map[item['id']] = clean_item
 
+    # 4. Xây dựng cây thư mục (Logic cũ giữ nguyên)
     tree_roots = []
     for item_id, item in item_map.items():
-        parent_id = item['parents'][0] if item['parents'] else None
-        # Logic ghép cây: Nếu cha của file này cũng nằm trong kết quả tìm kiếm thì nhét vào con
+        parent_id = item['parent_id'] # Dùng biến đã lấy ở trên
+        
+        # Nếu cha của nó cũng nằm trong danh sách kết quả tìm kiếm -> Nhét vào làm con
         if parent_id and parent_id in item_map: 
             item_map[parent_id]['children'].append(item)
         else: 
@@ -222,7 +260,7 @@ def search_repository(
 
     return {
         "query": query, 
-        "scope": folder_id if folder_id else "Global", # Trả về để biết đang tìm ở đâu
+        "scope": folder_id if folder_id else "Global",
         "total_matches": len(flat_results), 
         "tree_roots_count": len(tree_roots), 
         "data": tree_roots
