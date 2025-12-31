@@ -57,7 +57,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         
         if email is None:
             raise credentials_exception
-            
+
     except JWTError:
         raise credentials_exception
     from cruds.user import get_user_by_email

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from database import get_db
 from models import User, BiddingTask
@@ -17,7 +17,7 @@ router = APIRouter(
 # 1. Lấy danh sách Template (Theo category: HR, TECH...)
 @router.get("/templates", response_model=List[TemplateResponse])
 def get_templates(
-    category: str = None, 
+    category: Optional[str] = None, 
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -32,7 +32,7 @@ def ai_assist(
     result_html = drafting_service.process_drafting_with_ai(
         prompt=payload.prompt,
         current_html=payload.current_content,
-        context=payload.task_context
+        context=payload.task_context or ""
     )
     return {"generated_content": result_html}
 
