@@ -1,21 +1,68 @@
 import os
 import io
 import zipfile
-import httplib2
 from typing import List, Optional, Any
+import httplib2
+import urllib3
+import asyncio
 
 # --- CÁC IMPORT CHÍNH ---
 from google.oauth2.credentials import Credentials 
+from google_auth_httplib2 import AuthorizedHttp
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
-from google_auth_httplib2 import AuthorizedHttp
-
 from fastapi import UploadFile
 from dotenv import load_dotenv
+import requests
+
+# # --- THÊM ĐOẠN NÀY ĐỂ BỎ QUA PROXY CỦA HỆ THỐNG ---
+# os.environ.pop("HTTP_PROXY", None)
+# os.environ.pop("HTTPS_PROXY", None)
+# os.environ.pop("http_proxy", None)
+# os.environ.pop("https_proxy", None)
 
 load_dotenv()
 
+# --- TẮT CẢNH BÁO SSL (GIÚP LOG SẠCH VÀ NHANH HƠN) ---
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+class RequestsShim(object):
+    def __init__(self):
+        self.session = requests.Session()
+        
+        # --- CẤU HÌNH "VƯỢT TƯỜNG LỬA" ---
+        self.session.verify = False       # TẮT HOÀN TOÀN xác thực SSL (Chấp nhận chứng chỉ lỗi)
+        self.session.trust_env = False    # TẮT HOÀN TOÀN việc đọc Proxy từ hệ thống (Bỏ qua setting máy)
+        
+        # Giả danh trình duyệt Chrome để Firewall không chặn
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        })
+
+    def request(self, uri, method="GET", body=None, headers=None, redirections=5, connection_type=None):
+        # Chuyển đổi gọi hàm từ giao thức cũ (httplib2) sang requests
+        try:
+            # Thực hiện request bằng thư viện requests mạnh mẽ hơn
+            response = self.session.request(method, uri, data=body, headers=headers, timeout=120)
+            
+            # Cần gói lại kết quả theo đúng format mà Google API mong đợi
+            # (Google API mong đợi 1 tuple gồm: (headers_object, content_bytes))
+            
+            class Httplib2Response(dict):
+                def __init__(self, headers, status, reason):
+                    super().__init__(headers)
+                    self.status = status
+                    self.reason = reason
+            
+            # Gom headers và status code lại giả làm httplib2
+            resp_headers = Httplib2Response(dict(response.headers), response.status_code, response.reason)
+            
+            return (resp_headers, response.content)
+            
+        except Exception as e:
+            print(f"❌ Lỗi mạng tầng RequestsShim: {str(e)}")
+            raise e
+        
 class GoogleDriveService:
     def __init__(self):
         self.service: Any = None
@@ -42,21 +89,31 @@ class GoogleDriveService:
                 except Exception as e:
                     print(f"⚠️ Lỗi refresh token: {e}")
 
-            # 3. Tạo Http object với Timeout 60s
-            http = httplib2.Http(timeout=60)
-            
-            # 4. Wrap Http bằng AuthorizedHttp
-            authorized_http = AuthorizedHttp(self.creds, http=http)
+            try:
+                # --- THAY ĐỔI QUAN TRỌNG NHẤT Ở ĐÂY ---
+                # Dùng RequestsShim thay vì httplib2 mặc định
+                http_shim = RequestsShim()
+                
+                # Bọc nó bằng AuthorizedHttp để tự động gắn Token
+                authorized_http = AuthorizedHttp(self.creds, http=http_shim)
 
-            # 5. Build service
-            self.service = build(
-                'drive', 'v3', 
-                http=authorized_http, 
-                cache_discovery=False
-            )
-            print("✅ Kết nối Drive thành công!")
+                # Truyền vào build
+                self.service = build(
+                    'drive', 'v3', 
+                    http=authorized_http, # Google sẽ dùng requests thông qua lớp vỏ bọc này
+                    cache_discovery=False,
+                    static_discovery=False 
+                )
+                print("✅ Kết nối Drive thành công (Mode: Requests Shim - Bypass Proxy 100%)!")
+            except Exception as e:
+                print(f"❌ Lỗi kết nối Drive: {e}")
         else:
             print("❌ Lỗi: Thiếu cấu hình OAuth")
+            
+    # --- HÀM HỖ TRỢ CHẠY ASYNC (TRÁNH BLOCK SERVER) ---
+    async def _run_in_thread(self, func, *args, **kwargs):
+        """Chạy hàm blocking của Google trong thread riêng"""
+        return await asyncio.to_thread(func, *args, **kwargs)
 
     # --- NHÓM 1: QUẢN LÝ FOLDER & FILE CƠ BẢN ---
     

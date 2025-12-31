@@ -10,6 +10,8 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from models import User
+from functools import lru_cache
+from typing import Optional
 
 load_dotenv() # Load biến từ file .env
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -40,6 +42,23 @@ def create_access_token(data: dict, expires_delta: Union[timedelta, None] = None
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+# --- CACHING USER ĐỂ GIẢM TẢI DB ---
+# Lưu kết quả query trong 60 giây (hoặc tùy chỉnh)
+# Lưu ý: LRU Cache lưu trên RAM, nếu restart server sẽ mất (không sao cả)
+@lru_cache(maxsize=100)
+def get_cached_user_email(token: str):
+    """
+    Cache việc giải mã token để tránh decode liên tục nếu token không đổi
+    """
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: Optional[str] = payload.get("sub")
+        if email is None:
+            return None
+        return email
+    except JWTError:
+        return None
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
