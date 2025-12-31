@@ -20,6 +20,11 @@ class TaskAssignmentRequest(BaseModel):
     project_id: str             
     task_type: str 
     template_file_ids: List[str] 
+    
+class StatsResponse(BaseModel):
+    total_repo_files: int
+    current_folder_files: Optional[int] = 0
+    folder_id: Optional[str] = None
 
 # --- HELPER FUNCTION ---
 def _get_folder_tag(folder_name: str) -> Optional[str]:
@@ -187,8 +192,15 @@ async def update_drive_file(
     return {"message": "Cập nhật thành công", "updated_fields": {"name": new_name, "level": security_level}}
 
 @router.get("/search-repo")
-def search_repository(query: str, current_user: User = Depends(get_current_user)):
-    flat_results = drive_service.search_files(query)
+def search_repository(
+    query: str, 
+    folder_id: Optional[str] = None,  # <--- Thêm tham số này (không bắt buộc)
+    current_user: User = Depends(get_current_user)
+):
+    # Truyền folder_id vào hàm search của service
+    flat_results = drive_service.search_files(query, folder_id=folder_id)
+    
+    # --- Code xử lý tree bên dưới giữ nguyên ---
     item_map = {}
     for item in flat_results:
         is_folder = 'application/vnd.google-apps.folder' in item.get('mimeType', '')
@@ -202,10 +214,19 @@ def search_repository(query: str, current_user: User = Depends(get_current_user)
     tree_roots = []
     for item_id, item in item_map.items():
         parent_id = item['parents'][0] if item['parents'] else None
-        if parent_id and parent_id in item_map: item_map[parent_id]['children'].append(item)
-        else: tree_roots.append(item)
+        # Logic ghép cây: Nếu cha của file này cũng nằm trong kết quả tìm kiếm thì nhét vào con
+        if parent_id and parent_id in item_map: 
+            item_map[parent_id]['children'].append(item)
+        else: 
+            tree_roots.append(item)
 
-    return {"query": query, "total_matches": len(flat_results), "tree_roots_count": len(tree_roots), "data": tree_roots}
+    return {
+        "query": query, 
+        "scope": folder_id if folder_id else "Global", # Trả về để biết đang tìm ở đâu
+        "total_matches": len(flat_results), 
+        "tree_roots_count": len(tree_roots), 
+        "data": tree_roots
+    }
 
 @router.post("/clone-file")
 def clone_file_to_project(source_file_id: str = Form(...), target_folder_id: str = Form(...), new_name: Optional[str] = Form(None), current_user: User = Depends(get_current_user)):
@@ -311,4 +332,23 @@ def get_current_user_target_folder(
         "category": selected_tag,
         "folder_name_keyword": folder_keyword,
         "target_folder_id": target_folder_id # <--- Đây là cái bạn cần cho API clone
+    }
+    
+@router.get("/stats/count", response_model=StatsResponse)
+def get_file_statistics(
+    folder_id: Optional[str] = None, 
+    current_user: User = Depends(get_current_user)
+):
+    """
+    - total_repo_files: Đếm tất cả file (đệ quy) nằm trong GOOGLE_DRIVE_SHARED_FOLDER_ID.
+    - current_folder_files: Đếm file (cấp 1) nằm trong folder_id được chọn.
+    """
+    
+    # Hàm này đã được update logic bên trong service.py
+    stats = drive_service.get_repository_statistics(folder_id)
+    
+    return {
+        "total_repo_files": stats["total_repository_files"],
+        "current_folder_files": stats["current_folder_files"],
+        "folder_id": folder_id
     }

@@ -738,4 +738,17 @@ def run_scheduler_system():
             scheduler.shutdown()
             
 if __name__ == "__main__":
-    run_scheduler_system()
+    # --- THÊM DÒNG NÀY ĐỂ CHECK XEM NÓ CÓ NHẬN CODE MỚI KHÔNG ---
+    print("!!! ĐANG CHẠY CHẾ ĐỘ THỦ CÔNG (KHÔNG PHẢI SCHEDULER) !!!") 
+    
+    target_url = "https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?..." # (Link của bạn)
+
+    print(f"🚀 BẮT ĐẦU CHẠY NGAY LẬP TỨC CHO LINK:\n{target_url}")
+    
+    try:
+        bot = MuasamcongDBBot()
+        bot.process_package(target_url)
+        print("✅ ĐÃ CHẠY XONG!")
+    except Exception as e:
+        print(f"❌ CÓ LỖI XẢY RA: {e}")
+    # run_scheduler_system()

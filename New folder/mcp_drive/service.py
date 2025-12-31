@@ -3,6 +3,8 @@ import io
 import zipfile
 from typing import List, Optional, Any
 import httplib2
+import urllib3
+import asyncio
 
 # --- CÁC IMPORT CHÍNH ---
 from google.oauth2.credentials import Credentials 
@@ -22,6 +24,8 @@ import requests
 
 load_dotenv()
 
+# --- TẮT CẢNH BÁO SSL (GIÚP LOG SẠCH VÀ NHANH HƠN) ---
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 class RequestsShim(object):
     def __init__(self):
         self.session = requests.Session()
@@ -105,6 +109,11 @@ class GoogleDriveService:
                 print(f"❌ Lỗi kết nối Drive: {e}")
         else:
             print("❌ Lỗi: Thiếu cấu hình OAuth")
+            
+    # --- HÀM HỖ TRỢ CHẠY ASYNC (TRÁNH BLOCK SERVER) ---
+    async def _run_in_thread(self, func, *args, **kwargs):
+        """Chạy hàm blocking của Google trong thread riêng"""
+        return await asyncio.to_thread(func, *args, **kwargs)
 
     # --- NHÓM 1: QUẢN LÝ FOLDER & FILE CƠ BẢN ---
     
