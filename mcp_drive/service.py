@@ -295,6 +295,19 @@ class GoogleDriveService:
         except Exception as e:
             print(f"❌ Lỗi search: {e}")
             return []
+        
+    # [MỚI] Hàm lấy tên folder (dùng cache đơn giản để tránh gọi nhiều nếu cần)
+    def get_folder_name(self, folder_id: str) -> str:
+        if not self.service or not folder_id: return "Unknown"
+        try:
+            # Gọi nhẹ API để lấy đúng field name
+            res = self.service.files().get(
+                fileId=folder_id, 
+                fields='name'
+            ).execute()
+            return res.get('name', 'Unknown')
+        except Exception:
+            return "Unknown (Restricted)"
 
     def copy_file(self, file_id: str, target_folder_id: str, new_name: Optional[str] = None):
         try:
