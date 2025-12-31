@@ -1,6 +1,10 @@
 import os
 import io
 import zipfile
+<<<<<<< HEAD
+=======
+# import httplib2
+>>>>>>> ec85e68c64ecb4054f8006d839c3e384b6ff67d9
 from typing import List, Optional, Any
 import httplib2
 import urllib3
@@ -12,6 +16,11 @@ from google_auth_httplib2 import AuthorizedHttp
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+<<<<<<< HEAD
+=======
+# from google_auth_httplib2 import AuthorizedHttp
+
+>>>>>>> ec85e68c64ecb4054f8006d839c3e384b6ff67d9
 from fastapi import UploadFile
 from dotenv import load_dotenv
 import requests
@@ -89,6 +98,7 @@ class GoogleDriveService:
                 except Exception as e:
                     print(f"⚠️ Lỗi refresh token: {e}")
 
+<<<<<<< HEAD
             try:
                 # --- THAY ĐỔI QUAN TRỌNG NHẤT Ở ĐÂY ---
                 # Dùng RequestsShim thay vì httplib2 mặc định
@@ -105,6 +115,18 @@ class GoogleDriveService:
                     static_discovery=False 
                 )
                 print("✅ Kết nối Drive thành công (Mode: Requests Shim - Bypass Proxy 100%)!")
+=======
+            # 3. Tạo Http object với cấu hình BỎ QUA kiểm tra SSL
+            # disable_ssl_certificate_validation=True là chìa khóa
+            try:
+                self.service = build(
+                    'drive', 'v3', 
+                    credentials=self.creds, # Truyền thẳng credentials
+                    cache_discovery=False,
+                    static_discovery=False 
+                )
+                print("✅ Kết nối Drive thành công (Native Mode)!")
+>>>>>>> ec85e68c64ecb4054f8006d839c3e384b6ff67d9
             except Exception as e:
                 print(f"❌ Lỗi kết nối Drive: {e}")
         else:
