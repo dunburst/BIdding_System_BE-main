@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional, List
+from datetime import datetime
 
 # --- TEMPLATE SCHEMAS ---
 class TemplateBase(BaseModel):
@@ -29,3 +30,12 @@ class AiAssistResponse(BaseModel):
 
 class SaveDraftRequest(BaseModel):
     content: str # Nội dung HTML cần lưu
+    
+# --- THÊM CLASS NÀY ---
+class UserDraftResponse(BaseModel):
+    id: int              # ID của Task
+    task_name: str            # Tên của Task (giả sử model BiddingTask có trường name)
+    draft_content: Optional[str] = None
+
+    class Config:
+        from_attributes = True
