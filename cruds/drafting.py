@@ -30,3 +30,18 @@ def save_task_draft(db: Session, task_id: int, content: str):
         db.commit()
         db.refresh(task)
     return task
+
+# --- THÊM HÀM NÀY ---
+def get_user_drafts(db: Session, user_id: int):
+    """
+    Lấy danh sách các Task mà user được giao (hoặc tạo),
+    và Task đó phải CÓ nội dung nháp (draft_content khác NULL/Rỗng)
+    """
+    return db.query(BiddingTask).filter(
+        # 1. Lọc theo user (Sửa 'assignee_id' thành 'user_id' hoặc 'created_by' tùy model của bạn)
+        BiddingTask.assignee_id == user_id, 
+        
+        # 2. Chỉ lấy những task đã có bản nháp
+        BiddingTask.draft_content != None,
+        BiddingTask.draft_content != ""
+    ).all()
