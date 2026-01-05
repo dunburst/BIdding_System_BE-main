@@ -25,6 +25,10 @@ class StatsResponse(BaseModel):
     total_repo_files: int
     current_folder_files: Optional[int] = 0
     folder_id: Optional[str] = None
+    
+class CreateFolderRequest(BaseModel):
+    parent_id: str
+    folder_name: str
 
 # --- HELPER FUNCTION ---
 def _get_folder_tag(folder_name: str) -> Optional[str]:
@@ -42,7 +46,18 @@ def _get_folder_tag(folder_name: str) -> Optional[str]:
         "thiết bị": "DEVICE",
         "hợp đồng": "CONTRACT",
         "hợp đông": "CONTRACT",
-        "khác": "OTHER"
+        "khác": "OTHER",
+        # --- [BỔ SUNG TỪ KHÓA MỚI] ---
+        "bldt": "DBTC",
+        "cktd": "DBTC",
+        "bảo lãnh": "DBTC",
+        "tín dụng": "DBTC",
+        
+        "vt": "VT",
+        "vật tư": "VT",
+        
+        "giá": "GIA",
+        "gia": "GIA"
     }
     for key, tag in keywords.items():
         if key in name_lower:
@@ -277,7 +292,10 @@ def delete_drive_file(file_id: str, current_user: User = Depends(get_current_use
 def get_project_category_folder(project_folder_id: str, category: str, current_user: User = Depends(get_current_user)):
     FOLDER_MAPPING = {
         "HR": "nhân sự", "LEGAL": "Pháp lý", "TECH": "Biện pháp Thi công",
-        "FINANCE": "tài chính", "DEVICE": "máy móc", "CONTRACT": "hợp đông", "OTHER": "khác"
+        "FINANCE": "tài chính", "DEVICE": "máy móc", "CONTRACT": "hợp đông", "OTHER": "khác",# --- [BỔ SUNG MỚI] ---
+        "DBTC": "BLDT", # Tìm folder có chữ "BLDT"
+        "VT": "Hồ sơ VT",
+        "GIA": "Giá"
     }
     keyword = FOLDER_MAPPING.get(category.upper())
     if not keyword: raise HTTPException(400, f"Không hỗ trợ danh mục: {category}")
@@ -341,7 +359,11 @@ def get_current_user_target_folder(
         "FINANCE": "tài chính", 
         "DEVICE": "máy móc", 
         "CONTRACT": "hợp đông", 
-        "OTHER": "khác"
+        "OTHER": "khác",
+        # --- [BỔ SUNG MỚI] ---
+        "DBTC": "BLDT", # Tìm folder có chữ "BLDT"
+        "VT": "Hồ sơ VT",
+        "GIA": "Giá"
     }
     
     folder_keyword = FOLDER_MAPPING.get(selected_tag)
@@ -379,4 +401,32 @@ def get_file_statistics(
         "total_repo_files": stats["total_repository_files"],
         "current_folder_files": stats["current_folder_files"],
         "folder_id": folder_id
+    }
+
+@router.post("/create-subfolder")
+def create_custom_subfolder(
+    payload: CreateFolderRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Tạo một folder con bên trong một folder cha bất kỳ.
+    - parent_id: ID của folder cha (trên Google Drive)
+    - folder_name: Tên folder muốn tạo
+    """
+    if not payload.parent_id or not payload.folder_name:
+        raise HTTPException(status_code=400, detail="Thiếu parent_id hoặc folder_name")
+
+    # Gọi hàm create_folder có sẵn trong service (hàm này đã support parent_id)
+    new_folder_id = drive_service.create_folder(payload.folder_name, payload.parent_id)
+
+    if not new_folder_id:
+        raise HTTPException(status_code=500, detail="Không thể tạo folder trên Google Drive. Vui lòng kiểm tra log.")
+
+    return {
+        "message": "Tạo folder thành công",
+        "data": {
+            "id": new_folder_id,
+            "name": payload.folder_name,
+            "parent_id": payload.parent_id
+        }
     }

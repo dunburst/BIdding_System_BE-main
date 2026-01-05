@@ -139,48 +139,115 @@ class GoogleDriveService:
             print(f"❌ Lỗi get metadata: {e}")
             return None
 
-    def create_folder(self, folder_name: str, parent_id: Optional[str] = None) -> Optional[str]:
+    # [CẬP NHẬT 1] Sửa hàm create_folder để nhận thêm tham số 'tag'
+    def create_folder(self, folder_name: str, parent_id: Optional[str] = None, tag: Optional[str] = None) -> Optional[str]:
         try:
             target_parent = parent_id if parent_id else self.ROOT_FOLDER_ID
+            
+            # Metadata cơ bản
             file_metadata = {
                 'name': folder_name,
                 'mimeType': 'application/vnd.google-apps.folder',
                 'parents': [target_parent]
             }
+
+            # [QUAN TRỌNG] Nếu có tag, lưu vào properties để sau này code khác đọc được chính xác
+            if tag:
+                file_metadata['properties'] = {
+                    'project_tag': tag
+                }
+
             folder = self.service.files().create(
                 body=file_metadata, fields='id'
             ).execute()
+            
             return folder.get('id')
         except Exception as e:
-            print(f"❌ Lỗi tạo folder: {e}")
+            print(f"❌ Lỗi tạo folder '{folder_name}': {e}")
             return None
 
+    # [CẬP NHẬT 2] Sửa hàm create_project_tree với cấu trúc và tag mới
     def create_project_tree(self, project_name: str):
+        # 1. Tạo folder gốc dự án
         project_id = self.create_folder(project_name, self.ROOT_FOLDER_ID)
         if not project_id: return None
 
-        sub_folders_list = [
-            "01. Hồ sơ Pháp lý & Năng lực",
-            "02. Hồ sơ nhân sự",
-            "03. Biện pháp Thi công",
-            "04. Hồ sơ tài chính",
-            "05. Hồ sơ máy móc thiết bị",
-            "06. Hồ sơ hợp đông tương tự",
-            "07. Hồ sơ khác"
+        # 2. Định nghĩa Cấu trúc Folder + Tag
+        # Cấu trúc: Mỗi phần tử là một folder cha, chứa danh sách 'children' (folder con)
+        structure_config = [
+            {
+                "name": "1. HSPL, BCTC, HDTT, TTLD",
+                "tag": None, # Folder vỏ này không cần tag, hoặc bạn có thể gán nếu muốn
+                "children": [
+                    {"name": "Hồ sơ pháp lý",   "tag": "LEGAL"},
+                    {"name": "Báo cáo tài chính", "tag": "FINANCE"},
+                    {"name": "Hợp đồng tương tự", "tag": "CONTRACT"}
+                ]
+            },
+            {
+                "name": "2. BLDT, CKTD",
+                "tag": "DBTC", # Tag cho cả folder cha này
+                "children": [] 
+            },
+            {
+                "name": "3. BPTC",
+                "tag": None,
+                "children": [
+                    {"name": "Nhân sự",          "tag": "HR"},
+                    {"name": "Máy móc",          "tag": "DEVICE"},
+                    {"name": "Biện pháp thi công", "tag": "TECH"}
+                ]
+            },
+            {
+                "name": "4. Hồ sơ VT",
+                "tag": "VT",
+                "children": []
+            },
+            {
+                "name": "5. Giá",
+                "tag": "GIA",
+                "children": []
+            }
         ]
 
-        created_folders = []
-        for folder_name in sub_folders_list:
-            sub_id = self.create_folder(folder_name, project_id)
-            if sub_id:
-                created_folders.append({"name": folder_name, "id": sub_id})
-            
-        return {
-            "project_name": project_name,
-            "project_id": project_id,
-            "sub_folders": created_folders
-        }
+        created_folders_log = []
 
+        try:
+            # 3. Vòng lặp tạo folder
+            for parent_config in structure_config:
+                p_name = parent_config["name"]
+                p_tag = parent_config["tag"]
+                
+                # A. Tạo Folder Cha
+                print(f"📂 Creating Parent: {p_name} (Tag: {p_tag})")
+                parent_id = self.create_folder(p_name, project_id, tag=p_tag)
+                
+                if parent_id:
+                    created_folders_log.append({
+                        "name": p_name, "id": parent_id, "type": "PARENT", "tag": p_tag
+                    })
+
+                    # B. Tạo Folder Con (nếu có)
+                    for child in parent_config["children"]:
+                        c_name = child["name"]
+                        c_tag = child["tag"]
+                        
+                        print(f"  └── Creating Child: {c_name} (Tag: {c_tag})")
+                        child_id = self.create_folder(c_name, parent_id, tag=c_tag)
+                        
+                        if child_id:
+                            created_folders_log.append({
+                                "name": c_name, "id": child_id, "type": "CHILD", "parent": p_name, "tag": c_tag
+                            })
+
+            return {
+                "project_name": project_name,
+                "project_id": project_id,
+                "structure_log": created_folders_log
+            }
+        except Exception as e:
+            print(f"❌ Lỗi tạo cấu trúc cây thư mục: {e}")
+            return None
     async def upload_file_with_security(self, file: UploadFile, folder_id: str, security_level: int):
         try:
             # 1. Đọc nội dung file

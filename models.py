@@ -56,6 +56,10 @@ class TaskTag(str, enum.Enum):
     DEVICE = "DEVICE"         # Hồ sơ máy móc thiết bị
     HR = "HR"                 # Hồ sơ nhân sự
     OTHER = "OTHER"           # Hồ sơ khác
+    # --- [BỔ SUNG MỚI] ---
+    DBTC = "DBTC"             # Bảo lãnh dự thầu, Cam kết tín dụng (BLDT, CKTD)
+    VT = "VT"                 # Hồ sơ Vật tư
+    GIA = "GIA"               # Hồ sơ Giá
     
 class SecurityLevel(int, enum.Enum):
     PUBLIC = 1          # Công khai / Nhân viên thường
