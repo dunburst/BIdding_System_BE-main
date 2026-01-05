@@ -139,48 +139,115 @@ class GoogleDriveService:
             print(f"❌ Lỗi get metadata: {e}")
             return None
 
-    def create_folder(self, folder_name: str, parent_id: Optional[str] = None) -> Optional[str]:
+    # [CẬP NHẬT 1] Sửa hàm create_folder để nhận thêm tham số 'tag'
+    def create_folder(self, folder_name: str, parent_id: Optional[str] = None, tag: Optional[str] = None) -> Optional[str]:
         try:
             target_parent = parent_id if parent_id else self.ROOT_FOLDER_ID
+            
+            # Metadata cơ bản
             file_metadata = {
                 'name': folder_name,
                 'mimeType': 'application/vnd.google-apps.folder',
                 'parents': [target_parent]
             }
+
+            # [QUAN TRỌNG] Nếu có tag, lưu vào properties để sau này code khác đọc được chính xác
+            if tag:
+                file_metadata['properties'] = {
+                    'project_tag': tag
+                }
+
             folder = self.service.files().create(
                 body=file_metadata, fields='id'
             ).execute()
+            
             return folder.get('id')
         except Exception as e:
-            print(f"❌ Lỗi tạo folder: {e}")
+            print(f"❌ Lỗi tạo folder '{folder_name}': {e}")
             return None
 
+    # [CẬP NHẬT 2] Sửa hàm create_project_tree với cấu trúc và tag mới
     def create_project_tree(self, project_name: str):
+        # 1. Tạo folder gốc dự án
         project_id = self.create_folder(project_name, self.ROOT_FOLDER_ID)
         if not project_id: return None
 
-        sub_folders_list = [
-            "01. Hồ sơ Pháp lý & Năng lực",
-            "02. Hồ sơ nhân sự",
-            "03. Biện pháp Thi công",
-            "04. Hồ sơ tài chính",
-            "05. Hồ sơ máy móc thiết bị",
-            "06. Hồ sơ hợp đông tương tự",
-            "07. Hồ sơ khác"
+        # 2. Định nghĩa Cấu trúc Folder + Tag
+        # Cấu trúc: Mỗi phần tử là một folder cha, chứa danh sách 'children' (folder con)
+        structure_config = [
+            {
+                "name": "1. HSPL, BCTC, HDTT, TTLD",
+                "tag": None, # Folder vỏ này không cần tag, hoặc bạn có thể gán nếu muốn
+                "children": [
+                    {"name": "Hồ sơ pháp lý",   "tag": "LEGAL"},
+                    {"name": "Báo cáo tài chính", "tag": "FINANCE"},
+                    {"name": "Hợp đồng tương tự", "tag": "CONTRACT"}
+                ]
+            },
+            {
+                "name": "2. BLDT, CKTD",
+                "tag": "DBTC", # Tag cho cả folder cha này
+                "children": [] 
+            },
+            {
+                "name": "3. BPTC",
+                "tag": None,
+                "children": [
+                    {"name": "Nhân sự",          "tag": "HR"},
+                    {"name": "Máy móc",          "tag": "DEVICE"},
+                    {"name": "Biện pháp thi công", "tag": "TECH"}
+                ]
+            },
+            {
+                "name": "4. Hồ sơ VT",
+                "tag": "VT",
+                "children": []
+            },
+            {
+                "name": "5. Giá",
+                "tag": "GIA",
+                "children": []
+            }
         ]
 
-        created_folders = []
-        for folder_name in sub_folders_list:
-            sub_id = self.create_folder(folder_name, project_id)
-            if sub_id:
-                created_folders.append({"name": folder_name, "id": sub_id})
-            
-        return {
-            "project_name": project_name,
-            "project_id": project_id,
-            "sub_folders": created_folders
-        }
+        created_folders_log = []
 
+        try:
+            # 3. Vòng lặp tạo folder
+            for parent_config in structure_config:
+                p_name = parent_config["name"]
+                p_tag = parent_config["tag"]
+                
+                # A. Tạo Folder Cha
+                print(f"📂 Creating Parent: {p_name} (Tag: {p_tag})")
+                parent_id = self.create_folder(p_name, project_id, tag=p_tag)
+                
+                if parent_id:
+                    created_folders_log.append({
+                        "name": p_name, "id": parent_id, "type": "PARENT", "tag": p_tag
+                    })
+
+                    # B. Tạo Folder Con (nếu có)
+                    for child in parent_config["children"]:
+                        c_name = child["name"]
+                        c_tag = child["tag"]
+                        
+                        print(f"  └── Creating Child: {c_name} (Tag: {c_tag})")
+                        child_id = self.create_folder(c_name, parent_id, tag=c_tag)
+                        
+                        if child_id:
+                            created_folders_log.append({
+                                "name": c_name, "id": child_id, "type": "CHILD", "parent": p_name, "tag": c_tag
+                            })
+
+            return {
+                "project_name": project_name,
+                "project_id": project_id,
+                "structure_log": created_folders_log
+            }
+        except Exception as e:
+            print(f"❌ Lỗi tạo cấu trúc cây thư mục: {e}")
+            return None
     async def upload_file_with_security(self, file: UploadFile, folder_id: str, security_level: int):
         try:
             # 1. Đọc nội dung file
@@ -268,30 +335,122 @@ class GoogleDriveService:
             return []
 
     # --- NHÓM 2: NGHIỆP VỤ MỞ RỘNG ---
+    # --- HÀM MỚI: KIỂM TRA ĐỆ QUY XEM FILE CÓ THUỘC FOLDER GỐC KHÔNG ---
+    def is_file_in_folder_recursive(self, file_id: str, target_folder_id: str, parent_cache: Optional[dict] = None) -> bool:
+        """
+        Dò ngược từ file lên các đời cha ông để xem nó có nằm trong target_folder_id không.
+        Sử dụng parent_cache để tránh gọi API nhiều lần cho cùng một nhánh folder.
+        """
+        if parent_cache is None: parent_cache = {}
+        
+        current_id = file_id
+        
+        # Giới hạn độ sâu để tránh loop vô tận (ví dụ 10 cấp)
+        for _ in range(10): 
+            # 1. Nếu đã chạm đến folder đích -> Đúng
+            if current_id == target_folder_id:
+                return True
+                
+            # 2. Nếu là Root hoặc không có cha -> Sai
+            if not current_id or current_id == self.ROOT_FOLDER_ID:
+                return False
 
+            # 3. Check Cache xem folder này đã từng được verify chưa
+            if current_id in parent_cache:
+                # Nếu cache lưu ID cha của nó, ta nhảy cóc lên cha luôn
+                current_id = parent_cache[current_id]
+                continue
+
+            # 4. Gọi API lấy thông tin cha
+            try:
+                # Lấy parents của folder/file hiện tại
+                meta = self.service.files().get(
+                    fileId=current_id, fields='parents', supportsAllDrives=True
+                ).execute()
+                
+                parents = meta.get('parents', [])
+                
+                if not parents:
+                    parent_cache[current_id] = None # Đánh dấu là hết đường
+                    return False
+                
+                # Google Drive file có thể có nhiều cha, nhưng thường chỉ có 1. Lấy cái đầu tiên.
+                first_parent_id = parents[0]
+                
+                # Lưu vào cache: "Cha của current_id là first_parent_id"
+                parent_cache[current_id] = first_parent_id
+                
+                # Leo lên 1 cấp
+                current_id = first_parent_id
+                
+            except Exception as e:
+                print(f"⚠️ Lỗi check parent của {current_id}: {e}")
+                return False
+                
+        return False
+
+    # --- SỬA LẠI HÀM SEARCH ---
     def search_files(self, query_name: str, folder_id: Optional[str] = None) -> List[dict]:
         if not self.service: return []
         try:
-            # Câu truy vấn cơ bản
+            # 1. Tìm tất cả file có tên khớp (BỎ điều kiện parents ở đây để tìm rộng)
+            # Lý do: Nếu thêm 'folder_id in parents' thì nó loại mất file ở folder con.
             q_parts = [f"name contains '{query_name}'", "trashed=false"]
             
-            # --- LOGIC MỚI: Nếu có folder_id thì thêm điều kiện tìm trong folder đó ---
-            if folder_id:
-                # Lưu ý: 'in parents' của Google chỉ tìm trong folder cha trực tiếp (Cấp 1)
-                # Google Drive API không hỗ trợ native query "tìm trong folder và tất cả folder con" 
-                # mà phải dùng logic code phức tạp hơn. Cách này là tìm trong folder hiện tại.
-                q_parts.append(f"'{folder_id}' in parents")
+            # Lưu ý: Nếu không có folder_id, ta tìm toàn bộ. 
+            # Nếu có folder_id, ta vẫn tìm toàn bộ (theo tên) rồi lọc lại sau bằng Python.
+            # (Trừ khi bạn dùng 'corpora' nhưng cái đó phức tạp với Shared Drive).
             
-            # Nối các điều kiện lại bằng 'and'
             final_query = " and ".join(q_parts)
 
-            results = self.service.files().list(
-                q=final_query, 
-                pageSize=50,
-                fields="files(id, name, mimeType, webViewLink, createdTime, parents, properties)", 
-                orderBy="folder, createdTime desc"
-            ).execute()
-            return results.get('files', [])
+            all_candidates = []
+            page_token = None
+            
+            # Lấy danh sách ứng viên (Search rộng)
+            while True:
+                results = self.service.files().list(
+                    q=final_query, 
+                    pageSize=50, # Lấy ít thôi để lọc cho nhanh
+                    fields="nextPageToken, files(id, name, mimeType, webViewLink, createdTime, parents, properties)", 
+                    orderBy="folder, createdTime desc",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                    pageToken=page_token
+                ).execute()
+                
+                all_candidates.extend(results.get('files', []))
+                
+                page_token = results.get('nextPageToken', None)
+                if not page_token or len(all_candidates) >= 100: # Limit 100 kết quả để không treo server
+                    break
+            
+            # 2. Nếu không yêu cầu folder cụ thể -> Trả về hết
+            if not folder_id:
+                return all_candidates
+            
+            # 3. Nếu yêu cầu folder -> Lọc thủ công (Recursive Check)
+            filtered_results = []
+            # Cache dùng chung cho đợt search này để tối ưu tốc độ
+            ancestry_cache = {} 
+            
+            print(f"🔍 Đang lọc {len(all_candidates)} file trong cây thư mục {folder_id}...")
+            
+            for item in all_candidates:
+                # Kiểm tra xem item này có thuộc folder_id (hoặc con cháu của nó) không
+                # Truyền item['id'] không đủ, phải check từ parent của nó để đỡ tốn 1 API call
+                parents = item.get('parents', [])
+                if parents:
+                    # Check parent đầu tiên của nó
+                    if self.is_file_in_folder_recursive(parents[0], folder_id, ancestry_cache):
+                        filtered_results.append(item)
+                else:
+                    # Trường hợp file mồ côi hoặc root
+                    if folder_id == self.ROOT_FOLDER_ID: # Nếu tìm trong root thì ok
+                        filtered_results.append(item)
+
+            print(f"✅ Kết quả sau lọc: {len(filtered_results)}")
+            return filtered_results
+
         except Exception as e:
             print(f"❌ Lỗi search: {e}")
             return []
