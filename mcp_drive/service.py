@@ -268,30 +268,122 @@ class GoogleDriveService:
             return []
 
     # --- NHÓM 2: NGHIỆP VỤ MỞ RỘNG ---
+    # --- HÀM MỚI: KIỂM TRA ĐỆ QUY XEM FILE CÓ THUỘC FOLDER GỐC KHÔNG ---
+    def is_file_in_folder_recursive(self, file_id: str, target_folder_id: str, parent_cache: Optional[dict] = None) -> bool:
+        """
+        Dò ngược từ file lên các đời cha ông để xem nó có nằm trong target_folder_id không.
+        Sử dụng parent_cache để tránh gọi API nhiều lần cho cùng một nhánh folder.
+        """
+        if parent_cache is None: parent_cache = {}
+        
+        current_id = file_id
+        
+        # Giới hạn độ sâu để tránh loop vô tận (ví dụ 10 cấp)
+        for _ in range(10): 
+            # 1. Nếu đã chạm đến folder đích -> Đúng
+            if current_id == target_folder_id:
+                return True
+                
+            # 2. Nếu là Root hoặc không có cha -> Sai
+            if not current_id or current_id == self.ROOT_FOLDER_ID:
+                return False
 
+            # 3. Check Cache xem folder này đã từng được verify chưa
+            if current_id in parent_cache:
+                # Nếu cache lưu ID cha của nó, ta nhảy cóc lên cha luôn
+                current_id = parent_cache[current_id]
+                continue
+
+            # 4. Gọi API lấy thông tin cha
+            try:
+                # Lấy parents của folder/file hiện tại
+                meta = self.service.files().get(
+                    fileId=current_id, fields='parents', supportsAllDrives=True
+                ).execute()
+                
+                parents = meta.get('parents', [])
+                
+                if not parents:
+                    parent_cache[current_id] = None # Đánh dấu là hết đường
+                    return False
+                
+                # Google Drive file có thể có nhiều cha, nhưng thường chỉ có 1. Lấy cái đầu tiên.
+                first_parent_id = parents[0]
+                
+                # Lưu vào cache: "Cha của current_id là first_parent_id"
+                parent_cache[current_id] = first_parent_id
+                
+                # Leo lên 1 cấp
+                current_id = first_parent_id
+                
+            except Exception as e:
+                print(f"⚠️ Lỗi check parent của {current_id}: {e}")
+                return False
+                
+        return False
+
+    # --- SỬA LẠI HÀM SEARCH ---
     def search_files(self, query_name: str, folder_id: Optional[str] = None) -> List[dict]:
         if not self.service: return []
         try:
-            # Câu truy vấn cơ bản
+            # 1. Tìm tất cả file có tên khớp (BỎ điều kiện parents ở đây để tìm rộng)
+            # Lý do: Nếu thêm 'folder_id in parents' thì nó loại mất file ở folder con.
             q_parts = [f"name contains '{query_name}'", "trashed=false"]
             
-            # --- LOGIC MỚI: Nếu có folder_id thì thêm điều kiện tìm trong folder đó ---
-            if folder_id:
-                # Lưu ý: 'in parents' của Google chỉ tìm trong folder cha trực tiếp (Cấp 1)
-                # Google Drive API không hỗ trợ native query "tìm trong folder và tất cả folder con" 
-                # mà phải dùng logic code phức tạp hơn. Cách này là tìm trong folder hiện tại.
-                q_parts.append(f"'{folder_id}' in parents")
+            # Lưu ý: Nếu không có folder_id, ta tìm toàn bộ. 
+            # Nếu có folder_id, ta vẫn tìm toàn bộ (theo tên) rồi lọc lại sau bằng Python.
+            # (Trừ khi bạn dùng 'corpora' nhưng cái đó phức tạp với Shared Drive).
             
-            # Nối các điều kiện lại bằng 'and'
             final_query = " and ".join(q_parts)
 
-            results = self.service.files().list(
-                q=final_query, 
-                pageSize=50,
-                fields="files(id, name, mimeType, webViewLink, createdTime, parents, properties)", 
-                orderBy="folder, createdTime desc"
-            ).execute()
-            return results.get('files', [])
+            all_candidates = []
+            page_token = None
+            
+            # Lấy danh sách ứng viên (Search rộng)
+            while True:
+                results = self.service.files().list(
+                    q=final_query, 
+                    pageSize=50, # Lấy ít thôi để lọc cho nhanh
+                    fields="nextPageToken, files(id, name, mimeType, webViewLink, createdTime, parents, properties)", 
+                    orderBy="folder, createdTime desc",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                    pageToken=page_token
+                ).execute()
+                
+                all_candidates.extend(results.get('files', []))
+                
+                page_token = results.get('nextPageToken', None)
+                if not page_token or len(all_candidates) >= 100: # Limit 100 kết quả để không treo server
+                    break
+            
+            # 2. Nếu không yêu cầu folder cụ thể -> Trả về hết
+            if not folder_id:
+                return all_candidates
+            
+            # 3. Nếu yêu cầu folder -> Lọc thủ công (Recursive Check)
+            filtered_results = []
+            # Cache dùng chung cho đợt search này để tối ưu tốc độ
+            ancestry_cache = {} 
+            
+            print(f"🔍 Đang lọc {len(all_candidates)} file trong cây thư mục {folder_id}...")
+            
+            for item in all_candidates:
+                # Kiểm tra xem item này có thuộc folder_id (hoặc con cháu của nó) không
+                # Truyền item['id'] không đủ, phải check từ parent của nó để đỡ tốn 1 API call
+                parents = item.get('parents', [])
+                if parents:
+                    # Check parent đầu tiên của nó
+                    if self.is_file_in_folder_recursive(parents[0], folder_id, ancestry_cache):
+                        filtered_results.append(item)
+                else:
+                    # Trường hợp file mồ côi hoặc root
+                    if folder_id == self.ROOT_FOLDER_ID: # Nếu tìm trong root thì ok
+                        filtered_results.append(item)
+
+            print(f"✅ Kết quả sau lọc: {len(filtered_results)}")
+            return filtered_results
+
         except Exception as e:
             print(f"❌ Lỗi search: {e}")
             return []

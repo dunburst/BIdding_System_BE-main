@@ -197,37 +197,38 @@ def search_repository(
     folder_id: Optional[str] = None, 
     current_user: User = Depends(get_current_user)
 ):
-    # 1. Lấy danh sách file thô từ Google
-    flat_results = drive_service.search_files(query, folder_id=folder_id)
+    # 1. Gọi hàm search (đã update logic đệ quy bên trong service)
+    # Hàm này giờ đây sẽ trả về list đã được lọc sạch sẽ
+    clean_results = drive_service.search_files(query, folder_id=folder_id)
     
-    # 2. Chuẩn bị Cache để lưu tên các Folder cha (Tránh gọi API lặp lại)
-    # Nếu đang search trong 1 folder cụ thể, ta lấy luôn tên folder đó làm "vốn"
-    parent_cache = {} 
+    # 2. Chuẩn bị Cache tên Folder cha để hiển thị đẹp
+    parent_names_cache = {} 
     if folder_id:
-        root_name = drive_service.get_folder_name(folder_id)
-        parent_cache[folder_id] = root_name
+        # Lấy tên folder gốc đang search để làm vốn
+        root_name_meta = drive_service.get_file_metadata(folder_id)
+        if root_name_meta:
+             parent_names_cache[folder_id] = root_name_meta.get('name')
 
     item_map = {}
 
-    # 3. Duyệt và xử lý dữ liệu
-    for item in flat_results:
-        # Xác định ID cha
+    # 3. Duyệt và map dữ liệu trả về client
+    for item in clean_results:
         parents_list = item.get('parents', [])
-        parent_id = parents_list[0] if parents_list else None
+        direct_parent_id = parents_list[0] if parents_list else None
         
-        # --- LOGIC MỚI: LẤY TÊN FOLDER CHA ---
-        parent_name = None
-        if parent_id:
-            # Kiểm tra xem đã có trong cache chưa
-            if parent_id in parent_cache:
-                parent_name = parent_cache[parent_id]
+        # Logic lấy tên Folder cha (để UI hiển thị file này thuộc folder con nào)
+        parent_name = "Unknown"
+        if direct_parent_id:
+            if direct_parent_id in parent_names_cache:
+                parent_name = parent_names_cache[direct_parent_id]
             else:
-                # Nếu chưa có, gọi API lấy tên và lưu vào cache
-                fetched_name = drive_service.get_folder_name(parent_id)
-                parent_cache[parent_id] = fetched_name
-                parent_name = fetched_name
-        # -------------------------------------
-
+                # Gọi nhẹ API lấy tên folder cha trực tiếp
+                meta = drive_service.get_file_metadata(direct_parent_id)
+                if meta:
+                    fetched_name = meta.get('name')
+                    parent_names_cache[direct_parent_id] = fetched_name
+                    parent_name = fetched_name
+        
         is_folder = 'application/vnd.google-apps.folder' in item.get('mimeType', '')
         
         clean_item = {
@@ -238,32 +239,21 @@ def search_repository(
             "link": item['webViewLink'],
             "created_at": item.get('createdTime'), 
             "parents": parents_list,
-            
-            # Trả thêm trường này
-            "parent_id": parent_id,
+            "parent_id": direct_parent_id,
             "parent_name": parent_name, 
-
             "children": []
         }
         item_map[item['id']] = clean_item
 
-    # 4. Xây dựng cây thư mục (Logic cũ giữ nguyên)
-    tree_roots = []
-    for item_id, item in item_map.items():
-        parent_id = item['parent_id'] # Dùng biến đã lấy ở trên
-        
-        # Nếu cha của nó cũng nằm trong danh sách kết quả tìm kiếm -> Nhét vào làm con
-        if parent_id and parent_id in item_map: 
-            item_map[parent_id]['children'].append(item)
-        else: 
-            tree_roots.append(item)
-
+    # 4. Trả về dạng phẳng (Flat List) hoặc Tree tùy ý
+    # Vì search đệ quy thường trả về các file rải rác ở các nhánh khác nhau, 
+    # nên trả về dạng List phẳng (Flat) thường dễ hiển thị hơn là cố dựng lại Tree.
+    
     return {
         "query": query, 
         "scope": folder_id if folder_id else "Global",
-        "total_matches": len(flat_results), 
-        "tree_roots_count": len(tree_roots), 
-        "data": tree_roots
+        "total_matches": len(clean_results), 
+        "data": list(item_map.values()) # Trả về list phẳng
     }
 
 @router.post("/clone-file")
