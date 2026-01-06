@@ -29,13 +29,13 @@ class MinIOHandler:
             # Tạo bucket nếu chưa có
             if not self.client.bucket_exists(MINIO_BUCKET):
                 self.client.make_bucket(MINIO_BUCKET)
-                logger.info(f"Đã tạo bucket: {MINIO_BUCKET}")
+                logger.info(f"Đã tạo bucket: {MINIO_BUCKET}") 
             # 2. [THÊM] Tạo luôn bucket "jkancon" lúc khởi tạo cho chắc ăn
             if not self.client.bucket_exists(MINIO_BUCKET_JKANCON):
                 self.client.make_bucket(MINIO_BUCKET_JKANCON)
                 logger.info(f"Đã tạo bucket dự án: {MINIO_BUCKET_JKANCON}")
                 
-            logger.info("-> MinIO: Kết nối thành công!")
+            logger.info("-> MinIO: Kết nối thành công!")             
         except Exception as e:
             logger.error(f"-> MinIO LỖI KẾT NỐI: {e}")
 

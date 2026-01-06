@@ -15,6 +15,9 @@ from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 from fastapi import UploadFile
 from dotenv import load_dotenv
 import requests
+from collections import defaultdict, deque
+import json
+from googleapiclient.errors import HttpError
 
 # # --- THÊM ĐOẠN NÀY ĐỂ BỎ QUA PROXY CỦA HỆ THỐNG ---
 # os.environ.pop("HTTP_PROXY", None)
@@ -43,7 +46,14 @@ class RequestsShim(object):
         # Chuyển đổi gọi hàm từ giao thức cũ (httplib2) sang requests
         try:
             # Thực hiện request bằng thư viện requests mạnh mẽ hơn
-            response = self.session.request(method, uri, data=body, headers=headers, timeout=120)
+            response = self.session.request(
+                method, 
+                uri, 
+                data=body, 
+                headers=headers, 
+                timeout=120,
+                allow_redirects=False  # <--- QUAN TRỌNG: Phải chặn auto redirect
+            )
             
             # Cần gói lại kết quả theo đúng format mà Google API mong đợi
             # (Google API mong đợi 1 tuple gồm: (headers_object, content_bytes))
@@ -129,71 +139,165 @@ class GoogleDriveService:
             print(f"❌ Lỗi get metadata: {e}")
             return None
 
-    def create_folder(self, folder_name: str, parent_id: Optional[str] = None) -> Optional[str]:
+    # [CẬP NHẬT 1] Sửa hàm create_folder để nhận thêm tham số 'tag'
+    def create_folder(self, folder_name: str, parent_id: Optional[str] = None, tag: Optional[str] = None) -> Optional[str]:
         try:
             target_parent = parent_id if parent_id else self.ROOT_FOLDER_ID
+            
+            # Metadata cơ bản
             file_metadata = {
                 'name': folder_name,
                 'mimeType': 'application/vnd.google-apps.folder',
                 'parents': [target_parent]
             }
+
+            # [QUAN TRỌNG] Nếu có tag, lưu vào properties để sau này code khác đọc được chính xác
+            if tag:
+                file_metadata['properties'] = {
+                    'project_tag': tag
+                }
+
             folder = self.service.files().create(
                 body=file_metadata, fields='id'
             ).execute()
+            
             return folder.get('id')
         except Exception as e:
-            print(f"❌ Lỗi tạo folder: {e}")
+            print(f"❌ Lỗi tạo folder '{folder_name}': {e}")
             return None
 
+    # [CẬP NHẬT 2] Sửa hàm create_project_tree với cấu trúc và tag mới
     def create_project_tree(self, project_name: str):
+        # 1. Tạo folder gốc dự án
         project_id = self.create_folder(project_name, self.ROOT_FOLDER_ID)
         if not project_id: return None
 
-        sub_folders_list = [
-            "01. Hồ sơ Pháp lý & Năng lực",
-            "02. Hồ sơ nhân sự",
-            "03. Biện pháp Thi công",
-            "04. Hồ sơ tài chính",
-            "05. Hồ sơ máy móc thiết bị",
-            "06. Hồ sơ hợp đông tương tự",
-            "07. Hồ sơ khác"
+        # 2. Định nghĩa Cấu trúc Folder + Tag
+        # Cấu trúc: Mỗi phần tử là một folder cha, chứa danh sách 'children' (folder con)
+        structure_config = [
+            {
+                "name": "1. HSPL, BCTC, HDTT, TTLD",
+                "tag": None, # Folder vỏ này không cần tag, hoặc bạn có thể gán nếu muốn
+                "children": [
+                    {"name": "Hồ sơ pháp lý",   "tag": "LEGAL"},
+                    {"name": "Báo cáo tài chính", "tag": "FINANCE"},
+                    {"name": "Hợp đồng tương tự", "tag": "CONTRACT"}
+                ]
+            },
+            {
+                "name": "2. BLDT, CKTD",
+                "tag": "DBTC", # Tag cho cả folder cha này
+                "children": [] 
+            },
+            {
+                "name": "3. BPTC",
+                "tag": None,
+                "children": [
+                    {"name": "Nhân sự",          "tag": "HR"},
+                    {"name": "Máy móc",          "tag": "DEVICE"},
+                    {"name": "Biện pháp thi công", "tag": "TECH"}
+                ]
+            },
+            {
+                "name": "4. Hồ sơ VT",
+                "tag": "VT",
+                "children": []
+            },
+            {
+                "name": "5. Giá",
+                "tag": "GIA",
+                "children": []
+            }
         ]
 
-        created_folders = []
-        for folder_name in sub_folders_list:
-            sub_id = self.create_folder(folder_name, project_id)
-            if sub_id:
-                created_folders.append({"name": folder_name, "id": sub_id})
-            
-        return {
-            "project_name": project_name,
-            "project_id": project_id,
-            "sub_folders": created_folders
-        }
-
-    async def upload_file_with_security(self, file: UploadFile, folder_id: Optional[str] = None, security_level: int = 1):
-        target_folder = folder_id if folder_id else self.ROOT_FOLDER_ID
-        if not self.service or not target_folder: return None
+        created_folders_log = []
 
         try:
-            file_content = await file.read()
-            file_stream = io.BytesIO(file_content)
+            # 3. Vòng lặp tạo folder
+            for parent_config in structure_config:
+                p_name = parent_config["name"]
+                p_tag = parent_config["tag"]
+                
+                # A. Tạo Folder Cha
+                print(f"📂 Creating Parent: {p_name} (Tag: {p_tag})")
+                parent_id = self.create_folder(p_name, project_id, tag=p_tag)
+                
+                if parent_id:
+                    created_folders_log.append({
+                        "name": p_name, "id": parent_id, "type": "PARENT", "tag": p_tag
+                    })
 
-            file_metadata = {
-                'name': file.filename,
-                'parents': [target_folder],
-                'properties': {'security_level': str(security_level)}
+                    # B. Tạo Folder Con (nếu có)
+                    for child in parent_config["children"]:
+                        c_name = child["name"]
+                        c_tag = child["tag"]
+                        
+                        print(f"  └── Creating Child: {c_name} (Tag: {c_tag})")
+                        child_id = self.create_folder(c_name, parent_id, tag=c_tag)
+                        
+                        if child_id:
+                            created_folders_log.append({
+                                "name": c_name, "id": child_id, "type": "CHILD", "parent": p_name, "tag": c_tag
+                            })
+
+            return {
+                "project_name": project_name,
+                "project_id": project_id,
+                "structure_log": created_folders_log
             }
-            
-            media = MediaIoBaseUpload(file_stream, mimetype=file.content_type, resumable=True)
-            
-            drive_file = self.service.files().create(
-                body=file_metadata, media_body=media, fields='id, name, webViewLink, properties'
-            ).execute()
-
-            return drive_file
         except Exception as e:
-            print(f"❌ Lỗi upload: {str(e)}")
+            print(f"❌ Lỗi tạo cấu trúc cây thư mục: {e}")
+            return None
+    async def upload_file_with_security(self, file: UploadFile, folder_id: str, security_level: int):
+        try:
+            # 1. Đọc nội dung file
+            # Lưu ý: file.read() sẽ đưa toàn bộ file vào RAM. 
+            # Với file >100MB nên cân nhắc dùng SpooledTemporaryFile nhưng cách này ổn với file nhỏ.
+            file_content = await file.read()
+            
+            # 2. Định nghĩa hàm xử lý upload gói gọn để chạy trong thread khác
+            def _blocking_upload():
+                file_metadata = {
+                    'name': file.filename,
+                    'parents': [folder_id] if folder_id else []
+                }
+                
+                media = MediaIoBaseUpload(
+                    io.BytesIO(file_content),
+                    mimetype=file.content_type,
+                    resumable=False # Resumable cần allow_redirects=False ở Shim
+                )
+
+                # Gọi lệnh execute()
+                return self.service.files().create(
+                    body=file_metadata,
+                    media_body=media,
+                    fields='id, name, webViewLink, webContentLink'
+                ).execute()
+
+            # 3. Chạy hàm blocking trong thread pool để không chặn FastAPI
+            # Sử dụng self._run_in_thread bạn đã định nghĩa
+            file_drive = await self._run_in_thread(_blocking_upload)
+
+            # 4. Trả kết quả
+            return {
+                "id": file_drive.get("id"),
+                "name": file_drive.get("name"),
+                "status": "uploaded_success",
+                "link": file_drive.get("webViewLink"),
+                "download_link": file_drive.get("webContentLink")
+            }
+
+        except HttpError as error:
+            # --- LOG CHI TIẾT HƠN ---
+            print(f"❌ Google API Error Code: {error.resp.status}") 
+            print(f"❌ Error Reason: {error.resp.reason}")
+            try:
+                # Cố gắng decode nội dung lỗi nếu có
+                content = error.content.decode('utf-8')
+                print(f"❌ Error Content: {content}")
+            except:
+                print(f"❌ Error Content: (Empty or Binary data)")
             return None
 
     async def update_file(self, file_id: str, new_name: Optional[str] = None, new_file: Optional[UploadFile] = None, security_level: Optional[int] = None):
@@ -231,20 +335,138 @@ class GoogleDriveService:
             return []
 
     # --- NHÓM 2: NGHIỆP VỤ MỞ RỘNG ---
+    # --- HÀM MỚI: KIỂM TRA ĐỆ QUY XEM FILE CÓ THUỘC FOLDER GỐC KHÔNG ---
+    def is_file_in_folder_recursive(self, file_id: str, target_folder_id: str, parent_cache: Optional[dict] = None) -> bool:
+        """
+        Dò ngược từ file lên các đời cha ông để xem nó có nằm trong target_folder_id không.
+        Sử dụng parent_cache để tránh gọi API nhiều lần cho cùng một nhánh folder.
+        """
+        if parent_cache is None: parent_cache = {}
+        
+        current_id = file_id
+        
+        # Giới hạn độ sâu để tránh loop vô tận (ví dụ 10 cấp)
+        for _ in range(10): 
+            # 1. Nếu đã chạm đến folder đích -> Đúng
+            if current_id == target_folder_id:
+                return True
+                
+            # 2. Nếu là Root hoặc không có cha -> Sai
+            if not current_id or current_id == self.ROOT_FOLDER_ID:
+                return False
 
-    def search_files(self, query_name: str) -> List[dict]:
+            # 3. Check Cache xem folder này đã từng được verify chưa
+            if current_id in parent_cache:
+                # Nếu cache lưu ID cha của nó, ta nhảy cóc lên cha luôn
+                current_id = parent_cache[current_id]
+                continue
+
+            # 4. Gọi API lấy thông tin cha
+            try:
+                # Lấy parents của folder/file hiện tại
+                meta = self.service.files().get(
+                    fileId=current_id, fields='parents', supportsAllDrives=True
+                ).execute()
+                
+                parents = meta.get('parents', [])
+                
+                if not parents:
+                    parent_cache[current_id] = None # Đánh dấu là hết đường
+                    return False
+                
+                # Google Drive file có thể có nhiều cha, nhưng thường chỉ có 1. Lấy cái đầu tiên.
+                first_parent_id = parents[0]
+                
+                # Lưu vào cache: "Cha của current_id là first_parent_id"
+                parent_cache[current_id] = first_parent_id
+                
+                # Leo lên 1 cấp
+                current_id = first_parent_id
+                
+            except Exception as e:
+                print(f"⚠️ Lỗi check parent của {current_id}: {e}")
+                return False
+                
+        return False
+
+    # --- SỬA LẠI HÀM SEARCH ---
+    def search_files(self, query_name: str, folder_id: Optional[str] = None) -> List[dict]:
         if not self.service: return []
         try:
-            q = f"name contains '{query_name}' and trashed=false"
-            results = self.service.files().list(
-                q=q, pageSize=50,
-                fields="files(id, name, mimeType, webViewLink, createdTime, parents, properties)", 
-                orderBy="folder, createdTime desc"
-            ).execute()
-            return results.get('files', [])
+            # 1. Tìm tất cả file có tên khớp (BỎ điều kiện parents ở đây để tìm rộng)
+            # Lý do: Nếu thêm 'folder_id in parents' thì nó loại mất file ở folder con.
+            q_parts = [f"name contains '{query_name}'", "trashed=false"]
+            
+            # Lưu ý: Nếu không có folder_id, ta tìm toàn bộ. 
+            # Nếu có folder_id, ta vẫn tìm toàn bộ (theo tên) rồi lọc lại sau bằng Python.
+            # (Trừ khi bạn dùng 'corpora' nhưng cái đó phức tạp với Shared Drive).
+            
+            final_query = " and ".join(q_parts)
+
+            all_candidates = []
+            page_token = None
+            
+            # Lấy danh sách ứng viên (Search rộng)
+            while True:
+                results = self.service.files().list(
+                    q=final_query, 
+                    pageSize=50, # Lấy ít thôi để lọc cho nhanh
+                    fields="nextPageToken, files(id, name, mimeType, webViewLink, createdTime, parents, properties)", 
+                    orderBy="folder, createdTime desc",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                    pageToken=page_token
+                ).execute()
+                
+                all_candidates.extend(results.get('files', []))
+                
+                page_token = results.get('nextPageToken', None)
+                if not page_token or len(all_candidates) >= 100: # Limit 100 kết quả để không treo server
+                    break
+            
+            # 2. Nếu không yêu cầu folder cụ thể -> Trả về hết
+            if not folder_id:
+                return all_candidates
+            
+            # 3. Nếu yêu cầu folder -> Lọc thủ công (Recursive Check)
+            filtered_results = []
+            # Cache dùng chung cho đợt search này để tối ưu tốc độ
+            ancestry_cache = {} 
+            
+            print(f"🔍 Đang lọc {len(all_candidates)} file trong cây thư mục {folder_id}...")
+            
+            for item in all_candidates:
+                # Kiểm tra xem item này có thuộc folder_id (hoặc con cháu của nó) không
+                # Truyền item['id'] không đủ, phải check từ parent của nó để đỡ tốn 1 API call
+                parents = item.get('parents', [])
+                if parents:
+                    # Check parent đầu tiên của nó
+                    if self.is_file_in_folder_recursive(parents[0], folder_id, ancestry_cache):
+                        filtered_results.append(item)
+                else:
+                    # Trường hợp file mồ côi hoặc root
+                    if folder_id == self.ROOT_FOLDER_ID: # Nếu tìm trong root thì ok
+                        filtered_results.append(item)
+
+            print(f"✅ Kết quả sau lọc: {len(filtered_results)}")
+            return filtered_results
+
         except Exception as e:
             print(f"❌ Lỗi search: {e}")
             return []
+        
+    # [MỚI] Hàm lấy tên folder (dùng cache đơn giản để tránh gọi nhiều nếu cần)
+    def get_folder_name(self, folder_id: str) -> str:
+        if not self.service or not folder_id: return "Unknown"
+        try:
+            # Gọi nhẹ API để lấy đúng field name
+            res = self.service.files().get(
+                fileId=folder_id, 
+                fields='name'
+            ).execute()
+            return res.get('name', 'Unknown')
+        except Exception:
+            return "Unknown (Restricted)"
 
     def copy_file(self, file_id: str, target_folder_id: str, new_name: Optional[str] = None):
         try:
@@ -320,5 +542,123 @@ class GoogleDriveService:
             new_file = self.copy_file(file_id, target_folder_id)
             if new_file: cloned_files.append(new_file)
         return {"category": category, "target_folder_id": target_folder_id, "files": cloned_files}
+    # --- NHÓM 3: THỐNG KÊ (STATISTICS) ---
+    def _count_files_recursive(self, query: str) -> int:
+        """
+        Hàm nội bộ để đếm file dựa trên query.
+        Sử dụng pageSize=1000 và chỉ lấy field 'id' để tối ưu tốc độ.
+        """
+        if not self.service: return 0
+        
+        count = 0
+        page_token = None
+        
+        try:
+            while True:
+                # Chỉ lấy files(id) để giảm dung lượng response
+                response = self.service.files().list(
+                    q=query,
+                    spaces='drive',
+                    fields='nextPageToken, files(id)',
+                    pageSize=1000, 
+                    pageToken=page_token
+                ).execute()
+                
+                files = response.get('files', [])
+                count += len(files)
+                
+                page_token = response.get('nextPageToken', None)
+                if page_token is None:
+                    break
+                    
+            return count
+        except Exception as e:
+            print(f"❌ Lỗi đếm file: {e}")
+            return 0
+    def count_files_recursive_under_folder(self, root_folder_id: Optional[str]) -> int:
+        """
+        Đếm tổng số file (không tính folder) nằm bên trong root_folder_id 
+        và TẤT CẢ các folder con cháu của nó.
+        """
+        # [SỬA ĐỔI 2]: Kiểm tra None ngay đầu hàm
+        if not self.service or not root_folder_id: 
+            return 0
+
+        try:
+            # BƯỚC 1: Lấy toàn bộ items
+            query = "trashed = false"
+            
+            all_items = []
+            page_token = None
+            
+            while True:
+                response = self.service.files().list(
+                    q=query,
+                    fields='nextPageToken, files(id, parents, mimeType)',
+                    pageSize=1000,
+                    pageToken=page_token
+                ).execute()
+                
+                all_items.extend(response.get('files', []))
+                page_token = response.get('nextPageToken')
+                if not page_token:
+                    break
+            
+            # BƯỚC 2: Xây dựng bản đồ cha-con
+            parents_map = defaultdict(list)
+            for item in all_items:
+                parents = item.get('parents', [])
+                if parents:
+                    parent_id = parents[0]
+                    parents_map[parent_id].append(item)
+
+            # BƯỚC 3: Duyệt cây (BFS)
+            count = 0
+            queue = deque([root_folder_id])
+            
+            while queue:
+                current_folder_id = queue.popleft()
+                children = parents_map.get(current_folder_id, [])
+                
+                for child in children:
+                    if child['mimeType'] == 'application/vnd.google-apps.folder':
+                        queue.append(child['id'])
+                    else:
+                        count += 1
+                        
+            return count
+
+        except Exception as e:
+            print(f"❌ Lỗi đếm đệ quy: {e}")
+            return 0
+
+    def get_repository_statistics(self, specific_folder_id: Optional[str] = None):
+        """
+        Lấy thống kê.
+        Logic MỚI:
+        - Nếu có specific_folder_id: Đếm đệ quy TẤT CẢ file nằm trong folder đó (Total) 
+                                     và đếm file cấp 1 (Current).
+        - Nếu không có (None): Mới lấy theo ROOT_FOLDER_ID của hệ thống.
+        """
+        
+        # 1. Xác định "Gốc" để đếm tổng
+        # Nếu người dùng đang chọn folder cụ thể -> Gốc là folder đó
+        # Nếu không -> Gốc là System Root (trong .env)
+        target_root_id = specific_folder_id if specific_folder_id else self.ROOT_FOLDER_ID
+        
+        # 2. Đếm đệ quy (Recursive) từ Gốc đã xác định
+        # Hàm này sẽ trả về tổng số file trong folder mẹ + các sub-folder con cháu
+        total_recursive = self.count_files_recursive_under_folder(target_root_id)
+        
+        # 3. Đếm file cấp 1 (Direct children only) - Để hiển thị số file nhìn thấy ngay
+        current_folder_count = 0
+        if specific_folder_id:
+            q = f"'{specific_folder_id}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false"
+            current_folder_count = self._count_files_recursive(q)
+            
+        return {
+            "total_repository_files": total_recursive, # <--- Giờ nó sẽ là tổng file của folder bạn chọn
+            "current_folder_files": current_folder_count
+        }
 
 drive_service = GoogleDriveService()

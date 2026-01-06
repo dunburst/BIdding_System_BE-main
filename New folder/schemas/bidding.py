@@ -153,3 +153,11 @@ class BidDecisionRequest(BaseModel):
 class CountdownResponse(BaseModel):
     hsmt_id: int
     thoi_gian_con_lai: str # Ví dụ: "2 ngày 5 giờ"
+    
+# --- THÊM CLASS NÀY VÀO CUỐI FILE HOẶC CHỖ PHÙ HỢP ---
+class BiddingPackagePagination(BaseModel):
+    items: List[BiddingPackageResponse] # Danh sách gói thầu
+    total: int                          # Tổng số bản ghi tìm thấy
+    page: int                           # Trang hiện tại
+    size: int                           # Kích thước trang (limit)
+    pages: int                          # Tổng số trang

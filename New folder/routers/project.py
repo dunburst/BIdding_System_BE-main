@@ -322,7 +322,7 @@ def get_project_files_by_user(
                 "id": item['id'], 
                 "name": item['name'], 
                 "type": "FOLDER",
-                "link": item['webViewLink'], 
+                "link": item.get('webViewLink', ''),
                 "access": "GRANTED",
                 "tag": folder_tag,
                 "granted_by_project": granted_by_project_name 
@@ -339,7 +339,7 @@ def get_project_files_by_user(
                 "name": item['name'], 
                 "type": "FILE",
                 "mime_type": item.get('mimeType'),
-                "link": item['webViewLink'], 
+                "link": item.get('webViewLink', ''),
                 "level": file_level, 
                 "access": "GRANTED",
                 "tag": None,
