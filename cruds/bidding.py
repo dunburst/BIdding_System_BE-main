@@ -5,6 +5,7 @@ from schemas import bidding as schemas
 from typing import Optional, List
 from datetime import datetime
 from sqlalchemy import extract
+from sqlalchemy.orm import contains_eager
 # --- Gói thầu (Package) ---
 
 def get_package(db: Session, hsmt_id: int):
@@ -179,21 +180,20 @@ def get_project_history(
     chu_dau_tu: Optional[str] = None
 ):
     """
-    Lấy lịch sử dựa trên các Dự án đã có trạng thái COMPLETED.
-    Trả về danh sách BiddingPackage tương ứng để hiển thị thông tin chi tiết.
+    Lấy lịch sử dự án COMPLETED, kèm theo Drive Folder ID.
     """
     
-    # 1. Query từ BiddingPackage -> JOIN sang BiddingProject
-    query = db.query(BiddingPackage).join(BiddingProject, BiddingPackage.project_id == BiddingProject.id)
+    # 1. Query & Join
+    # Thêm .options(contains_eager(...)) để load luôn dữ liệu Project
+    query = db.query(BiddingPackage)\
+              .join(BiddingProject, BiddingPackage.project_id == BiddingProject.id)\
+              .options(contains_eager(BiddingPackage.project)) 
 
-    # 2. [QUAN TRỌNG] Lọc status của PROJECT là "COMPLETED"
-    # Lưu ý: Trong Model BiddingProject, status là chuỗi (String). 
-    # Hãy đảm bảo bạn lưu trong DB là chữ "COMPLETED" (hoặc "CLOSED" tùy quy ước của bạn).
+    # 2. Filter Status
     query = query.filter(BiddingProject.status == "COMPLETED")
 
-    # --- Các bộ lọc thông tin gói thầu (như cũ) ---
+    # --- Các bộ lọc ---
     if year:
-        # Lấy năm từ thời điểm đóng thầu của gói thầu
         query = query.filter(extract('year', BiddingPackage.thoi_diem_dong_thau) == year)
     
     if linh_vuc:
@@ -202,10 +202,10 @@ def get_project_history(
     if chu_dau_tu:
         query = query.filter(BiddingPackage.chu_dau_tu.ilike(f"%{chu_dau_tu}%"))
 
-    # Đếm tổng & Sort
+    # Đếm tổng
     total = query.count()
     
-    # Sắp xếp
+    # Sắp xếp & Phân trang
     items = query.order_by(BiddingPackage.thoi_diem_dong_thau.desc())\
                  .offset(skip)\
                  .limit(limit)\

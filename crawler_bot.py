@@ -536,7 +536,7 @@ class MuasamcongDBBot:
                 driver.execute_script("arguments[0].click();", btn_webform)
                 
                 # 3. Xử lý Viewer (Tab mới)
-                time.sleep(5)
+                time.sleep(10)
                 if len(driver.window_handles) > 1:
                     driver.switch_to.window(driver.window_handles[-1])
                     logger.info("-> Đã chuyển sang tab Viewer.")
@@ -548,7 +548,7 @@ class MuasamcongDBBot:
                         btn_xpath = "//button[contains(@class, 'btn-primary') and contains(., 'Tải về')]"
                         
                         logger.info("-> Đang tìm nút Tải về (btn-primary) ở Main Frame...")
-                        btn = WebDriverWait(driver, 7).until(
+                        btn = WebDriverWait(driver, 5).until(
                             EC.element_to_be_clickable((By.XPATH, btn_xpath))
                         )
                         
@@ -738,16 +738,16 @@ def run_scheduler_system():
             scheduler.shutdown()
             
 if __name__ == "__main__":
-    print("!!! ĐANG CHẠY CHẾ ĐỘ THỦ CÔNG (KHÔNG PHẢI SCHEDULER) !!!") 
+    # print("!!! ĐANG CHẠY CHẾ ĐỘ THỦ CÔNG (KHÔNG PHẢI SCHEDULER) !!!") 
     
-    target_url = "https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=detail-v2&type=es-notify-contractor&stepCode=notify-contractor-step-4-kqlcnt&id=6691817e-8086-47fe-b447-02c36f96b3c0&notifyId=6691817e-8086-47fe-b447-02c36f96b3c0&inputResultId=db55e8a4-8a7f-44d1-b6fd-6482a3d87bd6&bidOpenId=7c715b1a-be61-44b8-a230-667541ff5834&techReqId=undefined&bidPreNotifyResultId=undefined&bidPreOpenId=undefined&processApply=LDT&bidMode=1_MTHS&notifyNo=IB2500536477&planNo=PL2500303629&pno=undefined&step=tbmt&isInternet=1&caseKHKQ=undefined&bidForm=CHCT" # (Link của bạn)
+    # target_url = "https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=detail-v2&type=es-notify-contractor&stepCode=notify-contractor-step-4-kqlcnt&id=9ae42552-fa18-4da3-aa81-42acaf003318&notifyId=9ae42552-fa18-4da3-aa81-42acaf003318&inputResultId=dc43eb8f-6d56-4867-a30e-8be02b4763e2&bidOpenId=0df6ca2c-caae-4431-bb5b-bbdc82ead000&techReqId=undefined&bidPreNotifyResultId=undefined&bidPreOpenId=undefined&processApply=LDT&bidMode=1_MTHS&notifyNo=IB2300376662&planNo=PL2300259343&pno=undefined&step=tbmt&isInternet=1&caseKHKQ=undefined&bidForm=CHCT" # (Link của bạn)
 
-    print(f"🚀 BẮT ĐẦU CHẠY NGAY LẬP TỨC CHO LINK:\n{target_url}")
+    # print(f"🚀 BẮT ĐẦU CHẠY NGAY LẬP TỨC CHO LINK:\n{target_url}")
     
-    try:
-        bot = MuasamcongDBBot()
-        bot.process_package(target_url)
-        print("✅ ĐÃ CHẠY XONG!")
-    except Exception as e:
-        print(f"❌ CÓ LỖI XẢY RA: {e}")
-    # run_scheduler_system()
+    # try:
+    #     bot = MuasamcongDBBot()
+    #     bot.process_package(target_url)
+    #     print("✅ ĐÃ CHẠY XONG!")
+    # except Exception as e:
+    #     print(f"❌ CÓ LỖI XẢY RA: {e}")
+    run_scheduler_system()

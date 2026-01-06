@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import datetime
 from decimal import Decimal
 from models import PackageStatus, TaskStatus
@@ -168,6 +168,11 @@ class ProjectHistoryResponse(BaseModel):
     ten_du_an: str
     chu_dau_tu: str
     linh_vuc: str
+    # [MỚI] Field kết quả muốn hiển thị
+    drive_folder_id: Optional[str] = None
+
+    # [MỚI] Field trung gian để Pydantic đọc quan hệ từ ORM (nhưng ẩn khỏi JSON)
+    project: Optional[Any] = Field(default=None, exclude=True)
     
     # --- SỬA Ở ĐÂY ---
     # 1. Khai báo thoi_diem_dong_thau (có thể ẩn khỏi JSON output nếu muốn gọn)
@@ -192,6 +197,11 @@ class ProjectHistoryResponse(BaseModel):
         # Nếu cả 2 đều None, gán mặc định là năm hiện tại (tùy chọn)
         else:
              self.nam = datetime.now().year
+            
+        # 2. [MỚI] Logic lấy DRIVE FOLDER ID từ quan hệ Project
+        # Pydantic đã tự động map relationship 'project' vào self.project nhờ dòng khai báo ở trên
+        if self.project and hasattr(self.project, 'drive_folder_id'):
+            self.drive_folder_id = self.project.drive_folder_id
              
         return self
 
