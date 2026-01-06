@@ -212,3 +212,44 @@ def get_project_history(
                  .all()
 
     return items, total
+
+def get_history_filters(db: Session):
+    """
+    Lấy danh sách các Năm và Chủ đầu tư duy nhất từ các dự án COMPLETED
+    để dùng cho Dropdown lọc.
+    """
+    
+    # --- 1. Lấy danh sách NĂM (Years) ---
+    # Query: Select DISTINCT YEAR(thoi_diem_dong_thau) from ... where status = 'COMPLETED'
+    years_query = db.query(extract('year', BiddingPackage.thoi_diem_dong_thau))\
+        .join(BiddingProject, BiddingPackage.project_id == BiddingProject.id)\
+        .filter(
+            BiddingProject.status == "COMPLETED",
+            BiddingPackage.thoi_diem_dong_thau.isnot(None) # Loại bỏ gói thầu chưa có ngày
+        )\
+        .distinct()\
+        .order_by(extract('year', BiddingPackage.thoi_diem_dong_thau).desc())\
+        .all()
+    
+    # Kết quả trả về dạng danh sách tuple: [(2025,), (2024,)] -> Cần flatten thành [2025, 2024]
+    unique_years = [y[0] for y in years_query if y[0] is not None]
+
+    # --- 2. Lấy danh sách CHỦ ĐẦU TƯ (Investors) ---
+    # Query: Select DISTINCT chu_dau_tu from ... where status = 'COMPLETED'
+    investors_query = db.query(BiddingPackage.chu_dau_tu)\
+        .join(BiddingProject, BiddingPackage.project_id == BiddingProject.id)\
+        .filter(
+            BiddingProject.status == "COMPLETED",
+            BiddingPackage.chu_dau_tu.isnot(None)
+        )\
+        .distinct()\
+        .order_by(BiddingPackage.chu_dau_tu.asc())\
+        .all()
+        
+    # Flatten: [('EVN',), ('Viettel',)] -> ['EVN', 'Viettel']
+    unique_investors = [i[0] for i in investors_query if i[0]]
+
+    return {
+        "years": unique_years,
+        "investors": unique_investors
+    }

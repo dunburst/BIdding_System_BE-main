@@ -70,6 +70,24 @@ def get_bidding_history(
         message="Lấy lịch sử dự án thành công",
         data=pagination_data
     )
+    
+@router.get("/history/filters", response_model=BaseResponse[schemas.HistoryFilterResponse])
+def get_history_filter_options(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Lấy danh sách các options cho bộ lọc (Năm, Chủ đầu tư)
+    từ các dự án đã hoàn thành.
+    """
+    data = crud_bidding.get_history_filters(db)
+    
+    return BaseResponse(
+        success=True,
+        status=200,
+        message="Lấy dữ liệu bộ lọc thành công",
+        data=data
+    )
 @router.post("/", response_model=BaseResponse[schemas.BiddingPackageResponse])
 def create_package(
     package: schemas.BiddingPackageBase, # Hoặc BiddingPackageCreate nếu bạn tách riêng
