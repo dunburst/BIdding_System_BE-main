@@ -5,7 +5,7 @@ from typing import List
 from database import get_db
 import cruds.user as crud_user
 import schemas.user as schemas
-from schemas.task import TaskResponse
+from schemas.task import TaskResponse, TaskListResponse
 from utils.security import get_current_user
 from models import User
 import cruds.task as task_crud
@@ -14,7 +14,7 @@ router = APIRouter(
     prefix="/users",
     tags=["User Management (Quản lý người dùng)"]
 )
-@router.get("/reviewer-list", response_model=List[TaskResponse])
+@router.get("/reviewer-list", response_model=List[TaskListResponse])
 def get_tasks_i_need_to_review(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
