@@ -1,13 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List
+from fastapi.responses import Response
 
 from database import get_db # Hàm lấy DB session của bạn
-from schemas.task import TaskCreate, TaskResponse, TaskUpdate, TaskStatus, TaskCommentCreate, TaskCommentResponse, TaskCommentUpdate
+from schemas.task import TaskCreate, TaskResponse, TaskUpdate, TaskStatus, TaskCommentCreate, TaskCommentResponse, TaskCommentUpdate, TaskListResponse
 import cruds.task as task_crud
 from models import User , UserRole
 from utils.abac import check_permission, AbacAction
 from utils.security import get_current_user
+from urllib.parse import quote
 
 
 router = APIRouter(prefix="/tasks", tags=["Bidding Tasks"])
@@ -159,6 +161,67 @@ def get_task_comments(
     """
     return task_crud.get_task_comments_tree(db, task_id, current_user)
 
+@router.get("/{task_id}/export-draft")
+def export_native_html_doc(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    task = task_crud.get_task_detail(db, task_id, current_user)
+    if not task:
+        raise HTTPException(status_code=404, detail="Không tìm thấy task")
+    
+    content = task.draft_content if task.draft_content else ""
+
+    # CHÌA KHÓA Ở ĐÂY: Thêm Namespace của Microsoft Word vào thẻ HTML
+    # Điều này giúp Word hiểu: "À, đây là nội dung dành cho tôi"
+    full_html = f"""
+    <html xmlns:o='urn:schemas-microsoft-com:office:office' 
+          xmlns:w='urn:schemas-microsoft-com:office:word' 
+          xmlns='http://www.w3.org/TR/REC-html40'>
+    <head>
+        <meta charset="utf-8">
+        <title>{task.task_name}</title>
+        <style>
+            /* CSS chuẩn cho Word */
+            @page WordSection1 {{
+                size: 21.0cm 29.7cm; 
+                margin: 2.0cm 2.0cm 2.0cm 2.0cm;
+                mso-header-margin: 35.4pt; 
+                mso-footer-margin: 35.4pt; 
+                mso-paper-source: 0;
+            }}
+            div.WordSection1 {{ page: WordSection1; }}
+            
+            body {{
+                font-family: 'Times New Roman', serif;
+                font-size: 12pt;
+            }}
+            /* Word hiểu tốt các class CSS đơn giản và table */
+            table {{ border-collapse: collapse; width: 100%; }}
+        </style>
+    </head>
+    <body>
+        <div class="WordSection1">
+            {content}
+        </div>
+    </body>
+    </html>
+    """
+
+    # Lưu ý: Đuôi file là .doc (Word 97-2003) chứ không phải .docx
+    # Word xử lý HTML trong file .doc tốt hơn .docx
+    filename = f"{task.task_name}.doc"
+    encoded_filename = quote(filename)
+
+    return Response(
+        content=full_html,
+        media_type="application/msword", # MIME type ép buộc mở bằng Word
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+        }
+    )
+
 @router.put("/comments/{comment_id}", response_model=TaskCommentResponse)
 def update_comment(
     comment_id: int,
@@ -198,7 +261,7 @@ def delete_existing_task(
     return task_crud.delete_task(db, task_id, current_user)
 
 # --- API: Xem công việc của chính mình ---
-@router.get("/user/me", response_model=List[TaskResponse])
+@router.get("/user/me", response_model=List[TaskListResponse])
 def get_my_tasks(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -217,7 +280,7 @@ def get_my_tasks(
     # [THAY ĐỔI] Gọi hàm get_my_tasks_as_tree thay vì hàm cũ
     return task_crud.get_my_tasks_as_tree(db, user=current_user)
 
-@router.get("/user/assigned", response_model=List[TaskResponse])
+@router.get("/user/assigned", response_model=List[TaskListResponse])
 def get_assigned_tasks_only(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)

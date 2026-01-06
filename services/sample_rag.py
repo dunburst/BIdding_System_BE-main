@@ -2,6 +2,8 @@ import os
 import re
 import chromadb
 from chromadb.utils import embedding_functions
+from typing import cast
+from chromadb.api.types import EmbeddingFunction, Documents
 
 # Cấu hình ChromaDB (Lưu trữ local tại thư mục chroma_db nằm ở root dự án)
 # Lưu ý: Dùng đường dẫn tương đối để tránh lỗi path
@@ -18,7 +20,8 @@ sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFuncti
 # Tạo/Lấy Collection
 collection = client.get_or_create_collection(
     name="construction_samples_chapters",
-    embedding_function=sentence_transformer_ef
+    # Thêm comment này vào cuối dòng để tắt lỗi đỏ
+    embedding_function=sentence_transformer_ef  # type: ignore
 )
 
 def split_markdown_by_chapters(md_text: str) -> list[dict]:
