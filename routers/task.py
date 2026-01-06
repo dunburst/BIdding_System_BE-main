@@ -4,7 +4,7 @@ from typing import List
 from fastapi.responses import Response
 
 from database import get_db # Hàm lấy DB session của bạn
-from schemas.task import TaskCreate, TaskResponse, TaskUpdate, TaskStatus, TaskCommentCreate, TaskCommentResponse, TaskCommentUpdate
+from schemas.task import TaskCreate, TaskResponse, TaskUpdate, TaskStatus, TaskCommentCreate, TaskCommentResponse, TaskCommentUpdate, TaskListResponse
 import cruds.task as task_crud
 from models import User , UserRole
 from utils.abac import check_permission, AbacAction
@@ -261,7 +261,7 @@ def delete_existing_task(
     return task_crud.delete_task(db, task_id, current_user)
 
 # --- API: Xem công việc của chính mình ---
-@router.get("/user/me", response_model=List[TaskResponse])
+@router.get("/user/me", response_model=List[TaskListResponse])
 def get_my_tasks(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -280,7 +280,7 @@ def get_my_tasks(
     # [THAY ĐỔI] Gọi hàm get_my_tasks_as_tree thay vì hàm cũ
     return task_crud.get_my_tasks_as_tree(db, user=current_user)
 
-@router.get("/user/assigned", response_model=List[TaskResponse])
+@router.get("/user/assigned", response_model=List[TaskListResponse])
 def get_assigned_tasks_only(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
