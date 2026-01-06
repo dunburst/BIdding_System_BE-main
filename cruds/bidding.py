@@ -1,9 +1,10 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc
-from models import BiddingPackage, BiddingTask, PackageStatus, BiddingPackageFile
+from models import BiddingPackage, BiddingTask, PackageStatus, BiddingPackageFile, BiddingProject
 from schemas import bidding as schemas
 from typing import Optional, List
 from datetime import datetime
+from sqlalchemy import extract
 # --- Gói thầu (Package) ---
 
 def get_package(db: Session, hsmt_id: int):
@@ -168,3 +169,46 @@ def get_package_by_project_id(db: Session, project_id: int):
     Tìm gói thầu thuộc về một dự án cụ thể.
     """
     return db.query(BiddingPackage).filter(BiddingPackage.project_id == project_id).first()
+
+def get_project_history(
+    db: Session, 
+    skip: int = 0, 
+    limit: int = 100, 
+    year: Optional[int] = None,
+    linh_vuc: Optional[str] = None,
+    chu_dau_tu: Optional[str] = None
+):
+    """
+    Lấy lịch sử dựa trên các Dự án đã có trạng thái COMPLETED.
+    Trả về danh sách BiddingPackage tương ứng để hiển thị thông tin chi tiết.
+    """
+    
+    # 1. Query từ BiddingPackage -> JOIN sang BiddingProject
+    query = db.query(BiddingPackage).join(BiddingProject, BiddingPackage.project_id == BiddingProject.id)
+
+    # 2. [QUAN TRỌNG] Lọc status của PROJECT là "COMPLETED"
+    # Lưu ý: Trong Model BiddingProject, status là chuỗi (String). 
+    # Hãy đảm bảo bạn lưu trong DB là chữ "COMPLETED" (hoặc "CLOSED" tùy quy ước của bạn).
+    query = query.filter(BiddingProject.status == "COMPLETED")
+
+    # --- Các bộ lọc thông tin gói thầu (như cũ) ---
+    if year:
+        # Lấy năm từ thời điểm đóng thầu của gói thầu
+        query = query.filter(extract('year', BiddingPackage.thoi_diem_dong_thau) == year)
+    
+    if linh_vuc:
+        query = query.filter(BiddingPackage.linh_vuc.ilike(f"%{linh_vuc}%"))
+
+    if chu_dau_tu:
+        query = query.filter(BiddingPackage.chu_dau_tu.ilike(f"%{chu_dau_tu}%"))
+
+    # Đếm tổng & Sort
+    total = query.count()
+    
+    # Sắp xếp
+    items = query.order_by(BiddingPackage.thoi_diem_dong_thau.desc())\
+                 .offset(skip)\
+                 .limit(limit)\
+                 .all()
+
+    return items, total
