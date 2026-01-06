@@ -390,27 +390,30 @@ class GoogleDriveService:
         return False
 
     # --- SỬA LẠI HÀM SEARCH ---
+    # --- SỬA LẠI HÀM SEARCH (STRICT MODE) ---
     def search_files(self, query_name: str, folder_id: Optional[str] = None) -> List[dict]:
         if not self.service: return []
         try:
-            # 1. Tìm tất cả file có tên khớp (BỎ điều kiện parents ở đây để tìm rộng)
-            # Lý do: Nếu thêm 'folder_id in parents' thì nó loại mất file ở folder con.
-            q_parts = [f"name contains '{query_name}'", "trashed=false"]
-            
-            # Lưu ý: Nếu không có folder_id, ta tìm toàn bộ. 
-            # Nếu có folder_id, ta vẫn tìm toàn bộ (theo tên) rồi lọc lại sau bằng Python.
-            # (Trừ khi bạn dùng 'corpora' nhưng cái đó phức tạp với Shared Drive).
-            
+            # 1. Query Google (Vẫn phải search rộng trước vì API hạn chế)
+            safe_query_name = query_name.replace("'", "\\'")
+            q_parts = [f"name contains '{safe_query_name}'", "trashed=false"]
             final_query = " and ".join(q_parts)
 
-            all_candidates = []
+            filtered_results = [] 
+            ancestry_cache = {} 
             page_token = None
-            
-            # Lấy danh sách ứng viên (Search rộng)
+            api_call_count = 0 
+            MAX_API_CALLS = 10 
+
+            # print(f"🔍 Debug: Tìm '{query_name}' trong folder '{folder_id}'")
+
             while True:
+                api_call_count += 1
+                
+                # Gọi Google API (Nó sẽ trả về cả những file ở ngoài folder_id)
                 results = self.service.files().list(
                     q=final_query, 
-                    pageSize=50, # Lấy ít thôi để lọc cho nhanh
+                    pageSize=50, 
                     fields="nextPageToken, files(id, name, mimeType, webViewLink, createdTime, parents, properties)", 
                     orderBy="folder, createdTime desc",
                     supportsAllDrives=True,
@@ -418,42 +421,162 @@ class GoogleDriveService:
                     pageToken=page_token
                 ).execute()
                 
-                all_candidates.extend(results.get('files', []))
+                candidates = results.get('files', [])
                 
-                page_token = results.get('nextPageToken', None)
-                if not page_token or len(all_candidates) >= 100: # Limit 100 kết quả để không treo server
-                    break
-            
-            # 2. Nếu không yêu cầu folder cụ thể -> Trả về hết
-            if not folder_id:
-                return all_candidates
-            
-            # 3. Nếu yêu cầu folder -> Lọc thủ công (Recursive Check)
-            filtered_results = []
-            # Cache dùng chung cho đợt search này để tối ưu tốc độ
-            ancestry_cache = {} 
-            
-            print(f"🔍 Đang lọc {len(all_candidates)} file trong cây thư mục {folder_id}...")
-            
-            for item in all_candidates:
-                # Kiểm tra xem item này có thuộc folder_id (hoặc con cháu của nó) không
-                # Truyền item['id'] không đủ, phải check từ parent của nó để đỡ tốn 1 API call
-                parents = item.get('parents', [])
-                if parents:
-                    # Check parent đầu tiên của nó
-                    if self.is_file_in_folder_recursive(parents[0], folder_id, ancestry_cache):
-                        filtered_results.append(item)
-                else:
-                    # Trường hợp file mồ côi hoặc root
-                    if folder_id == self.ROOT_FOLDER_ID: # Nếu tìm trong root thì ok
-                        filtered_results.append(item)
+                # --- LOGIC LỌC NGHIÊM NGẶT ---
+                for item in candidates:
+                    is_match = False
+                    parents = item.get('parents', [])
 
-            print(f"✅ Kết quả sau lọc: {len(filtered_results)}")
+                    if not folder_id:
+                        # Case 1: Tìm toàn bộ Drive (không truyền folder_id) -> Lấy hết
+                        is_match = True
+                    else:
+                        # Case 2: Tìm trong folder cụ thể
+                        
+                        if not parents:
+                            # [QUAN TRỌNG] Nếu file không có cha (như file "siêu cấp..." của bạn)
+                            # -> Nó chắc chắn KHÔNG nằm trong folder con nào cả.
+                            # -> LOẠI BỎ NGAY (trừ khi folder_id chính là root ảo, nhưng thường API drive trả về ID cụ thể)
+                            is_match = False
+                            
+                        elif folder_id in parents:
+                             # Nếu cha trực tiếp chính là folder đang tìm -> Lấy
+                             is_match = True
+                        else:
+                             # Check đệ quy ngược lên trên
+                             if self.is_file_in_folder_recursive(parents[0], folder_id, ancestry_cache):
+                                 is_match = True
+                    
+                    if is_match:
+                        filtered_results.append(item)
+                
+                # Điều kiện dừng
+                if len(filtered_results) >= 50 or not results.get('nextPageToken') or api_call_count >= MAX_API_CALLS:
+                    break
+                
+                page_token = results.get('nextPageToken')
+
             return filtered_results
 
         except Exception as e:
             print(f"❌ Lỗi search: {e}")
             return []
+        
+        
+    # --- [CẬP NHẬT] HÀM SEARCH FOLDER ĐỆ QUY (DEEP SEARCH) ---
+    def search_folders_by_keywords(self, root_folder_id: str, keywords: List[str]):
+        """
+        Tìm kiếm folder chứa từ khóa NẰM SÂU bất kỳ đâu trong dự án.
+        Chiến thuật: Search tên trước -> Check tổ tiên sau.
+        """
+        if not self.service or not keywords:
+            return []
+
+        try:
+            # 1. QUERY RỘNG: Chỉ tìm theo TÊN (Bỏ điều kiện parents)
+            base_query = "mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+            
+            # Escape dấu nháy đơn trong keyword để tránh lỗi cú pháp query
+            safe_keywords = [kw.replace("'", "\\'") for kw in keywords]
+            name_conditions = [f"name contains '{kw}'" for kw in safe_keywords]
+            name_query = " or ".join(name_conditions)
+            
+            final_query = f"{base_query} and ({name_query})"
+            
+            # Lấy nhiều kết quả một chút để lọc (ví dụ 100)
+            results = self.service.files().list(
+                q=final_query,
+                pageSize=100, 
+                fields="files(id, name, mimeType, webViewLink, parents, properties)",
+                orderBy="folder, createdTime desc",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True
+            ).execute()
+            
+            candidates = results.get('files', [])
+            
+            # 2. FILTER HẸP: Kiểm tra đệ quy xem có thuộc root_folder_id không
+            final_results = []
+            ancestry_cache = {} # Cache để tối ưu tốc độ check parent
+
+            print(f"🔍 Tìm thấy {len(candidates)} folder tiềm năng, đang check quan hệ cha-con...")
+
+            for folder in candidates:
+                # Nếu folder đó chính là root (hiếm khi nhưng có thể trùng tên)
+                if folder['id'] == root_folder_id:
+                    continue
+
+                # Sử dụng hàm check đệ quy bạn đã viết sẵn
+                if self.is_file_in_folder_recursive(folder['id'], root_folder_id, ancestry_cache):
+                    final_results.append(folder)
+            
+            print(f"✅ Kết quả cuối cùng: {len(final_results)} folder thuộc dự án.")
+            return final_results
+
+        except Exception as e:
+            print(f"❌ Lỗi search folder deep: {str(e)}")
+            return []
+        
+    # --- [THÊM VÀO GoogleDriveService] ---
+    def find_deep_folder(self, project_root_id: str, tag: str, keyword_name: str) -> Optional[str]:
+        """
+        Tìm kiếm folder con nằm sâu bên trong cây thư mục dự án.
+        Ưu tiên 1: Tìm theo property 'project_tag'.
+        Ưu tiên 2: Tìm theo tên (name contains).
+        Sau đó xác thực folder tìm thấy thực sự thuộc về project_root_id.
+        """
+        if not self.service or not project_root_id: return None
+
+        try:
+            # 1. Tạo Query tìm kiếm rộng (Không giới hạn parents ngay lập tức vì API search parents đệ quy rất khó)
+            # Tìm Folder có (Tag khớp) HOẶC (Tên chứa từ khóa)
+            # Lưu ý: properties has ... là cú pháp tìm theo metadata
+            
+            # Escape dấu nháy đơn trong keyword nếu có
+            safe_keyword = keyword_name.replace("'", "\\'")
+            
+            query = (
+                "mimeType = 'application/vnd.google-apps.folder' "
+                "and trashed = false "
+                f"and (properties has {{ key='project_tag' and value='{tag}' }} "
+                f"or name contains '{safe_keyword}')"
+            )
+
+            # 2. Thực hiện search
+            results = self.service.files().list(
+                q=query,
+                pageSize=50, # Lấy 50 kết quả tiềm năng nhất
+                fields="files(id, name, parents, properties)",
+                orderBy="createdTime desc", # Ưu tiên folder mới tạo
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True
+            ).execute()
+
+            candidates = results.get('files', [])
+            
+            # 3. Lọc kết quả: Chỉ lấy folder nào thực sự là con cháu của project_root_id
+            ancestry_cache = {} 
+            
+            for folder in candidates:
+                # Kiểm tra Tag trước (Nếu khớp Tag thì lấy luôn, rất chính xác)
+                props = folder.get('properties', {})
+                if props.get('project_tag') == tag:
+                    # Check xem có thuộc dự án không
+                    if self.is_file_in_folder_recursive(folder['id'], project_root_id, ancestry_cache):
+                        return folder['id']
+            
+            # Nếu không tìm thấy bằng Tag, tìm bằng Tên (Fallback)
+            for folder in candidates:
+                if keyword_name.lower() in folder['name'].lower():
+                    if self.is_file_in_folder_recursive(folder['id'], project_root_id, ancestry_cache):
+                        return folder['id']
+
+            return None
+
+        except Exception as e:
+            print(f"❌ Lỗi tìm deep folder: {e}")
+            return None
         
     # [MỚI] Hàm lấy tên folder (dùng cache đơn giản để tránh gọi nhiều nếu cần)
     def get_folder_name(self, folder_id: str) -> str:
