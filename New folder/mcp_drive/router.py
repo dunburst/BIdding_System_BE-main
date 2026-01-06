@@ -286,7 +286,7 @@ def search_repository(
     }
 
 @router.get("/stats/count", response_model=StatsResponse)
-def get_file_statistics(
+def get_file_statisticss(
     folder_id: Optional[str] = None, 
     current_user: User = Depends(get_current_user)
 ):
@@ -298,7 +298,7 @@ def get_file_statistics(
     }
 
 @router.post("/create-subfolder")
-def create_custom_subfolder(
+def create_custom_subfolders(
     payload: CreateFolderRequest,
     current_user: User = Depends(get_current_user)
 ):

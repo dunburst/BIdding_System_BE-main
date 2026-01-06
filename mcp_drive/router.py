@@ -285,40 +285,6 @@ def search_repository(
         "data": list(item_map.values()) 
     }
 
-@router.get("/stats/count", response_model=StatsResponse)
-def get_file_statistics(
-    folder_id: Optional[str] = None, 
-    current_user: User = Depends(get_current_user)
-):
-    stats = drive_service.get_repository_statistics(folder_id)
-    return {
-        "total_repo_files": stats["total_repository_files"],
-        "current_folder_files": stats["current_folder_files"],
-        "folder_id": folder_id
-    }
-
-@router.post("/create-subfolder")
-def create_custom_subfolder(
-    payload: CreateFolderRequest,
-    current_user: User = Depends(get_current_user)
-):
-    if not payload.parent_id or not payload.folder_name:
-        raise HTTPException(status_code=400, detail="Thiếu parent_id hoặc folder_name")
-
-    new_folder_id = drive_service.create_folder(payload.folder_name, payload.parent_id)
-
-    if not new_folder_id:
-        raise HTTPException(status_code=500, detail="Không thể tạo folder trên Google Drive. Vui lòng kiểm tra log.")
-
-    return {
-        "message": "Tạo folder thành công",
-        "data": {
-            "id": new_folder_id,
-            "name": payload.folder_name,
-            "parent_id": payload.parent_id
-        }
-    }
-
 # [UPDATED] Nhận JSON Body thay vì Form
 @router.post("/clone-file")
 def clone_file_to_project(
