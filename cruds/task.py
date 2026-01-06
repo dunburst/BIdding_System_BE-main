@@ -501,86 +501,100 @@ def delete_task(db: Session, task_id: int, user: User):
     return {"message": "Task deleted successfully"}
 
 # --- CẬP NHẬT: GET MY TASKS AS TREE (Dùng Schema Rút Gọn) ---
-def get_my_tasks_as_tree(db: Session, user: User) -> List[TaskListResponse]:
-    # 1. Query DB (Giữ nguyên)
+# --- CẬP NHẬT LOGIC LẤY DANH SÁCH (SORTING) ---
+
+def get_my_tasks_as_tree(db: Session, user: User) -> List[TaskResponse]:
+    """
+    Lấy công việc của tôi nhưng hiển thị theo cấu trúc Cây (Tree).
+    Logic:
+    1. Tìm tất cả task mà user được giao (Leaf Nodes).
+    2. Truy vết ngược lên tìm cha, ông (Ancestors) để có ngữ cảnh.
+    3. Ghép lại thành cây trong bộ nhớ.
+    """
+    # --- BƯỚC 1: LẤY CÁC TASK ĐƯỢC GIAO TRỰC TIẾP ---
     query = select(BiddingTask).outerjoin(TaskAssignment, BiddingTask.assignments)
+
     filter_conditions = [
         BiddingTask.assignee_id == user.user_id,
         TaskAssignment.assigned_user_id == user.user_id
     ]
+    # Nếu là SPECIALIST thì xem được task của phòng ban
     if user.role == UserRole.SPECIALIST and user.org_unit_id:
          filter_conditions.append(TaskAssignment.assigned_unit_id == user.org_unit_id)
-
     query = query.where(or_(*filter_conditions)).distinct()
+    # Eager load project để hiển thị tên dự án
     query = query.options(
         joinedload(BiddingTask.project),
-        joinedload(BiddingTask.assignments) 
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
+        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit)
     )
-    
+    # Danh sách task trực tiếp (My Tasks)
     my_tasks = db.execute(query).unique().scalars().all()
     if not my_tasks:
         return []
-
-    # 2. Truy vết ngược tìm Task Cha (Giữ nguyên)
+    # --- BƯỚC 2: TRUY VẾT NGƯỢC TÌM TASK CHA (ANCESTORS) ---
+    # Dùng Dict để lưu unique các task (tránh trùng lặp)
     all_related_tasks: Dict[int, BiddingTask] = {t.id: t for t in my_tasks}
+    # List chứa các ID cần đi tìm cha
     ids_to_find_parent = [t.id for t in my_tasks if t.parent_task_id is not None]
-    
     while ids_to_find_parent:
+        # Query lấy các task cha của danh sách ID hiện tại
         parent_query = select(BiddingTask).where(
             BiddingTask.id.in_(
                 select(BiddingTask.parent_task_id).where(BiddingTask.id.in_(ids_to_find_parent))
             )
-        ).options(joinedload(BiddingTask.project))
-        
+        ).options(
+            joinedload(BiddingTask.project),
+            joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
+            joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit)
+        )
         parents = db.execute(parent_query).unique().scalars().all()
-        ids_to_find_parent = [] 
+        ids_to_find_parent = [] # Reset để chứa các ID của vòng lặp tiếp theo
+
         for p in parents:
             if p.id not in all_related_tasks:
                 all_related_tasks[p.id] = p
+                # Nếu ông này vẫn còn cha, thì thêm vào list để tìm tiếp
                 if p.parent_task_id:
                     ids_to_find_parent.append(p.id)
-
-    # 3. Dựng cây với SCHEMA MỚI (TaskListResponse)
-    schema_map: Dict[int, TaskListResponse] = {}
-    
-    # Bước 3.1: Map tất cả sang Schema trước
+    # --- BƯỚC 3: DỰNG CÂY (IN-MEMORY BUILD) ---    
+    # Chuyển đổi ORM Object sang Pydantic Schema để thao tác list `sub_tasks`
+    schema_map: Dict[int, TaskResponse] = {}
+    # 3.1 Convert sang Schema
     for t_id, t_orm in all_related_tasks.items():
-        t_schema = TaskListResponse.model_validate(t_orm)
-        t_schema.sub_tasks = [] 
-        
+        # Validate model, quan trọng là set sub_tasks = [] để ta tự fill
+        t_schema = TaskResponse.model_validate(t_orm)
+        t_schema.sub_tasks = []
+        # Helper: Gán tên project vào schema (nếu schema có trường project_name)
         if t_orm.project:
-            t_schema.project_name = t_orm.project.name
-            
+            t_schema.project_name = t_orm.project.name     
         schema_map[t_id] = t_schema
 
-    # Bước 3.2: Ráp nối Cha - Con (FIX LỖI t_orm unbound ở đây)
+    # 3.2 Ráp nối Cha - Con
     roots = []
     for t_id, t_schema in schema_map.items():
-        # [FIX] Lấy lại object gốc từ dict all_related_tasks để lấy parent_id
-        # Vì schema TaskListResponse không chứa field parent_task_id
-        original_orm = all_related_tasks.get(t_id)
-        
-        parent_id = original_orm.parent_task_id if original_orm else None
-
-        if parent_id and parent_id in schema_map:
-            parent = schema_map[parent_id]
+        # Nếu có cha và cha cũng nằm trong danh sách đã lấy
+        if t_schema.parent_task_id and t_schema.parent_task_id in schema_map:
+            parent = schema_map[t_schema.parent_task_id]
             parent.sub_tasks.append(t_schema)
         else:
+            # Nếu không có cha (hoặc cha không thuộc scope lấy về) -> Nó là Root của nhánh này
             roots.append(t_schema)
-
-    # 4. Sắp xếp
+    # 3.3 (Tùy chọn) Sắp xếp lại danh sách theo Priority hoặc Deadline
     def recursive_sort(tasks_list):
-        # Sort theo Deadline (đẩy None xuống cuối)
+        # Map độ ưu tiên ra số
+        prio_map = {TaskPriority.HIGH: 1, TaskPriority.MEDIUM: 2, TaskPriority.LOW: 3}
         tasks_list.sort(key=lambda x: (
-            x.deadline is None,          
-            x.deadline                   
+            prio_map.get(x.priority, 2), # 1. Ưu tiên
+            x.deadline is None,          # 2. Có deadline hay không (None xuống dưới)
+            x.deadline                   # 3. Ngày deadline
         ))
         for task in tasks_list:
             if task.sub_tasks:
                 recursive_sort(task.sub_tasks)
-
     recursive_sort(roots)
-    
+    # [NEW LOGIC] FILL TAG CHO VIEW (Fix hiển thị My Tasks)
+    _fill_inherited_tags_pydantic(roots)
     return roots
 
 # --- CẬP NHẬT: GET ASSIGNED TASKS ONLY (Dùng Schema Rút Gọn) ---

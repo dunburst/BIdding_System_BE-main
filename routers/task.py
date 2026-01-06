@@ -261,7 +261,7 @@ def delete_existing_task(
     return task_crud.delete_task(db, task_id, current_user)
 
 # --- API: Xem công việc của chính mình ---
-@router.get("/user/me", response_model=List[TaskListResponse])
+@router.get("/user/me", response_model=List[TaskResponse])
 def get_my_tasks(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
