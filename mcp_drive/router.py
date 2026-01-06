@@ -74,6 +74,19 @@ def _get_folder_tag(folder_name: str) -> Optional[str]:
             return tag
     return None
 
+# Bảng map chung để tránh viết lại nhiều lần
+GLOBAL_FOLDER_MAPPING = {
+    "HR": "nhân sự", 
+    "LEGAL": "Pháp lý", 
+    "TECH": "Biện pháp Thi công",
+    "FINANCE": "tài chính", 
+    "DEVICE": "máy móc", 
+    "CONTRACT": "hợp đồng", # Sửa lại chính tả hợp đồng
+    "OTHER": "khác",
+    "DBTC": "BLDT",     # Folder cha hoặc con chứa BLDT
+    "VT": "Hồ sơ VT",
+    "GIA": "Giá"
+}
 # =================================================================
 # 1. API LẤY DANH SÁCH DỰ ÁN (ROOT)
 # =================================================================
@@ -328,18 +341,32 @@ def delete_drive_file(file_id: str, current_user: User = Depends(get_current_use
     raise HTTPException(404, "Lỗi xóa file")
 
 @router.get("/project/{project_folder_id}/category-folder")
-def get_project_category_folder(project_folder_id: str, category: str, current_user: User = Depends(get_current_user)):
-    FOLDER_MAPPING = {
-        "HR": "nhân sự", "LEGAL": "Pháp lý", "TECH": "Biện pháp Thi công",
-        "FINANCE": "tài chính", "DEVICE": "máy móc", "CONTRACT": "hợp đông", "OTHER": "khác",
-        "DBTC": "BLDT", "VT": "Hồ sơ VT", "GIA": "Giá"
-    }
-    keyword = FOLDER_MAPPING.get(category.upper())
-    if not keyword: raise HTTPException(400, f"Không hỗ trợ danh mục: {category}")
-    target_folder_id = drive_service.get_subfolder_id_by_name(project_folder_id, keyword)
-    if not target_folder_id: raise HTTPException(404, f"Không tìm thấy folder {category}")
-    return {"category": category, "folder_id": target_folder_id, "folder_keyword": keyword}
+def get_project_category_folder(
+    project_folder_id: str, 
+    category: str, 
+    current_user: User = Depends(get_current_user)
+):
+    tag = category.upper()
+    keyword = GLOBAL_FOLDER_MAPPING.get(tag)
+    
+    if not keyword: 
+        raise HTTPException(400, f"Không hỗ trợ danh mục: {category}")
+    
+    # SỬ DỤNG HÀM TÌM KIẾM MỚI (DEEP SEARCH)
+    target_folder_id = drive_service.find_deep_folder(project_folder_id, tag, keyword)
+    
+    if not target_folder_id: 
+        # Thử tìm lỏng lẻo hơn chỉ bằng keyword nếu tìm deep thất bại
+        target_folder_id = drive_service.get_subfolder_id_by_name(project_folder_id, keyword)
 
+    if not target_folder_id:
+        raise HTTPException(404, f"Không tìm thấy folder cho danh mục '{category}' (Tag: {tag}, Keyword: {keyword}) trong dự án.")
+        
+    return {
+        "category": tag, 
+        "folder_id": target_folder_id, 
+        "folder_keyword": keyword
+    }
 
 @router.get("/project/{project_folder_id}/me/target-folder")
 def get_current_user_target_folder(
@@ -349,11 +376,17 @@ def get_current_user_target_folder(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    """
+    Lấy target_folder_id cho User. Hỗ trợ tìm kiếm folder nằm sâu trong cấu trúc.
+    """
+    
+    # 1. Lấy quyền của User
     allowed_tags_map = get_user_allowed_tags_with_name(db, current_user, project_id)
     
     if not allowed_tags_map:
         raise HTTPException(status_code=403, detail="Bạn không được phân công nhiệm vụ nào trong dự án này.")
 
+    # 2. Xác định Tag cần lấy
     selected_tag = None
     available_tags = list(allowed_tags_map.keys())
 
@@ -361,39 +394,33 @@ def get_current_user_target_folder(
         if category.upper() in available_tags:
             selected_tag = category.upper()
         else:
-            raise HTTPException(status_code=403, detail=f"Bạn không có quyền truy cập vào thư mục '{category}' trong dự án này.")
+            raise HTTPException(status_code=403, detail=f"Bạn không có quyền truy cập vào folder '{category}'.")
     else:
         if len(available_tags) == 1:
             selected_tag = available_tags[0]
         else:
             return {
                 "success": False,
-                "message": "Bạn có quyền ở nhiều bộ phận, vui lòng chỉ định rõ 'category' muốn lưu file.",
+                "message": "Vui lòng chọn folder đích cụ thể.",
                 "available_categories": available_tags,
                 "folder_id": None
             }
 
-    FOLDER_MAPPING = {
-        "HR": "nhân sự", 
-        "LEGAL": "Pháp lý", 
-        "TECH": "Biện pháp Thi công",
-        "FINANCE": "tài chính", 
-        "DEVICE": "máy móc", 
-        "CONTRACT": "hợp đông", 
-        "OTHER": "khác",
-        "DBTC": "BLDT", # Tìm folder có chữ "BLDT"
-        "VT": "Hồ sơ VT",
-        "GIA": "Giá"
-    }
-    
-    folder_keyword = FOLDER_MAPPING.get(selected_tag)
+    # 3. Lấy keyword từ Mapping
+    folder_keyword = GLOBAL_FOLDER_MAPPING.get(selected_tag)
     if not folder_keyword:
-        raise HTTPException(status_code=400, detail=f"Không tìm thấy cấu hình tên thư mục cho tag: {selected_tag}")
+        # Fallback nếu tag không có trong map (tránh crash)
+        folder_keyword = selected_tag 
 
-    target_folder_id = drive_service.get_subfolder_id_by_name(project_folder_id, folder_keyword)
+    # 4. TÌM KIẾM FOLDER (DEEP SEARCH)
+    # Hàm này sẽ quét toàn bộ cây thư mục con của project_folder_id để tìm folder có khớp Tag hoặc Tên
+    target_folder_id = drive_service.find_deep_folder(project_folder_id, selected_tag, folder_keyword)
     
     if not target_folder_id:
-        raise HTTPException(status_code=404, detail=f"Không tìm thấy thư mục '{folder_keyword}' trên Drive của dự án này.")
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Không tìm thấy thư mục trên Drive khớp với '{selected_tag}' hoặc tên chứa '{folder_keyword}'."
+        )
 
     return {
         "success": True,
@@ -401,4 +428,51 @@ def get_current_user_target_folder(
         "category": selected_tag,
         "folder_name_keyword": folder_keyword,
         "target_folder_id": target_folder_id
+    }
+    
+@router.get("/stats/count", response_model=StatsResponse)
+def get_file_statistics(
+    folder_id: Optional[str] = None, 
+    current_user: User = Depends(get_current_user)
+):
+    """
+    - total_repo_files: Đếm tất cả file (đệ quy) nằm trong GOOGLE_DRIVE_SHARED_FOLDER_ID.
+    - current_folder_files: Đếm file (cấp 1) nằm trong folder_id được chọn.
+    """
+    
+    # Hàm này đã được update logic bên trong service.py
+    stats = drive_service.get_repository_statistics(folder_id)
+    
+    return {
+        "total_repo_files": stats["total_repository_files"],
+        "current_folder_files": stats["current_folder_files"],
+        "folder_id": folder_id
+    }
+
+@router.post("/create-subfolder")
+def create_custom_subfolder(
+    payload: CreateFolderRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Tạo một folder con bên trong một folder cha bất kỳ.
+    - parent_id: ID của folder cha (trên Google Drive)
+    - folder_name: Tên folder muốn tạo
+    """
+    if not payload.parent_id or not payload.folder_name:
+        raise HTTPException(status_code=400, detail="Thiếu parent_id hoặc folder_name")
+
+    # Gọi hàm create_folder có sẵn trong service (hàm này đã support parent_id)
+    new_folder_id = drive_service.create_folder(payload.folder_name, payload.parent_id)
+
+    if not new_folder_id:
+        raise HTTPException(status_code=500, detail="Không thể tạo folder trên Google Drive. Vui lòng kiểm tra log.")
+
+    return {
+        "message": "Tạo folder thành công",
+        "data": {
+            "id": new_folder_id,
+            "name": payload.folder_name,
+            "parent_id": payload.parent_id
+        }
     }

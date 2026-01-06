@@ -161,3 +161,28 @@ def delete_project(db: Session, project_id: int) -> bool:
     db.delete(db_project)
     db.commit()
     return True
+
+def _get_keywords_from_tags(allowed_tag_codes: List[str]) -> List[str]:
+    """
+    Input: ['FINANCE', 'TECH']
+    Output: ['tài chính', 'giá', 'kỹ thuật', 'biện pháp thi công'...]
+    """
+    # Map ngược từ Code sang các keyword tiếng Việt
+    TAG_TO_KEYWORDS = {
+        "HR": ["nhân sự"],
+        "LEGAL": ["pháp lý"],
+        "TECH": ["biện pháp thi công", "kỹ thuật"],
+        "FINANCE": ["tài chính"],
+        "DEVICE": ["máy móc", "thiết bị"],
+        "CONTRACT": ["hợp đồng", "hợp đông"],
+        "DBTC": ["bldt", "cktd", "bảo lãnh", "tín dụng"],
+        "VT": ["vt", "vật tư"],
+        "GIA": ["giá"]
+    }
+    
+    result_keywords = []
+    for code in allowed_tag_codes:
+        if code in TAG_TO_KEYWORDS:
+            result_keywords.extend(TAG_TO_KEYWORDS[code])
+            
+    return result_keywords
