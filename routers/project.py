@@ -31,6 +31,15 @@ def create_project(
     package = db.get(BiddingPackage, project_in.source_package_id)
     if not package:
         raise HTTPException(status_code=404, detail="Gói thầu không tồn tại")
+    # ==================================================================
+    # [MỚI] CHECK LOGIC: GÓI THẦU ĐÃ CÓ DỰ ÁN CHƯA?
+    # ==================================================================
+    if package.project_id:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Gói thầu này đã thuộc về Dự án ID {package.project_id}. Không thể tạo thêm dự án mới."
+        )
+    # ==================================================================
     
     is_allowed = check_permission(
         db=db,
