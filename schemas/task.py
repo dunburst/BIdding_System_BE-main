@@ -141,3 +141,21 @@ class TaskResponse(TaskBase):
 
 # Cần thiết cho Pydantic xử lý đệ quy
 TaskResponse.update_forward_refs()
+
+# --- [MỚI] SCHEMA RÚT GỌN CHO DANH SÁCH ---
+class TaskListResponse(BaseModel):
+    id: int
+    task_name: str
+    project_name: Optional[str] = None
+    task_type: Optional[TaskType] = None
+    deadline: Optional[datetime] = None
+    status: TaskStatus
+    
+    # Vẫn cần sub_tasks để hiển thị cây thư mục (nếu dùng endpoint /user/me)
+    sub_tasks: List['TaskListResponse'] = []
+
+    class Config:
+        from_attributes = True
+
+# Kích hoạt đệ quy cho schema mới
+TaskListResponse.update_forward_refs()
