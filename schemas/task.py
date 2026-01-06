@@ -142,6 +142,13 @@ class TaskResponse(TaskBase):
 # Cần thiết cho Pydantic xử lý đệ quy
 TaskResponse.update_forward_refs()
 
+# Định nghĩa Schema nhỏ cho Assignment chỉ lấy Unit (để tiết kiệm dữ liệu)
+class AssignmentLite(BaseModel):
+    unit: Optional[SimpleUnit] = None
+    
+    class Config:
+        from_attributes = True
+
 # --- [MỚI] SCHEMA RÚT GỌN CHO DANH SÁCH ---
 class TaskListResponse(BaseModel):
     id: int
@@ -150,6 +157,9 @@ class TaskListResponse(BaseModel):
     task_type: Optional[TaskType] = None
     deadline: Optional[datetime] = None
     status: TaskStatus
+    # [THÊM MỚI] Thông tin người/phòng phụ trách
+    assignee: Optional[SimpleUser] = None        # Người thực hiện chính
+    assignments: List[AssignmentLite] = []       # Danh sách phòng ban tham gia
     
     # Vẫn cần sub_tasks để hiển thị cây thư mục (nếu dùng endpoint /user/me)
     sub_tasks: List['TaskListResponse'] = []

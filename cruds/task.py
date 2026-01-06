@@ -4,6 +4,7 @@ from fastapi import HTTPException, status, UploadFile
 from models import BiddingTask, TaskAssignment, User, UserRole, TaskStatus, TaskPriority, TaskComment, OrganizationalUnit
 from schemas.task import TaskCreate, TaskListResponse, TaskUpdate, TaskCommentCreate, TaskCommentUpdate, TaskResponse
 from utils.abac import check_permission, AbacAction
+from sqlalchemy.orm import selectinload
 import os
 import uuid
 import shutil
@@ -268,61 +269,89 @@ def create_task(db: Session, task_in: TaskCreate, current_user: User):
 
 FULL_ACCESS_ROLES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.BID_MANAGER]
 # --- READ (GET LIST WITH SECURITY) ---
-def get_project_tasks_tree(db: Session, project_id: int, user: User):
+# --- HELPER: ĐỆ QUY CONVERT SANG SCHEMA LITE ---
+def _map_to_list_schema(task_orm) -> TaskListResponse:
     """
-    Lấy danh sách task dạng cây.
-    - Manager/Bid_Manager: Xem hết.
-    - Employee: Chỉ xem task mình được giao (trực tiếp hoặc qua phòng ban).
+    Chuyển đổi ORM -> Pydantic Schema (Lite) và xử lý đệ quy cho sub_tasks.
+    """
+    # 1. Validate các trường cơ bản
+    schema = TaskListResponse.model_validate(task_orm)
+    
+    # 2. Map Project Name (Nếu có)
+    if task_orm.project:
+        schema.project_name = task_orm.project.name
+        
+    # 3. Xử lý đệ quy cho Sub-tasks
+    # Lưu ý: Vì sub_tasks trong ORM là list các ORM objects, 
+    # ta cần map thủ công chúng sang TaskListResponse để đảm bảo đúng kiểu dữ liệu.
+    if task_orm.sub_tasks:
+        schema.sub_tasks = [_map_to_list_schema(sub) for sub in task_orm.sub_tasks]
+    else:
+        schema.sub_tasks = []
+        
+    return schema
+
+# --- UPDATE: GET PROJECT TASKS TREE ---
+def get_project_tasks_tree(db: Session, project_id: int, user: User) -> List[TaskListResponse]:
+    """
+    Lấy danh sách task dạng cây của dự án (Output Schema rút gọn).
     """
     
-    # 1. Base Query: Lấy các Root Task (Task cha cao nhất) và nạp sẵn con
+    # 1. Base Query: Lấy các Root Task
     query = select(BiddingTask).where(
         BiddingTask.bidding_project_id == project_id,
         BiddingTask.parent_task_id == None
-    ).options(
-        # <--- THÊM joinedload(BiddingTask.project)
-        joinedload(BiddingTask.project),
-        joinedload(BiddingTask.assignments),
-        joinedload(BiddingTask.sub_tasks).joinedload(BiddingTask.assignments),
-        # [SỬA ĐOẠN NÀY] Load Assignments kèm theo User và Unit
-        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
-        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit),
-        
-        # Load Sub-tasks và Assignments của Sub-tasks cũng phải kèm User/Unit
-        joinedload(BiddingTask.sub_tasks).joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
-        joinedload(BiddingTask.sub_tasks).joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit)
     )
 
-    # 2. Kiểm tra quyền hạn
+    # 2. Optimize Load: Chỉ load Project và Sub-tasks (Bỏ qua Assignments, Comments...)
+    query = query.options(
+        joinedload(BiddingTask.project),
+        # --- THÊM 2 DÒNG NÀY ---
+        joinedload(BiddingTask.assignee),  # Load thông tin user ở cột assignee_id
+        selectinload(BiddingTask.assignments).joinedload(TaskAssignment.unit), # Load Unit trong bảng Assignments
+        # Dùng selectinload tốt hơn cho việc load recursive tree sâu
+        selectinload(BiddingTask.sub_tasks) 
+    )
+
+    # 3. Kiểm tra quyền hạn (Giữ nguyên logic cũ)
     # Nếu user KHÔNG thuộc nhóm quản lý -> Áp dụng bộ lọc
     if user.role not in FULL_ACCESS_ROLES:
-        
-        # Sử dụng OUTER JOIN để không bị mất task nếu bảng assignment rỗng
+        # Join để check quyền
         query = query.outerjoin(TaskAssignment, BiddingTask.assignments)
         
         query = query.where(
             or_(
-                # 1. Giao đích danh trên bảng Task (Đây là cái bạn đang thiếu)
                 BiddingTask.assignee_id == user.user_id,
-                
-                # 2. Giao đích danh qua bảng phụ Assignment
                 TaskAssignment.assigned_user_id == user.user_id,
                 BiddingTask.reviewer_id == user.user_id,
-                BiddingTask.created_by == user.user_id, # <--- [NEW] Thêm dòng này
-                
-                # 3. Giao cho phòng ban của user
+                BiddingTask.created_by == user.user_id,
                 TaskAssignment.assigned_unit_id == user.org_unit_id
-                
             )
-        ).distinct() # Quan trọng: Loại bỏ trùng lặp do phép Join
+        ).distinct()
 
-    # 3. Thực thi query
-    result = db.execute(query).unique().scalars().all()
+    # 4. Thực thi query
+    # Lưu ý: Do dùng selectinload cho sub_tasks, SQLAlchemy sẽ tự động fetch cây con
+    roots_orm = db.execute(query).unique().scalars().all()
 
-    # [NEW LOGIC] FILL TAG CHO VIEW (Fix hiển thị task cũ bị null)
-    _fill_inherited_tags(result)
+    # 5. Convert sang Schema Lite
+    results = []
+    for root in roots_orm:
+        # Gọi helper để map và đệ quy
+        results.append(_map_to_list_schema(root))
 
-    return result
+    # 6. Sắp xếp (Optional - Theo deadline)
+    def recursive_sort(tasks_list):
+        tasks_list.sort(key=lambda x: (
+            x.deadline is None,          
+            x.deadline                   
+        ))
+        for task in tasks_list:
+            if task.sub_tasks:
+                recursive_sort(task.sub_tasks)
+    
+    recursive_sort(results)
+
+    return results
 
 # --- READ SINGLE ---
 def get_task_detail(db: Session, task_id: int, user: User):
@@ -844,20 +873,19 @@ def delete_all_task_attachments(db: Session, task_id: int, user: User):
     return task
 
 # --- 2. [MỚI] GET LIST FOR REVIEWER ---
-def get_tasks_for_reviewer(db: Session, user: User) -> List[TaskResponse]:
+def get_tasks_for_reviewer(db: Session, user: User) -> List[TaskListResponse]:
     """
     Lấy danh sách các task mà user hiện tại đóng vai trò là REVIEWER.
-    Hiển thị dạng cây (để thấy ngữ cảnh cha con).
+    Hiển thị dạng cây, tối ưu hiệu năng cho Schema Lite.
     """
-    # Bước 1: Tìm tất cả task mà user là reviewer (Leaf/Target Nodes)
-    # Thường reviewer quan tâm nhất các task đang chờ duyệt (PENDING_REVIEW) hoặc đang làm (IN_PROGRESS)
-    # Nhưng ở đây ta lấy hết để họ quản lý.
+    # --- BƯỚC 1: Tìm các task đích mà user là Reviewer (Leaf/Target Nodes) ---
     query = select(BiddingTask).where(
         BiddingTask.reviewer_id == user.user_id
-    ).options(
-        joinedload(BiddingTask.project),
-        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
-        joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit)
+    )
+    
+    # [TỐI ƯU] Chỉ load Project để lấy tên, KHÔNG load assignments/user/unit thừa thãi
+    query = query.options(
+        joinedload(BiddingTask.project)
     )
     
     review_tasks = db.execute(query).unique().scalars().all()
@@ -865,8 +893,9 @@ def get_tasks_for_reviewer(db: Session, user: User) -> List[TaskResponse]:
     if not review_tasks:
         return []
 
-    # Bước 2: Truy vết ngược lên tìm Task Cha (Ancestors) để dựng cây ngữ cảnh
-    # (Copy logic từ get_my_tasks_as_tree)
+    # --- BƯỚC 2: Truy vết ngược lên tìm Task Cha (Ancestors) để dựng ngữ cảnh ---
+    # Logic này giữ nguyên để Reviewer biết task này thuộc đầu mục lớn nào
+    
     all_related_tasks: Dict[int, BiddingTask] = {t.id: t for t in review_tasks}
     ids_to_find_parent = [t.id for t in review_tasks if t.parent_task_id is not None]
 
@@ -876,10 +905,9 @@ def get_tasks_for_reviewer(db: Session, user: User) -> List[TaskResponse]:
                 select(BiddingTask.parent_task_id).where(BiddingTask.id.in_(ids_to_find_parent))
             )
         ).options(
-            joinedload(BiddingTask.project),
-            joinedload(BiddingTask.assignments).joinedload(TaskAssignment.user),
-            joinedload(BiddingTask.assignments).joinedload(TaskAssignment.unit)
+            joinedload(BiddingTask.project) # Chỉ load project cho cha
         )
+        
         parents = db.execute(parent_query).unique().scalars().all()
         ids_to_find_parent = []
         
@@ -889,37 +917,49 @@ def get_tasks_for_reviewer(db: Session, user: User) -> List[TaskResponse]:
                 if p.parent_task_id:
                     ids_to_find_parent.append(p.id)
 
-    # Bước 3: Dựng cây (In-memory)
-    schema_map = {}
+    # --- BƯỚC 3: Dựng cây (In-memory) và Convert sang Schema ---
+    schema_map: Dict[int, TaskListResponse] = {}
+    
+    # 3.1 Convert ORM -> Pydantic Schema
     for t_id, t_orm in all_related_tasks.items():
-        t_schema = TaskResponse.model_validate(t_orm)
-        t_schema.sub_tasks = []
+        t_schema = TaskListResponse.model_validate(t_orm)
+        t_schema.sub_tasks = [] # Reset sub_tasks để tự fill thủ công
+        
         if t_orm.project:
             t_schema.project_name = t_orm.project.name
+            
         schema_map[t_id] = t_schema
 
+    # 3.2 Ráp nối Cha - Con
     roots = []
     for t_id, t_schema in schema_map.items():
-        if t_schema.parent_task_id and t_schema.parent_task_id in schema_map:
-            parent = schema_map[t_schema.parent_task_id]
+        # Lấy lại ORM object gốc để check parent_id
+        original_orm = all_related_tasks.get(t_id)
+        parent_id = original_orm.parent_task_id if original_orm else None
+
+        if parent_id and parent_id in schema_map:
+            parent = schema_map[parent_id]
             parent.sub_tasks.append(t_schema)
         else:
             roots.append(t_schema)
 
-    # Bước 4: Sắp xếp & Fill tags
-    # Reviewer thường ưu tiên xem task PENDING_REVIEW lên đầu
+    # --- BƯỚC 4: Sắp xếp dành riêng cho Reviewer ---
+    # Ưu tiên số 1: Task đang chờ duyệt (PENDING_REVIEW)
+    # Ưu tiên số 2: Task quá hạn
     def recursive_sort_reviewer(tasks_list):
         tasks_list.sort(key=lambda x: (
-            0 if x.status == TaskStatus.PENDING_REVIEW else 1, # Ưu tiên PENDING_REVIEW
-            0 if x.deadline and x.deadline < datetime.now() else 1, # Ưu tiên quá hạn
-            x.deadline if x.deadline else datetime.max
+            0 if x.status == TaskStatus.PENDING_REVIEW else 1,    # PENDING_REVIEW lên đầu
+            0 if x.deadline and x.deadline < datetime.now() else 1, # Quá hạn lên nhì
+            x.deadline if x.deadline else datetime.max              # Còn lại sort theo ngày
         ))
+        
         for task in tasks_list:
             if task.sub_tasks:
                 recursive_sort_reviewer(task.sub_tasks)
 
     recursive_sort_reviewer(roots)
-    _fill_inherited_tags_pydantic(roots)
+    
+    # Không cần gọi _fill_inherited_tags_pydantic nữa
     
     return roots
 

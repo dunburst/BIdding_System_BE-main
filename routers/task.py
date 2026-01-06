@@ -28,7 +28,7 @@ def create_new_task(
     # Có thể thêm check: Chỉ Host dự án hoặc Admin mới được tạo task
     return task_crud.create_task(db, task_in, current_user)
 
-@router.get("/project/{project_id}", response_model=List[TaskResponse])
+@router.get("/project/{project_id}", response_model=List[TaskListResponse])
 def get_project_tasks(
     project_id: int, 
     db: Session = Depends(get_db),
