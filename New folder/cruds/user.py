@@ -3,20 +3,37 @@ from models import User, UserRole
 from schemas.user import UserCreate, UserUpdate
 from sqlalchemy import select
 from utils.security import get_password_hash
+from models import OrganizationalUnit
 
 def get_user_by_email(db: Session, email: str):
     """Tìm user trong DB dựa theo email"""
     return db.query(User).filter(User.email == email).first()
 
-def get_user(db: Session, user_id: int):
-    # Thêm .options(joinedload(User.org_unit))
-    query = select(User).options(joinedload(User.org_unit)).where(User.user_id == user_id)
-    return db.execute(query).scalar_one_or_none()
-
 def get_users(db: Session, skip: int = 0, limit: int = 100):
-    # Thêm .options(joinedload(User.org_unit))
-    query = select(User).options(joinedload(User.org_unit)).order_by(User.user_id).offset(skip).limit(limit)
+    query = (
+        select(User)
+        .options(
+            # Kỹ thuật Nested Eager Loading:
+            # 1. Load User.org_unit
+            # 2. Từ org_unit đó, load tiếp .parent
+            joinedload(User.org_unit).joinedload(OrganizationalUnit.parent)
+        )
+        .order_by(User.user_id)
+        .offset(skip)
+        .limit(limit)
+    )
     return db.execute(query).scalars().all()
+
+# Lời khuyên: Bạn nên sửa luôn hàm get_user (chi tiết) để nó cũng hiển thị
+def get_user(db: Session, user_id: int):
+    query = (
+        select(User)
+        .options(
+            joinedload(User.org_unit).joinedload(OrganizationalUnit.parent)
+        )
+        .where(User.user_id == user_id)
+    )
+    return db.execute(query).scalar_one_or_none()
 # [CẬP NHẬT] Hàm tạo user nhận Schema UserCreate
 def create_user(db: Session, user: UserCreate):
     # 1. Hash password

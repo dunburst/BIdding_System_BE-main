@@ -35,7 +35,7 @@ class SaveDraftRequest(BaseModel):
 class UserDraftResponse(BaseModel):
     id: int              # ID của Task
     task_name: str            # Tên của Task (giả sử model BiddingTask có trường name)
-    draft_content: Optional[str] = None
+    # draft_content: Optional[str] = None
 
     class Config:
         from_attributes = True

@@ -5,7 +5,7 @@ from typing import List, Optional
 from database import get_db
 from models import User, BiddingTask
 from utils.security import get_current_user
-from schemas.drafting import TemplateResponse, AiAssistRequest, AiAssistResponse, SaveDraftRequest
+from schemas.drafting import TemplateResponse, AiAssistRequest, AiAssistResponse, SaveDraftRequest, UserDraftResponse
 import cruds.drafting as drafting_crud
 import services.drafting_ai as drafting_service
 
@@ -62,3 +62,13 @@ def load_draft(
         raise HTTPException(status_code=404, detail="Task not found")
     
     return {"draft_content": task.draft_content}
+
+# 5. Lấy danh sách tất cả bản nháp của user đang đăng nhập
+@router.get("/my-drafts", response_model=List[UserDraftResponse])
+def get_my_drafts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # Truyền user_id của người đang đăng nhập vào CRUD
+    drafts = drafting_crud.get_user_drafts(db, user_id=current_user.user_id)
+    return drafts

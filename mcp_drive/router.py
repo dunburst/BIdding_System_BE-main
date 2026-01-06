@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form, Path
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form, Path, Body
 from fastapi.responses import StreamingResponse
 from typing import List, Optional
 from sqlalchemy.orm import Session
@@ -29,6 +29,16 @@ class StatsResponse(BaseModel):
 class CreateFolderRequest(BaseModel):
     parent_id: str
     folder_name: str
+
+# [MỚI] Schema hứng JSON cho API Init Project
+class InitProjectRequest(BaseModel):
+    project_id: int  # Frontend gửi key là projectId (camelCase)
+
+# [MỚI] Schema hứng JSON cho API Clone File
+class CloneFileRequest(BaseModel):
+    source_file_id: str
+    target_folder_id: str
+    newName: Optional[str] = None
 
 # --- HELPER FUNCTION ---
 def _get_folder_tag(folder_name: str) -> Optional[str]:
@@ -156,15 +166,18 @@ def get_folder_content(folder_id: str, current_user: User = Depends(get_current_
     return {"current_folder_id": folder_id, "total_items": len(visible_items), "data": visible_items}
 
 # =================================================================
-# 3. CÁC API NGHIỆP VỤ KHÁC (GIỮ NGUYÊN)
+# 3. CÁC API NGHIỆP VỤ KHÁC
 # =================================================================
 
+# [UPDATED] Nhận JSON Body thay vì Form
 @router.post("/init-project")
 def create_project_structure(
-    project_id: int = Form(...),  # <--- Thay đổi: Nhận ID thay vì Name
+    payload: InitProjectRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    project_id = payload.project_id
+    
     # 1. Tìm dự án trong Database dựa vào ID
     project = db.query(BiddingProject).filter(BiddingProject.id == project_id).first()
     
@@ -180,8 +193,7 @@ def create_project_structure(
     if not drive_result: 
         raise HTTPException(500, "Lỗi tạo cấu trúc dự án trên Google Drive")
     
-    # 4. (Tùy chọn) Cập nhật lại Drive ID vào Database nếu Model có cột này
-    # Lưu ý: Trong model bạn gửi chưa có cột drive_folder_id, bạn nên thêm vào.
+    # 4. Cập nhật lại Drive ID vào Database
     project.drive_folder_id = drive_result["project_id"] 
     db.commit() 
 
@@ -225,32 +237,25 @@ def search_repository(
     folder_id: Optional[str] = None, 
     current_user: User = Depends(get_current_user)
 ):
-    # 1. Gọi hàm search (đã update logic đệ quy bên trong service)
-    # Hàm này giờ đây sẽ trả về list đã được lọc sạch sẽ
     clean_results = drive_service.search_files(query, folder_id=folder_id)
     
-    # 2. Chuẩn bị Cache tên Folder cha để hiển thị đẹp
     parent_names_cache = {} 
     if folder_id:
-        # Lấy tên folder gốc đang search để làm vốn
         root_name_meta = drive_service.get_file_metadata(folder_id)
         if root_name_meta:
              parent_names_cache[folder_id] = root_name_meta.get('name')
 
     item_map = {}
 
-    # 3. Duyệt và map dữ liệu trả về client
     for item in clean_results:
         parents_list = item.get('parents', [])
         direct_parent_id = parents_list[0] if parents_list else None
         
-        # Logic lấy tên Folder cha (để UI hiển thị file này thuộc folder con nào)
         parent_name = "Unknown"
         if direct_parent_id:
             if direct_parent_id in parent_names_cache:
                 parent_name = parent_names_cache[direct_parent_id]
             else:
-                # Gọi nhẹ API lấy tên folder cha trực tiếp
                 meta = drive_service.get_file_metadata(direct_parent_id)
                 if meta:
                     fetched_name = meta.get('name')
@@ -273,21 +278,55 @@ def search_repository(
         }
         item_map[item['id']] = clean_item
 
-    # 4. Trả về dạng phẳng (Flat List) hoặc Tree tùy ý
-    # Vì search đệ quy thường trả về các file rải rác ở các nhánh khác nhau, 
-    # nên trả về dạng List phẳng (Flat) thường dễ hiển thị hơn là cố dựng lại Tree.
-    
     return {
         "query": query, 
         "scope": folder_id if folder_id else "Global",
         "total_matches": len(clean_results), 
-        "data": list(item_map.values()) # Trả về list phẳng
+        "data": list(item_map.values()) 
     }
 
+@router.get("/stats/count", response_model=StatsResponse)
+def get_file_statistics(
+    folder_id: Optional[str] = None, 
+    current_user: User = Depends(get_current_user)
+):
+    stats = drive_service.get_repository_statistics(folder_id)
+    return {
+        "total_repo_files": stats["total_repository_files"],
+        "current_folder_files": stats["current_folder_files"],
+        "folder_id": folder_id
+    }
+
+@router.post("/create-subfolder")
+def create_custom_subfolder(
+    payload: CreateFolderRequest,
+    current_user: User = Depends(get_current_user)
+):
+    if not payload.parent_id or not payload.folder_name:
+        raise HTTPException(status_code=400, detail="Thiếu parent_id hoặc folder_name")
+
+    new_folder_id = drive_service.create_folder(payload.folder_name, payload.parent_id)
+
+    if not new_folder_id:
+        raise HTTPException(status_code=500, detail="Không thể tạo folder trên Google Drive. Vui lòng kiểm tra log.")
+
+    return {
+        "message": "Tạo folder thành công",
+        "data": {
+            "id": new_folder_id,
+            "name": payload.folder_name,
+            "parent_id": payload.parent_id
+        }
+    }
+
+# [UPDATED] Nhận JSON Body thay vì Form
 @router.post("/clone-file")
-def clone_file_to_project(source_file_id: str = Form(...), target_folder_id: str = Form(...), new_name: Optional[str] = Form(None), current_user: User = Depends(get_current_user)):
-    result = drive_service.copy_file(source_file_id, target_folder_id, new_name)
-    if not result: raise HTTPException(500, "Lỗi copy")
+def clone_file_to_project(
+    payload: CloneFileRequest,
+    current_user: User = Depends(get_current_user)
+):
+    result = drive_service.copy_file(payload.source_file_id, payload.target_folder_id, payload.newName)
+    if not result: raise HTTPException(500, "Lỗi copy file trên Google Drive")
     return {"message": "Clone thành công", "file": result}
 
 @router.get("/package-zip/{folder_id}")
