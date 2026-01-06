@@ -157,9 +157,8 @@ class TaskListResponse(BaseModel):
     task_type: Optional[TaskType] = None
     deadline: Optional[datetime] = None
     status: TaskStatus
-    # [THÊM MỚI] Thông tin người/phòng phụ trách
-    assignee: Optional[SimpleUser] = None        # Người thực hiện chính
-    assignments: List[AssignmentLite] = []       # Danh sách phòng ban tham gia
+    # [THÊM MỚI] Thông tin người/phòng phụ trách    # Người thực hiện chính
+    assignments: List[TaskAssignmentResponse] = []       # Danh sách phòng ban tham gia
     
     # Vẫn cần sub_tasks để hiển thị cây thư mục (nếu dùng endpoint /user/me)
     sub_tasks: List['TaskListResponse'] = []
