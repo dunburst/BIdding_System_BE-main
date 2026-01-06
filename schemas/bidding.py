@@ -204,3 +204,7 @@ class ProjectHistoryPagination(BaseModel):
     page: int
     size: int
     pages: int
+
+class HistoryFilterResponse(BaseModel):
+    years: List[int]       # Danh sách các năm (VD: [2025, 2024])
+    investors: List[str]   # Danh sách chủ đầu tư (VD: ["EVN", "Vingroup"])
