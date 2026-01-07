@@ -33,6 +33,7 @@ class BiddingProjectResponse(BiddingProjectBase):
     id: int
     host_id: Optional[int] = None
     bid_team_leader_id: Optional[int] = None
+    drive_folder_id: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     

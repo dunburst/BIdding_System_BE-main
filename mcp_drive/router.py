@@ -1,8 +1,10 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form, Path, Body
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form, Path, Body, BackgroundTasks
+from fastapi.responses import StreamingResponse, FileResponse
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+import os
+import re
 
 from database import get_db
 from models import User, SecurityLevel, BiddingProject
@@ -21,10 +23,16 @@ class TaskAssignmentRequest(BaseModel):
     task_type: str 
     template_file_ids: List[str] 
     
+class FolderStat(BaseModel):
+    id: str
+    name: str
+    count: int
+
 class StatsResponse(BaseModel):
-    total_repo_files: int
-    current_folder_files: Optional[int] = 0
+    total_repo_files: int          # Tổng số file trong folder đang xem (bao gồm cả con cháu)
+    current_folder_files: int      # Số file (cấp 1) nằm ngay ngoài cùng
     folder_id: Optional[str] = None
+    breakdown: List[FolderStat] = [] # <--- [MỚI] Danh sách chi tiết từng folder con
     
 class CreateFolderRequest(BaseModel):
     parent_id: str
@@ -396,23 +404,26 @@ def get_current_user_target_folder(
         "target_folder_id": target_folder_id
     }
     
+# 2. CẬP NHẬT ENDPOINT
 @router.get("/stats/count", response_model=StatsResponse)
 def get_file_statistics(
     folder_id: Optional[str] = None, 
     current_user: User = Depends(get_current_user)
 ):
     """
-    - total_repo_files: Đếm tất cả file (đệ quy) nằm trong GOOGLE_DRIVE_SHARED_FOLDER_ID.
-    - current_folder_files: Đếm file (cấp 1) nằm trong folder_id được chọn.
+    Trả về thống kê số lượng file:
+    1. Tổng số file trong cây thư mục này.
+    2. Số file lẻ ở ngoài.
+    3. Chi tiết số lượng file trong từng folder con (VD: Hồ sơ nhân sự: 10, Pháp lý: 5...)
     """
-    
-    # Hàm này đã được update logic bên trong service.py
-    stats = drive_service.get_repository_statistics(folder_id)
+    # Gọi hàm mới trong service (đã được tối ưu)
+    stats = drive_service.get_detailed_statistics(folder_id)
     
     return {
-        "total_repo_files": stats["total_repository_files"],
-        "current_folder_files": stats["current_folder_files"],
-        "folder_id": folder_id
+        "total_repo_files": stats["total_files"],
+        "current_folder_files": stats["root_files_count"],
+        "folder_id": folder_id,
+        "breakdown": stats["breakdown"]
     }
 
 @router.post("/create-subfolder")
@@ -442,3 +453,69 @@ def create_custom_subfolder(
             "parent_id": payload.parent_id
         }
     }
+    
+# --- HÀM HỖ TRỢ: LÀM SẠCH TÊN FILE ---
+def sanitize_filename(name: str) -> str:
+    """
+    Chuyển tên dự án tiếng Việt có dấu thành tên file an toàn.
+    VD: "Dự án Xây lắp 01/2025" -> "Du_an_Xay_lap_01_2025"
+    """
+    # Bạn có thể dùng thư viện unidecode nếu muốn bỏ dấu tiếng Việt
+    # Ở đây dùng regex đơn giản để giữ an toàn
+    safe_name = re.sub(r'[\\/*?:"<>|]', "", name) # Bỏ ký tự cấm của Windows/Linux
+    safe_name = safe_name.replace(" ", "_")
+    return safe_name
+
+# --- API MỚI: DOWNLOAD ZIP THEO PROJECT ID ---
+@router.get("/download-project-zip/{project_id}")
+def download_project_by_id(
+    project_id: int, 
+    background_tasks: BackgroundTasks, 
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    1. Tìm Project trong DB theo ID.
+    2. Lấy drive_folder_id.
+    3. Zip toàn bộ và trả về.
+    """
+    # 1. Truy vấn Database để lấy thông tin Dự án
+    project = db.query(BiddingProject).filter(BiddingProject.id == project_id).first()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy dự án ID: {project_id}")
+    
+    # 2. Kiểm tra xem dự án đã có Folder Drive chưa
+    folder_id = project.drive_folder_id
+    if not folder_id:
+        raise HTTPException(status_code=400, detail="Dự án này chưa được khởi tạo thư mục trên Google Drive.")
+
+    # 3. Gọi Service để nén file (Hàm zip_folder_recursive đã viết ở bước trước)
+    # Lưu ý: Hàm này tốn thời gian, với folder lớn client sẽ phải chờ server xử lý
+    print(f"⏳ Đang nén folder ID: {folder_id} cho dự án: {project.name}")
+    zip_path = drive_service.zip_folder_recursive(folder_id)
+    
+    if not zip_path or not os.path.exists(zip_path):
+        raise HTTPException(status_code=500, detail="Lỗi trong quá trình nén file từ Google Drive.")
+
+    # 4. Định nghĩa tên file tải về (Lấy theo tên dự án cho đẹp)
+    safe_name = sanitize_filename(project.name)
+    zip_filename = f"{safe_name}.zip"
+
+    # 5. Dọn dẹp file tạm sau khi gửi xong
+    def cleanup_temp_file(path: str):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+                print(f"🧹 Đã xóa file tạm: {path}")
+        except Exception as e:
+            print(f"⚠️ Lỗi xóa file tạm: {e}")
+
+    background_tasks.add_task(cleanup_temp_file, zip_path)
+
+    # 6. Trả về file
+    return FileResponse(
+        path=zip_path, 
+        filename=zip_filename, 
+        media_type='application/zip'
+    )
