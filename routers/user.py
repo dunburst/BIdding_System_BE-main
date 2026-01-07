@@ -91,8 +91,14 @@ def upload_user_avatar(
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # 3. Validate file ảnh (đơn giản)
-    if not file.content_type.startswith("image/"):
+    # --- ĐOẠN SỬA LỖI Ở ĐÂY ---
+    # Lấy content_type, nếu là None thì gán tạm là chuỗi rỗng để không lỗi hàm startswith
+    # Hoặc gán 'application/octet-stream' nếu muốn có giá trị mặc định
+    file_type = file.content_type or "" 
+
+    # 3. Validate file ảnh
+    # Kiểm tra file_type (đã chắc chắn là string) thay vì file.content_type
+    if not file_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File tải lên phải là hình ảnh (jpg, png, ...)")
 
     try:
@@ -109,7 +115,7 @@ def upload_user_avatar(
             file_data=file_stream,
             length=file_size,
             object_name=object_name,
-            content_type=file.content_type,
+            content_type=file_type,
             bucket_name="files" 
         )
         
