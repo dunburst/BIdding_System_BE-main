@@ -32,6 +32,22 @@ def get_packages(
 ):
     query = db.query(BiddingPackage)
     
+    # --- [MỚI] JOIN VỚI BẢNG DỰ ÁN ĐỂ CHECK TRẠNG THÁI ---
+    # Dùng outerjoin để giữ lại cả những gói thầu chưa có dự án (project_id = NULL)
+    query = query.outerjoin(BiddingProject, BiddingPackage.project_id == BiddingProject.id)
+    
+    # --- [MỚI] ĐIỀU KIỆN LỌC BỎ "COMPLETED" ---
+    # Logic: Chỉ lấy gói thầu nếu:
+    # 1. Chưa có dự án (BiddingProject.id là None)
+    # HOẶC
+    # 2. Đã có dự án nhưng trạng thái KHÁC "COMPLETED"
+    query = query.filter(
+        or_(
+            BiddingProject.status != "COMPLETED",
+            BiddingProject.id.is_(None)
+        )
+    )
+    
     # --- Tìm kiếm ---
     if search_query:
         search = f"%{search_query}%"

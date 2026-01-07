@@ -740,7 +740,7 @@ def run_scheduler_system():
 if __name__ == "__main__":
     # print("!!! ĐANG CHẠY CHẾ ĐỘ THỦ CÔNG (KHÔNG PHẢI SCHEDULER) !!!") 
     
-    # target_url = "https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=detail-v2&type=es-notify-contractor&stepCode=notify-contractor-step-4-kqlcnt&id=9ae42552-fa18-4da3-aa81-42acaf003318&notifyId=9ae42552-fa18-4da3-aa81-42acaf003318&inputResultId=dc43eb8f-6d56-4867-a30e-8be02b4763e2&bidOpenId=0df6ca2c-caae-4431-bb5b-bbdc82ead000&techReqId=undefined&bidPreNotifyResultId=undefined&bidPreOpenId=undefined&processApply=LDT&bidMode=1_MTHS&notifyNo=IB2300376662&planNo=PL2300259343&pno=undefined&step=tbmt&isInternet=1&caseKHKQ=undefined&bidForm=CHCT" # (Link của bạn)
+    # target_url = "https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=detail-v2&type=es-notify-contractor&stepCode=notify-contractor-step-1-tbmt&id=75bd7be1-2709-4dc5-bebb-7d8ee38d11fe&notifyId=75bd7be1-2709-4dc5-bebb-7d8ee38d11fe&inputResultId=undefined&bidOpenId=undefined&techReqId=undefined&bidPreNotifyResultId=undefined&bidPreOpenId=undefined&processApply=LDT&bidMode=1_MTHS&notifyNo=IB2500638706&planNo=PL2500369345&pno=undefined&step=tbmt&isInternet=1&caseKHKQ=undefined&bidForm=DTRR" # (Link của bạn)
 
     # print(f"🚀 BẮT ĐẦU CHẠY NGAY LẬP TỨC CHO LINK:\n{target_url}")
     
