@@ -9,7 +9,9 @@ from models import TaskStatus, AssignmentType, TaskPriority, TaskType, TaskTag
 
 # Định nghĩa Schema nhỏ để lấy tên
 class SimpleUser(BaseModel):
+    user_id: int
     full_name: str
+    avatar_url: Optional[str] = None
     class Config:
         from_attributes = True
 
