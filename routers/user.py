@@ -10,6 +10,7 @@ from schemas.task import TaskResponse, TaskListResponse
 from utils.security import get_current_user
 from models import User, UserRole 
 import cruds.task as task_crud
+from urllib.parse import urlparse, unquote
 from minio_client import minio_handler # Import MinIO Handler
 
 router = APIRouter(
@@ -70,11 +71,11 @@ def update_user(user_id: int, user_in: schemas.UserUpdate, db: Session = Depends
 def upload_my_avatar(
     file: UploadFile = File(...), 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user) # Tự động lấy user từ Token
+    current_user: User = Depends(get_current_user)
 ):
     """
-    Upload ảnh đại diện cho user đang đăng nhập.
-    - Path MinIO: files/avatars/{user_id}_{filename}
+    Upload ảnh đại diện. Nếu đã có ảnh cũ thì xóa ảnh cũ trên MinIO trước khi up ảnh mới.
+    Bucket: files
     """
     user_id = current_user.user_id 
     
@@ -84,33 +85,57 @@ def upload_my_avatar(
         raise HTTPException(status_code=400, detail="File tải lên phải là hình ảnh (jpg, png, ...)")
 
     try:
-        # 2. Đọc file
+        # --- [MỚI] LOGIC XÓA ẢNH CŨ ---
+        if current_user.avatar_url:
+            try:
+                # URL dạng: http://localhost:9000/files/avatars/1_abc.jpg
+                # Cần lấy ra: avatars/1_abc.jpg
+                
+                # Phân tích URL
+                parsed_url = urlparse(current_user.avatar_url)
+                # parsed_url.path sẽ là: /files/avatars/1_abc.jpg
+                
+                path_parts = parsed_url.path.lstrip("/").split("/", 1)
+                # path_parts sẽ là: ['files', 'avatars/1_abc.jpg']
+                
+                if len(path_parts) == 2 and path_parts[0] == "files":
+                    old_object_name = unquote(path_parts[1]) # decode các ký tự đặc biệt
+                    
+                    # Gọi hàm xóa
+                    minio_handler.delete_file(object_name=old_object_name, bucket_name="files")
+            except Exception as e:
+                # Nếu xóa lỗi thì chỉ log lại, không chặn user upload ảnh mới
+                print(f"Không thể xóa ảnh cũ: {e}")
+        # ------------------------------
+
+        # 2. Đọc file mới
         file_content = file.file.read()
         file_stream = io.BytesIO(file_content)
         file_size = len(file_content)
         
-        # 3. Đặt tên file: avatars/{user_id}_{filename}
-        # Folder 'avatars' sẽ nằm trong bucket 'files'
+        # 3. Đặt tên file mới: avatars/{user_id}_{filename}
         object_name = f"avatars/{user_id}_{file.filename}"
         
-        # 4. Upload lên MinIO (Sử dụng bucket 'files')
+        # 4. Upload lên MinIO (Bucket 'files')
         avatar_url = minio_handler.upload_file_obj(
             file_data=file_stream,
             length=file_size,
             object_name=object_name,
             content_type=file_type,
-            bucket_name="files"  # <--- CHỐT LẠI LÀ DÙNG BUCKET FILES
+            bucket_name="files" 
         )
         
         if not avatar_url:
              raise HTTPException(status_code=500, detail="Lỗi khi upload ảnh lên MinIO")
 
-        # 5. Cập nhật URL vào Database
+        # 5. Cập nhật URL mới vào Database
         user_update = schemas.UserUpdate(avatar_url=avatar_url)
         updated_user = crud_user.update_user(db, user_id=user_id, user_update=user_update)
         
         return updated_user
 
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi hệ thống: {str(e)}")
 
