@@ -111,6 +111,7 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(UnicodeText(100))
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.ENGINEER, nullable=False)
     status: Mapped[bool] = mapped_column(Boolean, default=True)
+    avatar_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     
     # --- CÁC TRƯỜNG MỚI CHO ABAC ---
     org_unit_id: Mapped[Optional[int]] = mapped_column(ForeignKey("organizational_units.unit_id"))

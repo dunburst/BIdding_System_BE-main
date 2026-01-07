@@ -1,9 +1,11 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc
-from models import BiddingPackage, BiddingTask, PackageStatus, BiddingPackageFile
+from models import BiddingPackage, BiddingTask, PackageStatus, BiddingPackageFile, BiddingProject
 from schemas import bidding as schemas
 from typing import Optional, List
 from datetime import datetime
+from sqlalchemy import extract
+from sqlalchemy.orm import contains_eager
 # --- Gói thầu (Package) ---
 
 def get_package(db: Session, hsmt_id: int):
@@ -29,6 +31,22 @@ def get_packages(
     status: Optional[PackageStatus] = None
 ):
     query = db.query(BiddingPackage)
+    
+    # --- [MỚI] JOIN VỚI BẢNG DỰ ÁN ĐỂ CHECK TRẠNG THÁI ---
+    # Dùng outerjoin để giữ lại cả những gói thầu chưa có dự án (project_id = NULL)
+    query = query.outerjoin(BiddingProject, BiddingPackage.project_id == BiddingProject.id)
+    
+    # --- [MỚI] ĐIỀU KIỆN LỌC BỎ "COMPLETED" ---
+    # Logic: Chỉ lấy gói thầu nếu:
+    # 1. Chưa có dự án (BiddingProject.id là None)
+    # HOẶC
+    # 2. Đã có dự án nhưng trạng thái KHÁC "COMPLETED"
+    query = query.filter(
+        or_(
+            BiddingProject.status != "COMPLETED",
+            BiddingProject.id.is_(None)
+        )
+    )
     
     # --- Tìm kiếm ---
     if search_query:
@@ -168,3 +186,86 @@ def get_package_by_project_id(db: Session, project_id: int):
     Tìm gói thầu thuộc về một dự án cụ thể.
     """
     return db.query(BiddingPackage).filter(BiddingPackage.project_id == project_id).first()
+
+def get_project_history(
+    db: Session, 
+    skip: int = 0, 
+    limit: int = 100, 
+    year: Optional[int] = None,
+    linh_vuc: Optional[str] = None,
+    chu_dau_tu: Optional[str] = None
+):
+    """
+    Lấy lịch sử dự án COMPLETED, kèm theo Drive Folder ID.
+    """
+    
+    # 1. Query & Join
+    # Thêm .options(contains_eager(...)) để load luôn dữ liệu Project
+    query = db.query(BiddingPackage)\
+              .join(BiddingProject, BiddingPackage.project_id == BiddingProject.id)\
+              .options(contains_eager(BiddingPackage.project)) 
+
+    # 2. Filter Status
+    query = query.filter(BiddingProject.status == "COMPLETED")
+
+    # --- Các bộ lọc ---
+    if year:
+        query = query.filter(extract('year', BiddingPackage.thoi_diem_dong_thau) == year)
+    
+    if linh_vuc:
+        query = query.filter(BiddingPackage.linh_vuc.ilike(f"%{linh_vuc}%"))
+
+    if chu_dau_tu:
+        query = query.filter(BiddingPackage.chu_dau_tu.ilike(f"%{chu_dau_tu}%"))
+
+    # Đếm tổng
+    total = query.count()
+    
+    # Sắp xếp & Phân trang
+    items = query.order_by(BiddingPackage.thoi_diem_dong_thau.desc())\
+                 .offset(skip)\
+                 .limit(limit)\
+                 .all()
+
+    return items, total
+
+def get_history_filters(db: Session):
+    """
+    Lấy danh sách các Năm và Chủ đầu tư duy nhất từ các dự án COMPLETED
+    để dùng cho Dropdown lọc.
+    """
+    
+    # --- 1. Lấy danh sách NĂM (Years) ---
+    # Query: Select DISTINCT YEAR(thoi_diem_dong_thau) from ... where status = 'COMPLETED'
+    years_query = db.query(extract('year', BiddingPackage.thoi_diem_dong_thau))\
+        .join(BiddingProject, BiddingPackage.project_id == BiddingProject.id)\
+        .filter(
+            BiddingProject.status == "COMPLETED",
+            BiddingPackage.thoi_diem_dong_thau.isnot(None) # Loại bỏ gói thầu chưa có ngày
+        )\
+        .distinct()\
+        .order_by(extract('year', BiddingPackage.thoi_diem_dong_thau).desc())\
+        .all()
+    
+    # Kết quả trả về dạng danh sách tuple: [(2025,), (2024,)] -> Cần flatten thành [2025, 2024]
+    unique_years = [y[0] for y in years_query if y[0] is not None]
+
+    # --- 2. Lấy danh sách CHỦ ĐẦU TƯ (Investors) ---
+    # Query: Select DISTINCT chu_dau_tu from ... where status = 'COMPLETED'
+    investors_query = db.query(BiddingPackage.chu_dau_tu)\
+        .join(BiddingProject, BiddingPackage.project_id == BiddingProject.id)\
+        .filter(
+            BiddingProject.status == "COMPLETED",
+            BiddingPackage.chu_dau_tu.isnot(None)
+        )\
+        .distinct()\
+        .order_by(BiddingPackage.chu_dau_tu.asc())\
+        .all()
+        
+    # Flatten: [('EVN',), ('Viettel',)] -> ['EVN', 'Viettel']
+    unique_investors = [i[0] for i in investors_query if i[0]]
+
+    return {
+        "years": unique_years,
+        "investors": unique_investors
+    }

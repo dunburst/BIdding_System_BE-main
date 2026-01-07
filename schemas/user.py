@@ -7,6 +7,7 @@ class UserBase(BaseModel):
     email: EmailStr
     full_name: str
     role: UserRole = UserRole.ENGINEER
+    avatar_url: Optional[str] = None
     
     # [MỚI] Các trường ABAC
     org_unit_id: Optional[int] = Field(None, description="ID Phòng/Ban")
@@ -22,7 +23,7 @@ class UserCreate(UserBase):
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     role: Optional[UserRole] = None
-    
+    avatar_url: Optional[str] = None
     org_unit_id: Optional[int] = None
     job_title: Optional[str] = None
     security_clearance: Optional[SecurityLevel] = None

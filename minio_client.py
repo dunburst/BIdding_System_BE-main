@@ -29,7 +29,7 @@ class MinIOHandler:
             # Tạo bucket nếu chưa có
             if not self.client.bucket_exists(MINIO_BUCKET):
                 self.client.make_bucket(MINIO_BUCKET)
-                logger.info(f"Đã tạo bucket: {MINIO_BUCKET}") 
+                logger.info(f"Đã tạo bucket: {MINIO_BUCKET}")
             # 2. [THÊM] Tạo luôn bucket "jkancon" lúc khởi tạo cho chắc ăn
             if not self.client.bucket_exists(MINIO_BUCKET_JKANCON):
                 self.client.make_bucket(MINIO_BUCKET_JKANCON)
@@ -39,13 +39,13 @@ class MinIOHandler:
         except Exception as e:
             logger.error(f"-> MinIO LỖI KẾT NỐI: {e}")
 
-    def upload_file(self, file_path, object_name, content_type="application/octet-stream",bucket_name=None):
+    def upload_file(self, file_path, object_name, content_type="application/octet-stream", bucket_name=None):
         if not self.client:
             return None
         
         try:
             target_bucket = bucket_name if bucket_name else MINIO_BUCKET
-            # Upload file lên MinIO (MinIO hỗ trợ UTF-8 nên tên file tiếng Việt vẫn OK)
+            # Upload file lên MinIO
             self.client.fput_object(
                 target_bucket,
                 object_name,
@@ -53,10 +53,8 @@ class MinIOHandler:
                 content_type=content_type
             )
             
-            # [QUAN TRỌNG] Mã hóa URL để đảm bảo an toàn tuyệt đối khi lưu vào DB và click link
-            # safe='/' để giữ lại dấu gạch chéo phân cách thư mục
+            # Mã hóa URL
             safe_object_name = quote(object_name, safe='/')
-
             protocol = "https" if MINIO_SECURE else "http"
             url = f"{protocol}://{MINIO_ENDPOINT}/{target_bucket}/{safe_object_name}"
             return url
@@ -64,18 +62,41 @@ class MinIOHandler:
             logger.error(f"-> MinIO Upload Lỗi: {e}")
             return None
 
+    # [MỚI] Hàm này dùng để upload file từ API (dạng bytes/stream)
+    def upload_file_obj(self, file_data, length, object_name, content_type="application/octet-stream", bucket_name=None):
+        if not self.client:
+            return None
+        
+        try:
+            target_bucket = bucket_name if bucket_name else MINIO_BUCKET
+            
+            # Sử dụng put_object thay vì fput_object
+            self.client.put_object(
+                bucket_name=target_bucket,
+                object_name=object_name,
+                data=file_data,
+                length=length,
+                content_type=content_type
+            )
+            
+            # Tạo URL trả về
+            safe_object_name = quote(object_name, safe='/')
+            protocol = "https" if MINIO_SECURE else "http"
+            url = f"{protocol}://{MINIO_ENDPOINT}/{target_bucket}/{safe_object_name}"
+            return url
+        except Exception as e:
+            logger.error(f"-> MinIO Upload Stream Lỗi: {e}")
+            return None
+
     def download_file(self, object_name, local_file_path):
         """
         Tải file từ MinIO về máy local.
-        :param object_name: Đường dẫn file trên MinIO (VD: ho_so_2025/file.pdf)
-        :param local_file_path: Đường dẫn lưu file trên máy (VD: ./temp/file.pdf)
         """
         if not self.client:
             logger.error("Client MinIO chưa được khởi tạo.")
             return False
         
         try:
-            # Sử dụng hàm fget_object của thư viện Minio để tải file
             self.client.fget_object(
                 bucket_name=MINIO_BUCKET,
                 object_name=object_name,
@@ -90,7 +111,6 @@ class MinIOHandler:
     def delete_file(self, object_name, bucket_name="jkancon"):
         """
         Xóa file trên MinIO.
-        :param object_name: Đường dẫn file (VD: 102/bao_cao.pdf)
         """
         if not self.client:
             return False
@@ -114,17 +134,12 @@ class MinIOHandler:
             # 1. Liệt kê tất cả đối tượng
             objects_to_delete = self.client.list_objects(bucket_name, prefix=folder_prefix, recursive=True)
             
-            # --- [SỬA LỖI TẠI ĐÂY] ---
-            # Thay vì dùng map/lambda, ta dùng List Comprehension.
-            # Logic: "if obj.object_name" đảm bảo tên file không phải None, lúc đó Type Checker sẽ hiểu đây chắc chắn là str.
             delete_list = [
                 DeleteObject(obj.object_name) 
                 for obj in objects_to_delete 
                 if obj.object_name
             ]
-            # -------------------------
             
-            # Nếu folder rỗng (không có file nào để xóa) thì return True luôn
             if not delete_list:
                 return True
 
@@ -145,4 +160,5 @@ class MinIOHandler:
         except Exception as e:
             logger.error(f"-> MinIO Delete Folder Error: {e}")
             return False
+
 minio_handler = MinIOHandler()

@@ -1,5 +1,5 @@
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional, List
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing import Optional, List, Any
 from datetime import datetime
 from decimal import Decimal
 from models import PackageStatus, TaskStatus
@@ -161,3 +161,60 @@ class BiddingPackagePagination(BaseModel):
     page: int                           # Trang hiện tại
     size: int                           # Kích thước trang (limit)
     pages: int                          # Tổng số trang
+    
+class ProjectHistoryResponse(BaseModel):
+    hsmt_id: int
+    ma_tbmt: str
+    ten_du_an: str
+    chu_dau_tu: str
+    linh_vuc: str
+    # [MỚI] Field kết quả muốn hiển thị
+    folder_id: Optional[str] = None
+
+    # [MỚI] Field trung gian để Pydantic đọc quan hệ từ ORM (nhưng ẩn khỏi JSON)
+    project: Optional[Any] = Field(default=None, exclude=True)
+    
+    # --- SỬA Ở ĐÂY ---
+    # 1. Khai báo thoi_diem_dong_thau (có thể ẩn khỏi JSON output nếu muốn gọn)
+    thoi_diem_dong_thau: Optional[datetime] = Field(default=None, exclude=True) 
+    
+    # 2. Khai báo created_at để Pydantic lấy dữ liệu từ DB (nhưng ẩn khỏi JSON trả về)
+    created_at: Optional[datetime] = Field(default=None, exclude=True)
+
+    # 3. Trường kết quả (Năm)
+    nam: Optional[int] = None
+
+    @model_validator(mode='after')
+    def extract_year_from_date(self):
+        # Ưu tiên lấy năm từ thời điểm đóng thầu
+        if self.thoi_diem_dong_thau:
+            self.nam = self.thoi_diem_dong_thau.year
+        
+        # Nếu không có ngày đóng thầu, lấy fallback từ ngày tạo (created_at)
+        elif self.created_at:
+             self.nam = self.created_at.year
+             
+        # Nếu cả 2 đều None, gán mặc định là năm hiện tại (tùy chọn)
+        else:
+             self.nam = datetime.now().year
+            
+        # 2. [MỚI] Logic lấy DRIVE FOLDER ID từ quan hệ Project
+        # Pydantic đã tự động map relationship 'project' vào self.project nhờ dòng khai báo ở trên
+        if self.project and hasattr(self.project, 'drive_folder_id'):
+            self.folder_id = self.project.drive_folder_id
+             
+        return self
+
+    class Config:
+        from_attributes = True
+# Schema cho phân trang (Pagination)
+class ProjectHistoryPagination(BaseModel):
+    items: List[ProjectHistoryResponse]
+    total: int
+    page: int
+    size: int
+    pages: int
+
+class HistoryFilterResponse(BaseModel):
+    years: List[int]       # Danh sách các năm (VD: [2025, 2024])
+    investors: List[str]   # Danh sách chủ đầu tư (VD: ["EVN", "Vingroup"])
