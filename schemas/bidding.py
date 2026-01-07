@@ -169,7 +169,7 @@ class ProjectHistoryResponse(BaseModel):
     chu_dau_tu: str
     linh_vuc: str
     # [MỚI] Field kết quả muốn hiển thị
-    drive_folder_id: Optional[str] = None
+    folder_id: Optional[str] = None
 
     # [MỚI] Field trung gian để Pydantic đọc quan hệ từ ORM (nhưng ẩn khỏi JSON)
     project: Optional[Any] = Field(default=None, exclude=True)
@@ -201,7 +201,7 @@ class ProjectHistoryResponse(BaseModel):
         # 2. [MỚI] Logic lấy DRIVE FOLDER ID từ quan hệ Project
         # Pydantic đã tự động map relationship 'project' vào self.project nhờ dòng khai báo ở trên
         if self.project and hasattr(self.project, 'drive_folder_id'):
-            self.drive_folder_id = self.project.drive_folder_id
+            self.folder_id = self.project.drive_folder_id
              
         return self
 

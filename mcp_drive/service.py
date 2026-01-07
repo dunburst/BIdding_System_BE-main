@@ -5,6 +5,7 @@ from typing import List, Optional, Any
 import httplib2
 import urllib3
 import asyncio
+import tempfile
 
 # --- CÁC IMPORT CHÍNH ---
 from google.oauth2.credentials import Credentials 
@@ -637,6 +638,103 @@ class GoogleDriveService:
         except Exception as e:
             print(f"❌ Lỗi zip folder: {e}")
             return None
+        
+    # --- [HÀM MỚI] Tải và nén toàn bộ Folder (Đệ quy + Temp File) ---
+    def zip_folder_recursive(self, root_folder_id: str):
+        """
+        Nén toàn bộ folder và sub-folder thành file zip lưu tạm trên ổ cứng.
+        Trả về đường dẫn file tạm.
+        """
+        if not self.service:
+            return None
+
+        # 1. Tạo file tạm trên ổ cứng để tránh tràn RAM
+        temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+        temp_zip_path = temp_zip.name
+        temp_zip.close() # Đóng lại để zipfile mở ra ghi
+
+        try:
+            with zipfile.ZipFile(temp_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                
+                # 2. Sử dụng hàng đợi để duyệt cây thư mục (BFS)
+                # Cấu trúc item trong queue: (folder_id, đường_dẫn_tương_đối_trong_zip)
+                queue = deque([(root_folder_id, "")])
+                
+                # Cache tên file để xử lý trùng lặp
+                # Key: "path/to/folder/", Value: {filename1, filename2...}
+                path_cache = {} 
+
+                while queue:
+                    current_folder_id, current_path = queue.popleft()
+                    
+                    # Lấy danh sách file trong folder hiện tại
+                    # Lưu ý: pageSize=1000 để lấy tối đa, cần loop nếu folder >1000 file (đã tối giản cho demo)
+                    query = f"'{current_folder_id}' in parents and trashed=false"
+                    results = self.service.files().list(
+                        q=query, 
+                        fields="files(id, name, mimeType)", 
+                        pageSize=1000
+                    ).execute()
+                    
+                    items = results.get('files', [])
+
+                    for item in items:
+                        item_id = item['id']
+                        original_name = item['name']
+                        item_type = item['mimeType']
+                        
+                        # Xử lý trùng tên file trong cùng 1 folder (Google cho phép, Zip thì không)
+                        safe_name = original_name
+                        if current_path not in path_cache:
+                            path_cache[current_path] = set()
+                        
+                        counter = 1
+                        while safe_name in path_cache[current_path]:
+                            name_parts = os.path.splitext(original_name)
+                            safe_name = f"{name_parts[0]}_{counter}{name_parts[1]}"
+                            counter += 1
+                        path_cache[current_path].add(safe_name)
+
+                        # Tạo đường dẫn đầy đủ trong file zip
+                        zip_entry_path = os.path.join(current_path, safe_name)
+
+                        # TRƯỜNG HỢP 1: LÀ FOLDER
+                        if item_type == 'application/vnd.google-apps.folder':
+                            # Thêm vào hàng đợi để duyệt tiếp
+                            queue.append((item_id, zip_entry_path))
+                            # Tạo folder rỗng trong zip (để folder trống vẫn hiện diện)
+                            zip_info = zipfile.ZipInfo(zip_entry_path + "/")
+                            zip_file.writestr(zip_info, "")
+                            print(f"📂 Added folder: {zip_entry_path}")
+
+                        # TRƯỜNG HỢP 2: LÀ FILE
+                        else:
+                            print(f"⬇️ Downloading: {zip_entry_path}")
+                            try:
+                                request = self.service.files().get_media(fileId=item_id)
+                                file_io = io.BytesIO()
+                                downloader = MediaIoBaseDownload(file_io, request)
+                                
+                                done = False
+                                while not done:
+                                    _, done = downloader.next_chunk()
+                                
+                                file_io.seek(0)
+                                # Ghi nội dung vào zip
+                                zip_file.writestr(zip_entry_path, file_io.read())
+                                file_io.close()
+                            except Exception as e:
+                                print(f"❌ Lỗi tải file {original_name}: {e}")
+                                # Có thể ghi 1 file text báo lỗi vào zip thay thế
+                                zip_file.writestr(zip_entry_path + ".ERROR.txt", f"Failed to download: {str(e)}")
+
+            return temp_zip_path
+
+        except Exception as e:
+            print(f"❌ Critical Error Zipping: {e}")
+            if os.path.exists(temp_zip_path):
+                os.remove(temp_zip_path) # Xóa file tạm nếu lỗi
+            return None
 
     def get_subfolder_id_by_name(self, project_id: str, folder_keyword: str):
         if not self.service: return None
@@ -783,5 +881,115 @@ class GoogleDriveService:
             "total_repository_files": total_recursive, # <--- Giờ nó sẽ là tổng file của folder bạn chọn
             "current_folder_files": current_folder_count
         }
+        
+    # --- [HÀM MỚI] THỐNG KÊ CHI TIẾT ---
+    def get_detailed_statistics(self, root_folder_id: Optional[str] = None):
+        """
+        Tính toán thống kê chi tiết:
+        - Tổng file.
+        - Số file trong từng folder con cấp 1.
+        
+        Logic tối ưu: Chỉ gọi API list file 1 lần duy nhất để lấy toàn bộ map, 
+        sau đó tính toán trong RAM bằng đệ quy.
+        """
+        target_root = root_folder_id if root_folder_id else self.ROOT_FOLDER_ID
+        
+        if not self.service or not target_root: 
+            return {"total_files": 0, "root_files_count": 0, "breakdown": []}
+
+        try:
+            # BƯỚC 1: LẤY TOÀN BỘ DỮ LIỆU CÂY THƯ MỤC (Chỉ 1 lần quét)
+            # Query tìm tất cả file/folder là hậu duệ của target_root thì rất khó với API Drive chuẩn.
+            # Cách tốt nhất: Tìm tất cả file không ở thùng rác, sau đó lọc cha-con trong code.
+            # (Lưu ý: Nếu kho quá lớn >100k file, cần giải pháp index DB riêng. Với <10k file, cách này vẫn nhanh).
+            
+            # Để tối ưu, ta chỉ lấy id, name, parents, mimeType
+            query = "trashed = false" 
+            
+            # Hàm list_all_files này bạn có thể tận dụng logic của count_files_recursive_under_folder cũ
+            # nhưng sửa lại để return list thay vì count.
+            all_items = []
+            page_token = None
+            
+            while True:
+                response = self.service.files().list(
+                    q=query,
+                    fields='nextPageToken, files(id, name, parents, mimeType)',
+                    pageSize=1000,
+                    pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True
+                ).execute()
+                all_items.extend(response.get('files', []))
+                page_token = response.get('nextPageToken')
+                if not page_token: break
+
+            # BƯỚC 2: XÂY DỰNG CÂY (PARENT MAP) TRONG RAM
+            # Key: Parent_ID -> Value: List of Children Items
+            parents_map = defaultdict(list)
+            item_map = {} # Để tra cứu thông tin item theo ID
+
+            for item in all_items:
+                item_map[item['id']] = item
+                parents = item.get('parents', [])
+                if parents:
+                    # Một file có thể có nhiều cha, nhưng ta lấy cha đầu tiên làm chính
+                    p_id = parents[0]
+                    parents_map[p_id].append(item)
+
+            # BƯỚC 3: HÀM ĐỆ QUY ĐẾM FILE (INTERNAL)
+            def count_files_in_subtree(current_id):
+                count = 0
+                # Lấy danh sách con trực tiếp của folder này từ map
+                children = parents_map.get(current_id, [])
+                
+                for child in children:
+                    is_folder = 'application/vnd.google-apps.folder' in child['mimeType']
+                    if is_folder:
+                        # Nếu là folder -> Đệ quy cộng dồn con cháu nó
+                        count += count_files_in_subtree(child['id'])
+                    else:
+                        # Nếu là file -> Cộng 1
+                        count += 1
+                return count
+
+            # BƯỚC 4: TÍNH TOÁN KẾT QUẢ
+            
+            # A. Tổng số file toàn bộ cây (Total recursive)
+            total_files = count_files_in_subtree(target_root)
+            
+            # B. Xử lý breakdown cho các con trực tiếp của Root
+            breakdown = []
+            root_files_count = 0 # Số file lẻ nằm ngay ở root
+            
+            direct_children = parents_map.get(target_root, [])
+            
+            for child in direct_children:
+                is_folder = 'application/vnd.google-apps.folder' in child['mimeType']
+                
+                if is_folder:
+                    # Nếu là Folder con (VD: Hồ sơ nhân sự) -> Tính tổng recursive bên trong nó
+                    sub_count = count_files_in_subtree(child['id'])
+                    breakdown.append({
+                        "id": child['id'],
+                        "name": child['name'],
+                        "count": sub_count
+                    })
+                else:
+                    # Nếu là File lẻ -> Cộng vào root_files_count
+                    root_files_count += 1
+            
+            # Sắp xếp breakdown theo tên cho đẹp
+            breakdown.sort(key=lambda x: x['name'])
+
+            return {
+                "total_files": total_files,
+                "root_files_count": root_files_count,
+                "breakdown": breakdown
+            }
+
+        except Exception as e:
+            print(f"❌ Lỗi thống kê chi tiết: {e}")
+            return {"total_files": 0, "root_files_count": 0, "breakdown": []}
 
 drive_service = GoogleDriveService()
