@@ -145,6 +145,12 @@ def _map_task_recursive(task_orm) -> TaskListResponse:
     # Lưu ý: Cần gọi lại chính hàm này cho các con để đảm bảo con cũng được convert đúng kiểu
     if task_orm.sub_tasks:
         schema.sub_tasks = [_map_task_recursive(sub) for sub in task_orm.sub_tasks]
+        # --- [LOGIC MỚI BẮT ĐẦU] ---
+        # Kiểm tra: Nếu có con VÀ tất cả con đều COMPLETED
+        if schema.sub_tasks and all(sub.status == TaskStatus.COMPLETED for sub in schema.sub_tasks):
+            # Gán trạng thái hiển thị của cha thành COMPLETED
+            schema.status = TaskStatus.COMPLETED
+        # --- [LOGIC MỚI KẾT THÚC] ---
     else:
         schema.sub_tasks = []
         

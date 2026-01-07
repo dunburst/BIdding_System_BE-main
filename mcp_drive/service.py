@@ -78,6 +78,7 @@ class GoogleDriveService:
     def __init__(self):
         self.service: Any = None
         self.ROOT_FOLDER_ID: Optional[str] = os.getenv("GOOGLE_DRIVE_SHARED_FOLDER_ID")
+        self.PROJECT_CONTAINER_ID: Optional[str] = os.getenv("GOOGLE_PROJECT_CONTAINER_ID")
         
         client_id = os.getenv("GOOGLE_CLIENT_ID")
         client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
@@ -169,8 +170,13 @@ class GoogleDriveService:
 
     # [CẬP NHẬT 2] Sửa hàm create_project_tree với cấu trúc và tag mới
     def create_project_tree(self, project_name: str):
-        # 1. Tạo folder gốc dự án
-        project_id = self.create_folder(project_name, self.ROOT_FOLDER_ID)
+        # 1. Xác định nơi chứa dự án
+        # Nếu có cấu hình Container riêng thì dùng, nếu không thì dùng Root mặc định
+        target_parent_id = self.PROJECT_CONTAINER_ID if self.PROJECT_CONTAINER_ID else self.ROOT_FOLDER_ID
+        
+        # 2. Tạo folder gốc dự án (nằm trong target_parent_id)
+        print(f"🔨 Init project '{project_name}' inside folder ID: {target_parent_id}")
+        project_id = self.create_folder(project_name, target_parent_id)
         if not project_id: return None
 
         # 2. Định nghĩa Cấu trúc Folder + Tag

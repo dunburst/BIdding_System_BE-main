@@ -9,7 +9,7 @@ from utils.permission_service import get_user_allowed_tags_with_name
 from mcp_drive.service import drive_service
 from mcp_drive.router import _get_folder_tag
 from cruds.project import _get_keywords_from_tags
-
+from schemas.user import UserResponse
 # Giả sử bạn có file dependencies để lấy DB session (get_db)
 from database import get_db 
 import cruds.project as cruds
@@ -277,6 +277,27 @@ def stop_project(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Lỗi khi dừng dự án: {str(e)}")
+
+@router.get("/{project_id}/personnel", response_model=List[UserResponse])
+def get_project_personnel_list(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Lấy danh sách nhân sự thực hiện dự án.
+    - Bao gồm: Trưởng nhóm thầu, Người thực hiện (Assignee), Người phối hợp.
+    - Loại trừ: Chủ trì (Host), Người duyệt (Reviewer).
+    """
+    # 1. Kiểm tra quyền truy cập dự án (Optional: nếu muốn bảo mật kỹ)
+    has_access = cruds.check_user_project_access(db, project_id, current_user)
+    if not has_access:
+         raise HTTPException(status_code=403, detail="Bạn không có quyền truy cập thông tin dự án này.")
+
+    # 2. Gọi hàm CRUD
+    users = cruds.get_project_participants(db, project_id)
+    
+    return users
     
 @router.get("/folder/{project_id}/me")
 def get_project_files_by_user(
