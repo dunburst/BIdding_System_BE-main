@@ -33,6 +33,18 @@ class UserUpdate(BaseModel):
     # password: Optional[str] = None 
 
 # --- RESPONSE SCHEMA (Trả về client) ---
+
+# [MỚI] Schema dùng cho hành động đổi mật khẩu
+class UserChangePassword(BaseModel):
+    # old_password: str = Field(..., description="Mật khẩu hiện tại")
+    new_password: str = Field(..., min_length=6, description="Mật khẩu mới")
+    confirm_password: str = Field(..., min_length=6, description="Nhập lại mật khẩu mới")
+
+    # (Tùy chọn) Validate khớp password ngay tại schema
+    @computed_field
+    def check_passwords_match(self) -> None:
+        if self.new_password != self.confirm_password:
+            raise ValueError('Mật khẩu mới và xác nhận mật khẩu không khớp')
 class UserResponse(UserBase):
     user_id: int
     

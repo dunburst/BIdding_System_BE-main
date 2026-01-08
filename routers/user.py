@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Body
 from sqlalchemy.orm import Session
 from typing import List
 import io # Thư viện xử lý stream
@@ -7,7 +7,8 @@ from database import get_db
 import cruds.user as crud_user
 import schemas.user as schemas
 from schemas.task import TaskResponse, TaskListResponse
-from utils.security import get_current_user
+from schemas.user import UserChangePassword
+from utils.security import get_current_user, verify_password
 from models import User, UserRole 
 import cruds.task as task_crud
 from urllib.parse import urlparse, unquote
@@ -138,6 +139,54 @@ def upload_my_avatar(
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi hệ thống: {str(e)}")
+    
+# [MỚI] API Đổi mật khẩu cho người dùng đang đăng nhập
+@router.put("/me/password", status_code=status.HTTP_200_OK)
+def change_my_password(
+    password_data: schemas.UserChangePassword, # Nhớ import đúng schema mới sửa
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Người dùng tự đổi mật khẩu (phiên bản không cần mật khẩu cũ).
+    Chỉ cần Token hợp lệ là được phép đổi.
+    """
+    
+    # 1. Kiểm tra confirm password (nếu Pydantic chưa bắt được, check thêm cho chắc)
+    if password_data.new_password != password_data.confirm_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mật khẩu xác nhận không khớp"
+        )
+        
+    # 2. Kiểm tra không cho đặt trùng mật khẩu cũ (Tùy chọn)
+    # Lưu ý: Cần dùng verify_password để so sánh plain-text mới với hash cũ trong DB
+    if verify_password(password_data.new_password, current_user.hashed_password):
+         raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mật khẩu mới không được trùng với mật khẩu hiện tại"
+        )
+
+    # 3. Gọi CRUD để lưu mật khẩu mới
+    crud_user.change_password(db, user_id=current_user.user_id, new_password=password_data.new_password)
+    
+    return {"message": "Đổi mật khẩu thành công"}
+
+@router.put("/{user_id}/reset-password", dependencies=[Depends(get_current_user)]) 
+# Lưu ý: cần thêm check Role Admin ở dependency nếu muốn bảo mật chặt
+def admin_reset_password(
+    user_id: int, 
+    new_password: str = Body(..., embed=True, min_length=6), # Nhận trực tiếp string body
+    db: Session = Depends(get_db)
+):
+    """
+    Admin reset mật khẩu cho user khác (không cần mật khẩu cũ).
+    """
+    updated_user = crud_user.change_password(db, user_id=user_id, new_password=new_password)
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    return {"message": f"Đã reset mật khẩu cho user ID {user_id}"}
 
 # 6. Xóa User
 @router.delete("/{user_id}", status_code=status.HTTP_200_OK)

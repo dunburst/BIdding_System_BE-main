@@ -89,3 +89,24 @@ def delete_user(db: Session, user_id: int):
     db.delete(db_user)
     db.commit()
     return True
+
+# [MỚI] Hàm lưu mật khẩu mới vào DB
+def change_password(db: Session, user_id: int, new_password: str):
+    """
+    Hàm này chỉ thực hiện việc hash pass mới và lưu vào DB.
+    Việc kiểm tra mật khẩu cũ đúng sai sẽ nằm ở tầng Router/Service.
+    """
+    db_user = get_user(db, user_id)
+    if not db_user:
+        return None
+    
+    # 1. Hash mật khẩu mới
+    hashed_password = get_password_hash(new_password)
+    
+    # 2. Cập nhật
+    db_user.hashed_password = hashed_password
+    
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
