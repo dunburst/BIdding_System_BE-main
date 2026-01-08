@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import select, or_
+from sqlalchemy import func, select, or_
 from typing import List, Optional
 from models import User, UserRole, BiddingTask, TaskAssignment
 
@@ -249,3 +249,19 @@ def get_project_participants(db: Session, project_id: int) -> List[User]:
     users = db.query(User).filter(User.user_id.in_(final_ids)).all()
     
     return users
+
+def update_project_status(db: Session, project_id: int, new_status: str) -> Optional[BiddingProject]:
+    """
+    Cập nhật riêng trạng thái của dự án
+    """
+    project = db.get(BiddingProject, project_id)
+    if not project:
+        return None
+    
+    project.status = new_status
+    # Nếu muốn lưu vết thời gian update
+    project.updated_at = func.now()
+    
+    db.commit()
+    db.refresh(project)
+    return project
