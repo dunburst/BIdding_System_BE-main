@@ -106,7 +106,7 @@ def get_root_projects(current_user: User = Depends(get_current_user)):
         if 'application/vnd.google-apps.folder' in item.get('mimeType', ''):
             visible_items.append({
                 "id": item['id'], "name": item['name'], "type": "FOLDER",
-                "link": item['webViewLink'], "access": "GRANTED"
+                "link": item['webViewLink'], "access": "GRANTED", "updated_at": item.get('modifiedTime')
             })
     return {"current_context": "ROOT_PROJECTS", "total": len(visible_items), "data": visible_items}
 
@@ -142,6 +142,9 @@ def get_folder_content(folder_id: str, current_user: User = Depends(get_current_
             item_tag = _get_folder_tag(item['name'])
             
         web_link = item.get('webViewLink', '#')
+        
+        # [MỚI] Lấy thời gian sửa đổi
+        updated_at = item.get('modifiedTime')
 
         # A. Folder con -> Luôn hiện
         if 'application/vnd.google-apps.folder' in item.get('mimeType', ''):
@@ -152,6 +155,7 @@ def get_folder_content(folder_id: str, current_user: User = Depends(get_current_
                 "link": web_link, 
                 "access": "GRANTED",
                 "tag": item_tag # <--- Tag đã được xử lý thừa kế
+                ,"updated_at": updated_at
             })
             continue
 
@@ -169,6 +173,7 @@ def get_folder_content(folder_id: str, current_user: User = Depends(get_current_
                 "level": file_level, 
                 "access": "GRANTED",
                 "tag": item_tag # <--- File con cũng thừa kế Tag của folder cha
+                ,"updated_at": updated_at
             })
     
     return {"current_folder_id": folder_id, "total_items": len(visible_items), "data": visible_items}
@@ -335,11 +340,18 @@ def get_project_category_folder(
 
     if not target_folder_id:
         raise HTTPException(404, f"Không tìm thấy folder cho danh mục '{category}' (Tag: {tag}, Keyword: {keyword}) trong dự án.")
+    
+    # 2. [MỚI] Lấy thông tin chi tiết để có ngày sửa đổi
+    meta = drive_service.get_file_metadata(target_folder_id)
+    updated_at = meta.get('modifiedTime') if meta else None
+    link = meta.get('webViewLink') if meta else None
         
     return {
         "category": tag, 
         "folder_id": target_folder_id, 
-        "folder_keyword": keyword
+        "folder_keyword": keyword,
+        "link": link,
+        "updated_at": updated_at
     }
 
 @router.get("/project/{project_folder_id}/me/target-folder")
@@ -395,6 +407,11 @@ def get_current_user_target_folder(
             status_code=404, 
             detail=f"Không tìm thấy thư mục trên Drive khớp với '{selected_tag}' hoặc tên chứa '{folder_keyword}'."
         )
+        
+    # 5. [MỚI] Lấy Metadata để có updated_at
+    meta = drive_service.get_file_metadata(target_folder_id)
+    updated_at = meta.get('modifiedTime') if meta else None
+    link = meta.get('webViewLink') if meta else None
 
     return {
         "success": True,
@@ -402,6 +419,8 @@ def get_current_user_target_folder(
         "category": selected_tag,
         "folder_name_keyword": folder_keyword,
         "target_folder_id": target_folder_id
+        ,"link": link
+        ,"updated_at": updated_at
     }
     
 # 2. CẬP NHẬT ENDPOINT
