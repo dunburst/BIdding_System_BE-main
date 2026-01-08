@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
 import models
 from database import engine, get_db
-from routers import bidding, auth, crawler, organization, user, abac, system, project, googlelogin, task, bidding_req, agent_api
+from routers import bidding, auth, crawler, organization, user, abac, system, project, googlelogin, task, bidding_req, agent_api, onedrive_router
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from mcp_drive.router import router as drive_router
@@ -49,6 +49,7 @@ app.include_router(task.router)
 app.include_router(drive_router)
 app.include_router(drafting.router)
 app.include_router(agent_api.router)
+app.include_router(onedrive_router.router)
 
 # API Test kết nối
 @app.get("/")

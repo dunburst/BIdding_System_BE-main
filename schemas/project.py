@@ -7,6 +7,9 @@ from models import PackageStatus
 class BiddingProjectBase(BaseModel):
     name: str
     status: Optional[str] = "ACTIVE" # Giá trị mặc định
+    
+class ProjectStatusUpdateSchema(BaseModel):
+    status: str = Field(..., description="Trạng thái mới: ACTIVE, CLOSED, PAUSED, CANCELLED")
 
 # Create Schema: Dùng khi tạo mới
 class BiddingProjectCreate(BiddingProjectBase):
