@@ -135,7 +135,7 @@ class GoogleDriveService:
         try:
             return self.service.files().get(
                 fileId=file_id, 
-                fields='id, name, mimeType, properties'
+                fields='id, name, mimeType, webViewLink,properties, modifiedTime',
             ).execute()
         except Exception as e:
             print(f"❌ Lỗi get metadata: {e}")
@@ -333,8 +333,8 @@ class GoogleDriveService:
             query = f"'{target_folder}' in parents and trashed=false"
             results = self.service.files().list(
                 q=query, pageSize=1000,
-                fields="files(id, name, mimeType, webViewLink, properties)", 
-                orderBy="folder, createdTime desc"
+                fields="files(id, name, mimeType, webViewLink, properties, modifiedTime)", 
+                orderBy="folder, modifiedTime desc"
             ).execute()
             return results.get('files', [])
         except Exception as e:
