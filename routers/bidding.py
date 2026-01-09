@@ -234,6 +234,35 @@ def update_package(
 # ==========================================
 # 5. XÓA (DELETE)
 # ==========================================
+@router.delete("/cleanup", response_model=BaseResponse)
+def cleanup_old_packages(
+    days: int = Query(30, ge=1, description="Xóa các gói thầu NEW/INTERESTED cũ hơn số ngày này."),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    API này dùng cho nút 'Dọn dẹp dữ liệu' trên FE.
+    Chức năng: Xóa các gói thầu rác (NEW/INTERESTED) đã quá hạn.
+    """
+    # 1. (Tùy chọn) Check quyền: Chỉ Manager hoặc Admin mới được xóa
+    # if current_user.role not in [UserRole.ADMIN, UserRole.MANAGER]:
+    #     raise HTTPException(status_code=403, detail="Bạn không có quyền dọn dẹp hệ thống.")
+
+    # 2. Gọi CRUD thực hiện xóa
+    deleted_count = crud_bidding.cleanup_old_packages(db, days_threshold=days)
+    
+    # 3. Trả về kết quả
+    if deleted_count > 0:
+        msg = f"Đã dọn dẹp thành công {deleted_count} gói thầu cũ hơn {days} ngày."
+    else:
+        msg = "Hệ thống đã sạch, không có gói thầu nào cần xóa."
+
+    return BaseResponse(
+        success=True,
+        status=200,
+        message=msg,
+        data={"deleted_count": deleted_count}
+    )
 @router.delete("/{hsmt_id}", response_model=BaseResponse)
 def delete_package(hsmt_id: int, db: Session = Depends(get_db)):
     is_deleted = crud_bidding.delete_package(db, hsmt_id)
