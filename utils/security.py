@@ -6,7 +6,7 @@ from passlib.context import CryptContext
 from dotenv import load_dotenv
 from database import get_db
 from sqlalchemy.orm import Session
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from models import User
@@ -20,6 +20,10 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 SECRET_KEY = os.getenv("SECRET_KEY", "secret_key_mac_dinh")
+
+# Quan trọng: Nếu chạy HTTPS thì set True, Localhost thì False
+SECURE_COOKIE = os.getenv("SECURE_COOKIE", "False").lower() == "true"
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False) # auto_error=False để tự xử lý
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -60,27 +64,37 @@ def get_cached_user_email(token: str):
     except JWTError:
         return None
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+# --- LOGIC MỚI: LẤY TOKEN TỪ COOKIE HOẶC HEADER ---
+async def get_current_user(
+    request: Request, 
+    token_header: str = Depends(oauth2_scheme), 
+    db: Session = Depends(get_db)
+):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Token không hợp lệ hoặc đã hết hạn",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    # 1. Ưu tiên lấy từ Cookie (HttpOnly)
+    token = request.cookies.get("access_token")
+    
+    # 2. Nếu không có Cookie, lấy từ Header (Bearer ...)
+    if not token:
+        token = token_header
+
+    if not token:
+        raise credentials_exception
+
     try:
-        # Giải mã token
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        
-        # --- 3. SỬA LỖI TYPE (SỬA LỖI 2) ---
-        # Không dùng: email: str = payload.get("sub") -> Vì nó có thể là None
-        email = payload.get("sub") 
-        
+        email = payload.get("sub")
         if email is None:
             raise credentials_exception
-
     except JWTError:
         raise credentials_exception
+
     from cruds.user import get_user_by_email
-    # Tìm user trong DB
     user = get_user_by_email(db, email=email)
     if user is None:
         raise credentials_exception

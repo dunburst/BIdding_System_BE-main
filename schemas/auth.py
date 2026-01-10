@@ -6,6 +6,7 @@ from models import UserRole # Import enum Role từ models
 class LoginRequest(BaseModel):
     email: str
     password: str
+    remember_me: bool = False
 
 class UserInfo(BaseModel):
     user_id: int
@@ -46,4 +47,4 @@ class UserMeResponse(BaseModel):
         populate_by_name = True
         
 class RefreshTokenRequest(BaseModel):
-    refresh_token: str
+    refresh_token: Optional[str] = None # Cho phép None vì có thể lấy từ Cookie
