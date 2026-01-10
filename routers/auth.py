@@ -228,7 +228,7 @@ def get_me(current_user: User = Depends(get_current_user)):
         email=current_user.email,
         full_name=current_user.full_name, # Pydantic sẽ tự đổi thành fullName nhờ alias
         role=current_user.role.value if current_user.role else "",
-        avatar_url="https://tintuc.dienthoaigiakho.vn/wp-content/uploads/2024/01/avatar-trang-nu-1.jpg" # Giả lập avatar
+        avatar_url=current_user.avatar_url
     )
 
     return BaseResponse(

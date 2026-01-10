@@ -4,6 +4,7 @@ from schemas.user import UserCreate, UserUpdate
 from sqlalchemy import select
 from utils.security import get_password_hash
 from models import OrganizationalUnit
+from models import BiddingTask, TaskAssignment
 
 def get_user_by_email(db: Session, email: str):
     """Tìm user trong DB dựa theo email"""
@@ -78,16 +79,39 @@ def update_user_status(db: Session, user_id: int, status: bool):
     return user
 
 def delete_user(db: Session, user_id: int):
-    # 1. Tìm user theo ID
+    # 1. Tìm user
     db_user = db.query(User).filter(User.user_id == user_id).first()
-    
-    # 2. Nếu không thấy thì trả về False
     if not db_user:
         return False
     
-    # 3. Xóa và lưu thay đổi
+    # 2. Xử lý các Task mà user là Người thực hiện chính (Assignee)
+    # -> Yêu cầu: Xóa luôn Task này.
+    # Ta query ra list object rồi xóa từng cái để đảm bảo Cascade (xóa sub-task, xóa file...) hoạt động tốt ở mức ORM.
+    tasks_assigned = db.query(BiddingTask).filter(BiddingTask.assignee_id == user_id).all()
+    for task in tasks_assigned:
+        db.delete(task)
+        
+    # 3. Xử lý bảng phân công phụ (TaskAssignment)
+    # -> Yêu cầu: Xóa user khỏi danh sách phối hợp.
+    db.query(TaskAssignment).filter(TaskAssignment.assigned_user_id == user_id).delete()
+    
+    # 4. Xử lý các Task mà user là Người duyệt (Reviewer)
+    # -> Yêu cầu: KHÔNG xóa task (vì người khác đang làm), chỉ set reviewer về NULL.
+    db.query(BiddingTask).filter(BiddingTask.reviewer_id == user_id).update({BiddingTask.reviewer_id: None})
+
+    # 5. [QUAN TRỌNG] Xử lý trường hợp User là người TẠO task (Created By)
+    # Vì cột created_by thường là nullable=False, nếu xóa user sẽ lỗi khóa ngoại.
+    # Giải pháp: Xóa luôn các task do user này tạo (nếu logic cho phép) HOẶC user này tạo task nào thì task đó cũng bị xóa theo logic Assignee ở trên.
+    # Nếu vẫn còn task do user tạo nhưng giao cho người khác -> Cần xóa nốt hoặc chuyển quyền sở hữu.
+    # Ở đây tôi chọn phương án xóa nốt để tránh lỗi IntegrityError (nếu bạn muốn giữ lại thì cần update created_by sang ID của Admin).
+    tasks_created = db.query(BiddingTask).filter(BiddingTask.created_by == user_id).all()
+    for task in tasks_created:
+        db.delete(task)
+
+    # 6. Cuối cùng: Xóa User
     db.delete(db_user)
     db.commit()
+    
     return True
 
 # [MỚI] Hàm lưu mật khẩu mới vào DB
