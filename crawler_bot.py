@@ -28,6 +28,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import Select
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.chrome.service import Service as ChromeService
+from webdriver_manager.chrome import ChromeDriverManager # Cần thêm vào requirements.txt nếu chưa có
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger   
@@ -76,12 +79,42 @@ class MuasamcongDBBot:
             "plugins.always_open_pdf_externally": True
         }
         self.edge_options.add_experimental_option("prefs", self.prefs)
+        
+        # # Cấu hình Chrome cho Docker (Linux)
+        # self.chrome_options = ChromeOptions()
+        # self.chrome_options.add_argument("--window-size=1920,1080")
+        # self.chrome_options.add_argument("--disable-notifications")
+        # self.chrome_options.add_argument("--disable-popup-blocking")
+        
+        # # QUAN TRỌNG: Chạy trên Docker Linux bắt buộc phải có các dòng này
+        # self.chrome_options.add_argument("--headless=new") # Chạy ẩn, không hiện giao diện
+        # self.chrome_options.add_argument("--no-sandbox")
+        # self.chrome_options.add_argument("--disable-dev-shm-usage")
+        # self.chrome_options.add_argument("--disable-gpu")
+        
+        # self.prefs = {
+        #     "download.default_directory": self.download_dir,
+        #     "download.prompt_for_download": False,
+        #     "plugins.always_open_pdf_externally": True
+        # }
+        # self.chrome_options.add_experimental_option("prefs", self.prefs)
 
     def start_driver(self):
         if not os.path.exists(self.driver_path):
             logger.error("Không tìm thấy msedgedriver.exe")
             return None
         return webdriver.Edge(service=Service(self.driver_path), options=self.edge_options)
+    
+        # try:
+        #     # Tự động tải driver phù hợp môi trường (Windows/Linux)
+        #     # Yêu cầu cài: pip install webdriver-manager
+        #     return webdriver.Chrome(
+        #         service=ChromeService(ChromeDriverManager().install()), 
+        #         options=self.chrome_options
+        #     )
+        # except Exception as e:
+        #     logger.error(f"Lỗi khởi động Driver: {e}")
+        #     return None
     
     
     def create_crawl_log(self, rule_id):
