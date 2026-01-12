@@ -59,9 +59,9 @@ def read_root():
 
 origins = [
     "*", # Cho phép tất cả các nguồn (dùng cho dev/test)
-    # Hoặc bạn có thể chỉ định cụ thể:
-    # "http://localhost:3000",
-    # "http://192.168.1.10:3000",
+    "http://localhost:3000",
+    "http://26.152.34.61:3000",
+    "http://10.11.0.178:3000",
 ]
 
 app.add_middleware(

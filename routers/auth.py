@@ -121,8 +121,8 @@ def login(
     
     # Nếu chọn "Ghi nhớ đăng nhập" -> Tăng thời gian sống lên 30 ngày cho Cookie
     if login_data.remember_me:
-        cookie_max_age = 3600 # 1 hour in seconds
-        refresh_expires_duration = timedelta(hours=1)
+        cookie_max_age = 3600 * 24 * 7 # 7 days
+        refresh_expires_duration = timedelta(days=REMEMBER_ME_DAYS)
     else:
         cookie_max_age = None # Session Cookie (Xóa khi tắt trình duyệt)
         refresh_expires_duration = timedelta(days=7)
@@ -287,7 +287,8 @@ def get_me(current_user: User = Depends(get_current_user)):
         email=current_user.email,
         full_name=current_user.full_name, # Pydantic sẽ tự đổi thành fullName nhờ alias
         role=current_user.role.value if current_user.role else "",
-        avatar_url=current_user.avatar_url
+        avatar_url=current_user.avatar_url,
+        status=current_user.status
     )
 
     return BaseResponse(
