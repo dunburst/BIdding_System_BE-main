@@ -289,6 +289,8 @@ def get_me(current_user: User = Depends(get_current_user)):
         role=current_user.role.value if current_user.role else "",
         avatar_url=current_user.avatar_url,
         status=current_user.status
+        avatar_url=current_user.avatar_url,
+        status=current_user.status
     )
 
     return BaseResponse(

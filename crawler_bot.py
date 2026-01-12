@@ -290,6 +290,68 @@ class MuasamcongDBBot:
             time.sleep(0.5)
         except Exception as e:
             logger.warning(f"Không điền được ngày {date_str}: {e}")
+            
+    # ========================================================
+    # [FIXED V8] NHẬP LIỆU + CLICK RA CHỖ TRỐNG AN TOÀN
+    # ========================================================
+    def smart_select_dropdown(self, driver, label_text, search_text):
+        if not search_text: return
+        
+        logger.info(f"   -> [Smart Select] Xử lý '{label_text}': '{search_text}'")
+        
+        try:
+            # 1. TÌM Ô INPUT
+            xpath_strategy = f"//*[contains(text(), '{label_text}')]/ancestor::div[contains(@class, 'session') or contains(@class, 'row')]//input[contains(@class, 'ant-select-selection-search-input') or @type='text']"
+            
+            if len(driver.find_elements(By.XPATH, xpath_strategy)) == 0:
+                 xpath_strategy = f"//*[contains(text(), '{label_text}')]/following::input[not(@type='hidden')][1]"
+
+            input_element = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, xpath_strategy))
+            )
+            
+            # 2. THAO TÁC NHẬP LIỆU
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_element)
+            time.sleep(0.5)
+            driver.execute_script("arguments[0].click();", input_element)
+            
+            # Xóa sạch dữ liệu cũ
+            driver.execute_script("arguments[0].value = '';", input_element)
+            
+            # Gõ từ khóa
+            input_element.send_keys(search_text)
+            time.sleep(2) # Đợi gợi ý hiện ra
+            
+            # 3. CHỌN GIÁ TRỊ (Nếu có dropdown)
+            try:
+                dropdown_chk = driver.find_elements(By.XPATH, "//div[contains(@class, 'ant-select-dropdown') and not(contains(@class, 'hidden'))]")
+                if len(dropdown_chk) > 0:
+                    input_element.send_keys(Keys.ENTER)
+                    time.sleep(0.5)
+            except:
+                pass
+
+            # 4. [SỬA LẠI] CLICK RA CHỖ TRỐNG (AN TOÀN TUYỆT ĐỐI)
+            
+            # Cách A: Dùng lệnh JS 'blur' để ép ô input mất focus (Giống hệt việc click ra ngoài)
+            driver.execute_script("if(document.activeElement){ document.activeElement.blur(); }")
+            
+            # Cách B: Click vào Tiêu đề "Tìm kiếm nâng cao" (Vùng an toàn, không phải ô nhập)
+            try:
+                safe_zone = driver.find_element(By.XPATH, "//*[contains(text(), 'Tìm kiếm nâng cao')]")
+                driver.execute_script("arguments[0].click();", safe_zone)
+            except:
+                # Nếu không tìm thấy tiêu đề, click vào chính cái Label của ô vừa nhập (VD: chữ "Tỉnh/ Thành phố")
+                # Click vào Label không bao giờ kích hoạt input khác
+                driver.find_element(By.XPATH, f"//*[contains(text(), '{label_text}')]").click()
+
+            logger.info(f"   -> Đã Click ra vùng an toàn để trigger load dữ liệu.")
+            
+            # Đợi một chút để web xử lý AJAX (load xã phường...)
+            time.sleep(2)
+
+        except Exception as e:
+            logger.error(f"   -> ❌ Lỗi nhập '{label_text}': {str(e).splitlines()[0]}")
 
     def execute_rule_search(self, rule: models.CrawlRule):
         logger.info(f">>> BẮT ĐẦU CHẠY RULE: {rule.rule_name}")
@@ -315,32 +377,112 @@ class MuasamcongDBBot:
             except:
                 logger.warning("-> Không tìm thấy nút 'Tìm kiếm nâng cao' hoặc đã mở sẵn.")
 
-            # Keyword
+            # ----------------------------------------------
+            # 1. TỪ KHÓA TÌM KIẾM (Keyword Include)
+            # ----------------------------------------------
             if rule.keywords_include:
                 keywords = rule.keywords_include
                 if isinstance(keywords, list) and len(keywords) > 0:
-                    kw_str = keywords[0]
+                    kw_str = keywords[0] # Lấy từ khóa đầu tiên (hoặc nối chuỗi nếu cần)
                     try:
+                        # Tìm ô nhập từ khóa chính
                         inp_keyword = WebDriverWait(driver, 10).until(
                             EC.visibility_of_element_located((By.XPATH, "//input[contains(@placeholder, 'TBMT') or contains(@placeholder, 'Tên gói thầu')]"))
                         )
                         inp_keyword.send_keys(Keys.CONTROL + "a")
                         inp_keyword.send_keys(Keys.DELETE)
                         inp_keyword.send_keys(kw_str)
-                        logger.info(f"-> Đã điền từ khóa: {kw_str}")
+                        logger.info(f"-> Đã điền từ khóa chính: {kw_str}")
                     except Exception as e:
                         logger.error(f"-> Không tìm thấy ô nhập từ khóa: {e}")
+            
+            # ----------------------------------------------
+            # [ĐÃ SỬA] 1b. TỪ KHÓA LOẠI TRỪ (Keyword Exclude)
+            # ----------------------------------------------
+            if rule.keywords_exclude:
+                excludes = rule.keywords_exclude
+                if isinstance(excludes, list) and len(excludes) > 0:
+                    exclude_str = ", ".join(excludes) 
+                    try:
+                        # --- CÁCH SỬA: Dựa vào class "content__body__session__title" trong ảnh ---
+                        
+                        # Logic: Tìm cái tiêu đề "Không chứa từ", sau đó tìm thằng em (sibling) bên cạnh là "desc", rồi tìm input bên trong
+                        xpath_exclude = "//div[contains(@class, 'content__body__session__title') and contains(text(), 'Không chứa từ')]/following-sibling::div[contains(@class, 'content__body__session__desc')]//input"
+                        
+                        # Backup: Nếu cách trên không được, dùng cách tìm cha (ancestor)
+                        xpath_backup = "//div[contains(text(), 'Không chứa từ')]/ancestor::div[contains(@class, 'content__body__session')]//input"
+
+                        # Thử tìm element
+                        try:
+                            inp_exclude = WebDriverWait(driver, 5).until(
+                                EC.visibility_of_element_located((By.XPATH, xpath_exclude))
+                            )
+                        except:
+                            # Nếu xpath chính trượt thì thử backup
+                            inp_exclude = WebDriverWait(driver, 5).until(
+                                EC.visibility_of_element_located((By.XPATH, xpath_backup))
+                            )
+                        
+                        # Scroll tới đó cho chắc chắn (tránh bị menu che)
+                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", inp_exclude)
+                        time.sleep(0.5)
+
+                        # Xóa cũ điền mới
+                        inp_exclude.send_keys(Keys.CONTROL + "a")
+                        inp_exclude.send_keys(Keys.DELETE)
+                        inp_exclude.send_keys(exclude_str)
+                        # Bấm tab để xác nhận giá trị (phòng trường hợp web cần event blur)
+                        inp_exclude.send_keys(Keys.TAB) 
+                        
+                        logger.info(f"-> Đã điền từ khóa loại trừ: {exclude_str}")
+                    except Exception as e:
+                        logger.warning(f"-> Vẫn lỗi điền 'Không chứa từ': {str(e).splitlines()[0]}")
+            
+            # ----------------------------------------------
+            # 2. CHỦ ĐẦU TƯ (Investor)
+            # ----------------------------------------------
+            if rule.investor:
+                for inv in rule.investor:
+                    # Bây giờ chỉ cần truyền đúng chữ "Chủ đầu tư" như trên màn hình
+                    self.smart_select_dropdown(driver, "Chủ đầu tư", inv)
+                    time.sleep(2)
 
             # Business Field
+            # --- C. CHỌN LĨNH VỰC (BUSINESS FIELD) ---
             if rule.business_field:
+                field_text = rule.business_field.strip()
                 try:
-                    driver.execute_script("window.scrollTo(0, 0);")
-                    time.sleep(1)
-                    lbl_xpath = f"//label[contains(text(), '{rule.business_field}')]"
-                    chk_element = driver.find_element(By.XPATH, lbl_xpath)
+                    xpath_checkbox = f"//span[contains(text(), '{field_text}')] | //label[contains(., '{field_text}')]"
+                    chk_element = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, xpath_checkbox)))
+                    
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", chk_element)
+                    time.sleep(1) 
                     driver.execute_script("arguments[0].click();", chk_element)
-                except:
-                    logger.warning(f"-> Không chọn được lĩnh vực: {rule.business_field}")
+                    
+                    logger.info(f"-> [3/7] Đã tick lĩnh vực: {field_text}")
+                    time.sleep(3) # BẮT BUỘC: Đợi web reload lại sau khi tick checkbox
+                except Exception as e:
+                    logger.warning(f"-> Lỗi chọn lĩnh vực: {e}")
+                    
+            # --- D. CHỌN TỈNH / THÀNH PHỐ (QUAN TRỌNG) ---
+            has_location = False
+            if rule.locations and len(rule.locations) > 0:
+                has_location = True
+                for loc in rule.locations:
+                    self.smart_select_dropdown(driver, "Tỉnh/ Thành phố", loc)
+                    
+                    # [QUAN TRỌNG] Sau khi click ra ngoài ở hàm trên, web sẽ xoay loading ô Xã/Phường
+                    # Ta cần đợi ô Xã/Phường SẴN SÀNG (Enabled) trước khi điền
+                    logger.info("   -> Đang đợi ô Xã/Phường kích hoạt...")
+                    time.sleep(2) 
+
+            # --- E. CHỌN XÃ / PHƯỜNG ---
+            if rule.commune and len(rule.commune) > 0:
+                if has_location:
+                    for com in rule.commune:
+                        self.smart_select_dropdown(driver, "Xã/ Phường", com)
+                else:
+                    logger.warning("-> Bỏ qua Xã/Phường vì chưa chọn Tỉnh.")
 
             # Budget
             if rule.min_budget or rule.max_budget:
@@ -366,18 +508,25 @@ class MuasamcongDBBot:
                     self.fill_react_datepicker(driver, "(//input[contains(@placeholder, 'dd/mm/yyyy')])[2]", to_date)
             except Exception as e:
                 logger.warning(f"-> Lỗi điền ngày: {e}")
+                
+            # ==================================================================
+            # GIAI ĐOẠN 2: BẤM TÌM KIẾM
+            # ==================================================================
+            logger.info(">>> ĐÃ NHẬP XONG. CLICK NÚT TÌM KIẾM <<<")
+            
+            # Đảm bảo click ra ngoài lần cuối để đóng mọi dropdown che khuất nút tìm kiếm
+            driver.find_element(By.TAG_NAME, "body").click()
+            time.sleep(1)
 
-            # Search Button
             try:
                 btn_search = WebDriverWait(driver, 10).until(
                     EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Tìm kiếm')] | //span[contains(text(), 'Tìm kiếm')]/.."))
                 )
                 driver.execute_script("arguments[0].click();", btn_search)
-                logger.info("-> Đã nhấn nút Tìm kiếm...")
+                logger.info("-> ĐÃ CLICK NÚT TÌM KIẾM!")
                 time.sleep(5)
-            except:
-                logger.error("-> Không nhấn được nút Tìm kiếm")
-                return
+            except Exception as e:
+                logger.error(f"-> Lỗi bấm nút Tìm kiếm: {e}")
 
             # ---------------------------------------------------------
             # [BỔ SUNG] CHỌN HIỂN THỊ 50 BẢN GHI/TRANG
@@ -825,4 +974,33 @@ if __name__ == "__main__":
 
     # except Exception as e:
     #     logger.error(f"❌ Lỗi khi test: {e}")
-    run_scheduler_system()
+    print("!!! ĐANG CHẠY CHẾ ĐỘ TEST THỦ CÔNG (DEBUG) !!!")
+    
+    
+    db = SessionLocal()
+    
+    try:
+        # Lấy Rule mới nhất vừa thêm vào DB (Sắp xếp ID giảm dần lấy cái đầu tiên)
+        # Hoặc bạn có thể filter theo ID cụ thể: .filter(models.CrawlRule.id == 10)
+        rule = db.query(models.CrawlRule).order_by(models.CrawlRule.id.desc()).first()
+        
+        if not rule:
+            print("❌ Không tìm thấy Rule nào trong Database. Hãy chạy câu lệnh SQL insert trước!")
+        else:
+            print(f"🚀 Đang test Rule ID: {rule.id}")
+            print(f"   - Tên: {rule.rule_name}")
+            print(f"   - Tỉnh: {rule.locations}")
+            print(f"   - Chủ đầu tư: {rule.investor}")
+            print(f"   - Xã/Phường: {rule.commune}")
+            
+            # 2. Khởi tạo Bot và chạy
+            bot = MuasamcongDBBot()
+            bot.execute_rule_search(rule)
+            
+            print("✅ ĐÃ CHẠY XONG QUY TRÌNH TEST!")
+
+    except Exception as e:
+        print(f"❌ LỖI TEST: {e}")
+    finally:
+        db.close()
+    # run_scheduler_system()
