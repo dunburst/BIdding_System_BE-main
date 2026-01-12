@@ -7,6 +7,7 @@ from models import User, UserRole, BiddingTask, TaskAssignment
 from models import BiddingPackage, BiddingProject , TaskAssignment, TaskStatus, TaskPriority
 from schemas.project import ProjectStatistics
 from schemas.project import BiddingProjectCreate, BiddingProjectUpdate
+from sqlalchemy.orm import joinedload
 
 def create_project_from_package(db: Session, project_in: BiddingProjectCreate) -> BiddingProject:
     # Bước 1: Kiểm tra gói thầu có tồn tại không
@@ -54,7 +55,10 @@ def get_projects(
 ) -> List[BiddingProject]:
     
     # Bắt đầu query từ bảng Dự án
-    query = select(BiddingProject)
+    query = select(BiddingProject).options(
+        joinedload(BiddingProject.team_leader),
+        joinedload(BiddingProject.packages)
+    )
 
     # --- LOGIC JOIN ĐỂ LỌC (Quan trọng) ---
     if user and user.role not in [UserRole.ADMIN, UserRole.MANAGER, UserRole.BID_MANAGER]:
@@ -97,7 +101,7 @@ def get_projects(
     query = query.order_by(BiddingProject.created_at.desc()).offset(skip).limit(limit)
     
     result = db.execute(query)
-    return list(result.scalars().all())
+    return list(result.scalars().unique().all())
 
 # ---------------------------------------------------------
 # [MỚI] Hàm kiểm tra quyền truy cập Project (cho API Detail)

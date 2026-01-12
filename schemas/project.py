@@ -1,5 +1,5 @@
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional, List
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing import Optional, List, Any
 from datetime import datetime
 from models import PackageStatus
 
@@ -28,6 +28,15 @@ class PackageSimpleSchema(BaseModel):
     ten_goi_thau: str
     trang_thai: PackageStatus
     ngay_dang_tai: Optional[datetime] = None
+    
+    # --- [NEW FIELDS] Thêm trực tiếp vào đây ---
+    thoi_diem_dong_thau: Optional[datetime] = None
+    chu_dau_tu: Optional[str] = None
+    linh_vuc: Optional[str] = None
+    
+    # Lưu ý: DB tên là "dia_diem_thuc_hien_goi_thau", 
+    # nếu muốn JSON trả về ngắn gọn là "dia_diem" thì cần Field alias hoặc mapping
+    dia_diem: Optional[str] = Field(default=None, validation_alias="dia_diem_thuc_hien_goi_thau")
 
     # Cấu hình để đọc từ ORM
     model_config = ConfigDict(from_attributes=True)
@@ -36,6 +45,8 @@ class BiddingProjectResponse(BiddingProjectBase):
     id: int
     host_id: Optional[int] = None
     bid_team_leader_id: Optional[int] = None
+    # Tên Team Leader vẫn nên để ở đây (vì nó thuộc context quản lý dự án)
+    bid_team_leader_name: Optional[str] = None
     drive_folder_id: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -44,6 +55,15 @@ class BiddingProjectResponse(BiddingProjectBase):
 
     # Cấu hình để Pydantic đọc được dữ liệu từ SQLAlchemy ORM object
     model_config = ConfigDict(from_attributes=True)
+    # Validator chỉ cần giữ lại logic lấy tên Team Leader
+    @model_validator(mode='before')
+    @classmethod
+    def get_leader_name(cls, data: Any) -> Any:
+        if isinstance(data, dict): return data
+        
+        if hasattr(data, 'team_leader') and data.team_leader:
+            data.bid_team_leader_name = data.team_leader.full_name
+        return data
     
 # Schema chứa các thông số thống kê
 class ProjectStatistics(BaseModel):
