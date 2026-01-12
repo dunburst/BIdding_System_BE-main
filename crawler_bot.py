@@ -940,6 +940,7 @@ def run_scheduler_system():
             scheduler.shutdown()
             
 if __name__ == "__main__":
+    #TEST RIÊNG CHO 1 LINK CỤ THỂ
     # print("!!! ĐANG CHẠY CHẾ ĐỘ THỦ CÔNG (KHÔNG PHẢI SCHEDULER) !!!") 
     
     # target_url = "https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=detail-v2&type=es-notify-contractor&stepCode=notify-contractor-step-1-tbmt&id=75bd7be1-2709-4dc5-bebb-7d8ee38d11fe&notifyId=75bd7be1-2709-4dc5-bebb-7d8ee38d11fe&inputResultId=undefined&bidOpenId=undefined&techReqId=undefined&bidPreNotifyResultId=undefined&bidPreOpenId=undefined&processApply=LDT&bidMode=1_MTHS&notifyNo=IB2500638706&planNo=PL2500369345&pno=undefined&step=tbmt&isInternet=1&caseKHKQ=undefined&bidForm=DTRR" # (Link của bạn)
@@ -978,9 +979,9 @@ if __name__ == "__main__":
 
     # except Exception as e:
     #     logger.error(f"❌ Lỗi khi test: {e}")
+    
+    # TEST TÌM KIẾM NÂNG CAO VƠI RULE TRONG DB
     print("!!! ĐANG CHẠY CHẾ ĐỘ TEST THỦ CÔNG (DEBUG) !!!")
-    
-    
     db = SessionLocal()
     
     try:
@@ -1010,4 +1011,6 @@ if __name__ == "__main__":
         print(f"❌ LỖI TEST: {e}")
     finally:
         db.close()
+        
+    # # KHỞI ĐỘNG HỆ THỐNG SCHEDULER(MAIN)
     # run_scheduler_system()
