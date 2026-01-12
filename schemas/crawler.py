@@ -44,6 +44,8 @@ class CrawlRuleBase(BaseModel):
     investor: Optional[List[str]] = Field(default_factory=list, description="Chủ đầu tư")
     commune: Optional[List[str]] = Field(default_factory=list, description="Xã/Phường")
     priority: int = 1
+    # --- [BỔ SUNG MỚI] ---
+    is_active: bool = True
 
     # Cập nhật Validator để xử lý None -> [] cho 2 trường mới
     @field_validator('keywords_include', 'keywords_exclude', 'locations', 'investor', 'commune', mode='before')
@@ -71,6 +73,8 @@ class CrawlRuleUpdate(BaseModel):
     investor: Optional[List[str]] = None
     commune: Optional[List[str]] = None
     priority: Optional[int] = None
+    # --- [BỔ SUNG MỚI] ---
+    is_active: bool = True
 
 class CrawlRuleResponse(CrawlRuleBase):
     id: int

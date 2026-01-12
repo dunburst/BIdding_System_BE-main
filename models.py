@@ -221,6 +221,10 @@ class CrawlRule(Base):
     # Độ ưu tiên
     priority: Mapped[int] = mapped_column(Integer, default=1, nullable=True)
     
+    # --- [BỔ SUNG MỚI] ---
+    # Trạng thái hoạt động: True = Đang chạy, False = Tạm dừng
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    
 class CrawlLog(Base):
     __tablename__ = "crawl_logs"
 

@@ -876,7 +876,11 @@ def load_jobs_from_db(scheduler):
                     try:
                         bot = MuasamcongDBBot() 
                         with SessionLocal() as session:
-                            rules = session.query(models.CrawlRule).all()
+                            # --- [CẬP NHẬT QUAN TRỌNG] ---
+                            # Chỉ lấy các Rule có trạng thái is_active = True
+                            rules = session.query(models.CrawlRule).filter(models.CrawlRule.is_active == True).all()
+                            
+                            logger.info(f"-> Tìm thấy {len(rules)} luật (Rules) đang kích hoạt.")
                             for rule in rules:
                                 bot.execute_rule_search(rule)
                     except Exception as e:
@@ -983,7 +987,10 @@ if __name__ == "__main__":
     try:
         # Lấy Rule mới nhất vừa thêm vào DB (Sắp xếp ID giảm dần lấy cái đầu tiên)
         # Hoặc bạn có thể filter theo ID cụ thể: .filter(models.CrawlRule.id == 10)
-        rule = db.query(models.CrawlRule).order_by(models.CrawlRule.id.desc()).first()
+        rule = db.query(models.CrawlRule)\
+            .filter(models.CrawlRule.is_active == True) \
+            .order_by(models.CrawlRule.id.desc())\
+            .first()
         
         if not rule:
             print("❌ Không tìm thấy Rule nào trong Database. Hãy chạy câu lệnh SQL insert trước!")

@@ -44,3 +44,18 @@ class BiddingProjectResponse(BiddingProjectBase):
 
     # Cấu hình để Pydantic đọc được dữ liệu từ SQLAlchemy ORM object
     model_config = ConfigDict(from_attributes=True)
+    
+# Schema chứa các thông số thống kê
+class ProjectStatistics(BaseModel):
+    deadline: Optional[datetime] = Field(None, description="Hạn chót (Dựa trên task trễ nhất)")
+    progress: float = Field(0.0, description="Tiến độ % (Completed tasks / Total tasks)")
+    total_tasks: int = 0
+    completed_tasks: int = 0
+    participant_count: int = Field(0, description="Tổng số nhân sự tham gia")
+    priority: str = Field("MEDIUM", description="Độ ưu tiên tổng thể (LOW/MEDIUM/HIGH)")
+    
+# Schema response cuối cùng (Gộp thông tin dự án + Thống kê)
+class BiddingProjectDetailResponse(BiddingProjectResponse):
+    stats: ProjectStatistics
+
+    model_config = ConfigDict(from_attributes=True)
