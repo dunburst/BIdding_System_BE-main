@@ -362,6 +362,6 @@ def get_project_statistics(db: Session, project_id: int) -> ProjectStatistics:
         progress=progress,
         total_tasks=total_tasks,
         completed_tasks=completed_tasks,
-        participant_count=participant_count,
-        priority=current_priority
+        participant_count=participant_count
+        # priority=current_priority
     )
