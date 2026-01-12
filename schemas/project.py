@@ -35,8 +35,8 @@ class PackageSimpleSchema(BaseModel):
     linh_vuc: Optional[str] = None
     
     # Lưu ý: DB tên là "dia_diem_thuc_hien_goi_thau", 
-    # nếu muốn JSON trả về ngắn gọn là "dia_diem" thì cần Field alias hoặc mapping
-    dia_diem: Optional[str] = Field(default=None, validation_alias="dia_diem_thuc_hien_goi_thau")
+    # 2. Dùng serialization_alias="dia_diem" để khi API trả về JSON nó sẽ tự đổi tên thành "dia_diem" cho gọn
+    dia_diem_thuc_hien_goi_thau: Optional[str] = Field(default=None, serialization_alias="dia_diem")
 
     # Cấu hình để đọc từ ORM
     model_config = ConfigDict(from_attributes=True)
@@ -72,7 +72,7 @@ class ProjectStatistics(BaseModel):
     total_tasks: int = 0
     completed_tasks: int = 0
     participant_count: int = Field(0, description="Tổng số nhân sự tham gia")
-    priority: str = Field("MEDIUM", description="Độ ưu tiên tổng thể (LOW/MEDIUM/HIGH)")
+    # priority: str = Field("MEDIUM", description="Độ ưu tiên tổng thể (LOW/MEDIUM/HIGH)")
     
 # Schema response cuối cùng (Gộp thông tin dự án + Thống kê)
 class BiddingProjectDetailResponse(BiddingProjectResponse):

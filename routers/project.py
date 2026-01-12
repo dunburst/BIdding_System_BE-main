@@ -156,7 +156,7 @@ def create_project(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 # --- API: LẤY DANH SÁCH & TÌM KIẾM ---
-@router.get("/", response_model=List[schemas.BiddingProjectResponse])
+@router.get("/", response_model=List[schemas.BiddingProjectDetailResponse])
 def read_projects(
     skip: int = 0,
     limit: int = 100,
@@ -182,7 +182,25 @@ def read_projects(
         # 2. Truyền user xuống CRUD để lọc
         user=current_user 
     )
-    return projects
+    # 2. [QUAN TRỌNG] Vòng lặp để tính stats cho TỪNG dự án
+    results = []
+    
+    for project in projects:
+        # A. Tính toán thống kê cho dự án này
+        # (Lưu ý: Việc gọi hàm này trong vòng lặp có thể gây chậm nếu limit quá lớn)
+        stats = cruds.get_project_statistics(db, project.id)
+        
+        # B. Convert ORM -> Pydantic Basic
+        project_base = schemas.BiddingProjectResponse.model_validate(project)
+        
+        # C. Gộp Basic + Stats -> DetailResponse
+        project_detail = schemas.BiddingProjectDetailResponse(
+            **project_base.model_dump(),
+            stats=stats
+        )
+        
+        results.append(project_detail)
+    return results
 
 # --- API: LẤY CHI TIẾT 1 DỰ ÁN (Cũng nên chặn xem chi tiết nếu không phải người của dự án) ---
 # --- API: LẤY CHI TIẾT 1 DỰ ÁN ---
