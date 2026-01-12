@@ -56,6 +56,7 @@ class TaskCommentUpdate(BaseModel):
 class CommentAuthorInfo(BaseModel):
     user_id: int
     full_name: str
+    avatar_url: Optional[str] = None
     
     class Config:
         from_attributes = True

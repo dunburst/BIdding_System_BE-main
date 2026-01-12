@@ -1,13 +1,13 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, BackgroundTasks, Depends
 import shutil
 import os
 import uuid
 
 # --- IMPORT CÁC SERVICES ĐÃ TẠO ---
 from services.ai_pipeline.llama_service import llama_service
-from services.chroma_service import chroma_service
-from services.drafting_bot import drafting_bot
-from services.requirement_service import req_service # Nếu bạn đã tách service này, nếu chưa thì dùng llama_service trực tiếp
+from services.requirement_service import RequirementService, get_req_service
+from services.drafting_bot import DraftingBot, get_drafting_bot
+from services.chroma_service import ChromaService, get_chroma_service
 from fastapi.responses import HTMLResponse # <--- Import cái này
 import markdown # <--- Import thư viện chuyển đổi
 # --- IMPORT HÀM TIỆN ÍCH (CHUNKING) ---
@@ -30,39 +30,6 @@ current_session_context = {}
 TEMP_DIR = "temp_uploads"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# --- HÀM XỬ LÝ NGẦM (WORKER) ---
-def process_large_document_background(file_path: str, original_filename: str):
-    """
-    Hàm này sẽ chạy ngầm, không bắt người dùng phải đợi.
-    """
-    try:
-        print(f"🚀 [Background] Bắt đầu xử lý file lớn: {original_filename}...")
-        
-        # 1. Gọi LlamaParse (Bước này lâu nhất - tốn 5-15 phút cho 400 trang)
-        markdown_text = llama_service.parse_pdf_to_markdown(file_path)
-        
-        if not markdown_text:
-            print(f"❌ [Background] Lỗi: Không đọc được nội dung file {original_filename}")
-            return
-
-        # 2. Cắt nhỏ (Chunking)
-        chunks = chunk_by_chapters(markdown_text)
-        print(f"✂️ [Background] Đã cắt thành {len(chunks)} chương.")
-
-        # 3. Lưu vào DB
-        chroma_service.save_chunks_to_db(chunks, source_filename=original_filename)
-        
-        print(f"✅ [Background] Hoàn tất xử lý file {original_filename}!")
-
-    except Exception as e:
-        print(f"❌ [Background] Lỗi nghiêm trọng: {str(e)}")
-    
-    finally:
-        # Dọn dẹp file tạm dù thành công hay thất bại
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            print(f"🧹 Đã xóa file tạm: {file_path}")
-
 # ==============================================================================
 # 1. API: DẠY BOT (LEARN / INGESTION)
 # ==============================================================================
@@ -70,7 +37,8 @@ def process_large_document_background(file_path: str, original_filename: str):
 @router.post("/learn-sample-document")
 async def learn_document_async(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    service: RequirementService = Depends(get_req_service)
 ):
     """
     API nhận file và đẩy vào hàng đợi xử lý ngầm.
@@ -86,10 +54,13 @@ async def learn_document_async(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
-        # 2. Giao việc cho Background Task
-        # [FIX] Truyền safe_filename thay vì file.filename
-        background_tasks.add_task(process_large_document_background, file_path, safe_filename)
-        
+        # 2. Giao việc cho Service chạy ngầm
+        # Lưu ý: truyền tên hàm method của object service (service.process_large...)
+        background_tasks.add_task(
+            service.process_large_document_background, 
+            file_path, 
+            safe_filename
+        )
         # 3. Trả về kết quả ngay
         return {
             "status": "processing",
@@ -107,7 +78,7 @@ async def learn_document_async(
 # 2. API: ĐỌC YÊU CẦU ĐẦU VÀO (INPUT REQUIREMENT)
 # ==============================================================================
 @router.post("/upload-requirement", summary="Upload HSMT để lấy dữ liệu đầu vào")
-async def upload_requirement(file: UploadFile = File(...)):
+async def upload_requirement(file: UploadFile = File(...), service: RequirementService = Depends(get_req_service)):
     
     # [FIX 3] Xử lý trường hợp filename bị None
     safe_filename = file.filename or "unknown_requirement.pdf"
@@ -121,7 +92,7 @@ async def upload_requirement(file: UploadFile = File(...)):
         print(f"📖 Đang đọc yêu cầu từ: {safe_filename}")
 
         # Truyền safe_filename (chắc chắn là str) vào hàm
-        requirement_text = req_service.process_requirement_file(file_path, safe_filename)
+        requirement_text = service.process_requirement_file(file_path, safe_filename)
         
         return {
             "status": "success",
@@ -142,6 +113,7 @@ async def upload_requirement(file: UploadFile = File(...)):
 @router.post("/generate-section", summary="Viết bài và Xem ngay (HTML)")
 async def generate_section_view(
     topic: str = Form(..., description="Chủ đề cần viết"),
+    drafting_bot: DraftingBot = Depends(get_drafting_bot)
 ):
 
     try:
@@ -211,7 +183,7 @@ async def get_status():
         }
         
 @router.post("/reset-session", summary="Xóa sạch bộ nhớ để làm dự án mới")
-async def reset_session():
+async def reset_session(chroma_service: ChromaService = Depends(get_chroma_service)):
     """
     Gọi API này khi bạn muốn Bot quên hết các file cũ đi để bắt đầu nạp file cho dự án thầu MỚI.
     """

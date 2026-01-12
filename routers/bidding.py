@@ -12,6 +12,8 @@ from cruds import bidding as crud_bidding # Thống nhất dùng tên này
 from utils.abac import check_permission, get_allowed_actions
 from utils.constants import AbacAction
 from schemas.bidding import CountdownResponse
+from schemas.result import BiddingResultSummaryResponse, BiddingResultFullResponse
+import cruds.result as result_crud
 from cruds.bidding import calculate_time_remaining, get_closing_time
 from math import ceil
 
@@ -443,3 +445,32 @@ def get_package_info_by_project(
         message="Lấy thông tin gói thầu theo dự án thành công",
         data=pkg_response
     )
+    
+# --- API 1: Lấy tóm tắt ---
+@router.get("/{hsmt_id}/result-summary", response_model=BiddingResultSummaryResponse)
+def get_bidding_result_summary(
+    hsmt_id: int, 
+    db: Session = Depends(get_db)
+):
+    """
+    Trả về kết quả ngắn gọn: Tên nhà thầu/liên danh, giá trúng, ngày phê duyệt.
+    """
+    summary = result_crud.get_result_summary(db, hsmt_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail="Chưa tìm thấy kết quả lựa chọn nhà thầu.")
+    return summary
+
+# --- API 2: Lấy chi tiết ---
+@router.get("/{hsmt_id}/result-full", response_model=BiddingResultFullResponse)
+def get_bidding_result_full(
+    hsmt_id: int, 
+    db: Session = Depends(get_db)
+):
+    """
+    Trả về TOÀN BỘ thông tin kết quả:
+    - Thông tin chung
+    - Danh sách trúng thầu
+    - Danh sách trượt thầu
+    - Danh sách hàng hóa
+    """
+    return result_crud.get_result_full_detail(db, hsmt_id)
