@@ -4,6 +4,7 @@ import os
 from dotenv import load_dotenv
 import uuid
 import shutil
+from functools import lru_cache # <--- Import cái này
 
 load_dotenv()
 
@@ -124,8 +125,15 @@ class ChromaService:
         except Exception as e:
             print(f"⚠️ Lỗi khi clear collection: {e}")
 
-chroma_service = ChromaService()
-
+# --- THÊM ĐOẠN NÀY ---
+@lru_cache()
+def get_chroma_service() -> ChromaService:
+    """
+    Hàm này đảm bảo ChromaService chỉ khởi tạo 1 lần duy nhất (Singleton)
+    nhưng chỉ khi nào có request gọi đến nó (Lazy Loading).
+    """
+    print("🐢 Init ChromaService (Lazy Load)...")
+    return ChromaService()
 # import chromadb
 # from chromadb.utils import embedding_functions
 # import os

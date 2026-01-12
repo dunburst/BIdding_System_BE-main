@@ -1,12 +1,15 @@
 # services/drafting_bot.py
 
-from services.chroma_service import chroma_service
+from fastapi import Depends
+from services.chroma_service import ChromaService, get_chroma_service
 from openai import OpenAI
 import os
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 class DraftingBot:
+    # 1. Truyền chroma_service vào __init__
+    def __init__(self, chroma_service: ChromaService):
+        self.chroma = chroma_service
+        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     def draft_with_rag(self, topic: str):
         """
         Viết bài KHÔNG CẦN truyền full text requirement vào hàm này nữa.
@@ -15,7 +18,7 @@ class DraftingBot:
         
         # --- BƯỚC 1: Tìm kiếm YÊU CẦU ĐẦU VÀO (Input Data) ---
         print(f"🔎 Đang tìm thông tin trong HSMT liên quan đến: {topic}...")
-        req_results = chroma_service.query_requirements(query_text=topic, n_results=5)
+        req_results = self.chroma.query_requirements(query_text=topic, n_results=5)
         
         req_context = ""
         if req_results and req_results['documents'] and req_results['documents'][0]:
@@ -26,7 +29,7 @@ class DraftingBot:
 
         # --- BƯỚC 2: Tìm kiếm MẪU VĂN PHONG (Style) ---
         print(f"🎨 Đang tìm mẫu văn phong tham khảo...")
-        style_results = chroma_service.query_styles(query_text=topic, n_results=2)
+        style_results = self.chroma.query_styles(query_text=topic, n_results=2)
         
         style_context = ""
         if style_results and style_results['documents'] and style_results['documents'][0]:
@@ -60,7 +63,7 @@ class DraftingBot:
         """
 
         # --- BƯỚC 4: Gọi AI ---
-        response = client.chat.completions.create(
+        response = self.client.chat.completions.create(
             model="gpt-4o-mini", 
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -71,4 +74,8 @@ class DraftingBot:
 
         return response.choices[0].message.content
 
-drafting_bot = DraftingBot()
+# --- THÊM Provider ---
+def get_drafting_bot(
+    chroma: ChromaService = Depends(get_chroma_service)
+) -> DraftingBot:
+    return DraftingBot(chroma)
