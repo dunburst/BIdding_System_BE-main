@@ -56,6 +56,10 @@ class TaskTag(str, enum.Enum):
     DEVICE = "DEVICE"         # Hồ sơ máy móc thiết bị
     HR = "HR"                 # Hồ sơ nhân sự
     OTHER = "OTHER"           # Hồ sơ khác
+    # --- [BỔ SUNG MỚI] ---
+    DBTC = "DBTC"             # Bảo lãnh dự thầu, Cam kết tín dụng (BLDT, CKTD)
+    VT = "VT"                 # Hồ sơ Vật tư
+    GIA = "GIA"               # Hồ sơ Giá
     
 class SecurityLevel(int, enum.Enum):
     PUBLIC = 1          # Công khai / Nhân viên thường
@@ -107,6 +111,7 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(UnicodeText(100))
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.ENGINEER, nullable=False)
     status: Mapped[bool] = mapped_column(Boolean, default=True)
+    avatar_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     
     # --- CÁC TRƯỜNG MỚI CHO ABAC ---
     org_unit_id: Mapped[Optional[int]] = mapped_column(ForeignKey("organizational_units.unit_id"))
@@ -475,12 +480,17 @@ class BiddingTask(Base):
     
     source_type: Mapped[Optional[str]] = mapped_column(String(50))
     ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    hsmt_ref_page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # [NEW] Thêm ngày tạo
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # [NEW] Thêm cột này để lưu ID người tạo task
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.user_id"), nullable=False)
 
     # [MỚI] Thêm cột này để lưu bản nháp html nhân viên đang soạn
     draft_content: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True) 
 
     # Relationships
+    # Relationship để truy vấn ngược lại info người tạo
+    creator: Mapped["User"] = relationship(foreign_keys=[created_by])
     project: Mapped["BiddingProject"] = relationship(back_populates="tasks")
     assignments: Mapped[List["TaskAssignment"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     parent: Mapped[Optional["BiddingTask"]] = relationship(remote_side=[id], back_populates="sub_tasks")

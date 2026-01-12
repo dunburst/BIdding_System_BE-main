@@ -6,6 +6,7 @@ from typing import Optional, List
 from datetime import datetime
 from sqlalchemy import extract
 from sqlalchemy.orm import contains_eager
+from datetime import timedelta
 # --- Gói thầu (Package) ---
 
 def get_package(db: Session, hsmt_id: int):
@@ -269,3 +270,27 @@ def get_history_filters(db: Session):
         "years": unique_years,
         "investors": unique_investors
     }
+    
+def cleanup_old_packages(db: Session, days_threshold: int = 30) -> int:
+    """
+    Xóa các gói thầu ở trạng thái NEW hoặc INTERESTED nếu created_at cũ hơn số ngày quy định.
+    Trả về số lượng bản ghi đã xóa.
+    """
+    # 1. Tính thời điểm cắt (Cutoff date)
+    cutoff_date = datetime.now() - timedelta(days=days_threshold)
+    
+    # 2. Các trạng thái cần dọn dẹp
+    target_statuses = [PackageStatus.NEW, PackageStatus.INTERESTED]
+    
+    # 3. Thực hiện xóa
+    # synchronize_session=False: Giúp xóa nhanh số lượng lớn mà không cần update lại session hiện tại
+    deleted_count = db.query(BiddingPackage)\
+        .filter(
+            BiddingPackage.trang_thai.in_(target_statuses),
+            BiddingPackage.created_at < cutoff_date
+        )\
+        .delete(synchronize_session=False)
+    
+    db.commit()
+    
+    return deleted_count

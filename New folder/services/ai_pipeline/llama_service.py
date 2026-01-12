@@ -9,7 +9,7 @@ load_dotenv()
 
 class LlamaParseService:
     def __init__(self):
-        self.api_key = os.getenv("LLAMA_CLOUD_API_KEY")
+        self.api_key = os.getenv("LLAMA_CLOUD_API_KEY","")
         if not self.api_key:
             print("⚠️ Cảnh báo: Thiếu LLAMA_CLOUD_API_KEY")
 
@@ -26,7 +26,7 @@ class LlamaParseService:
             # Cấu hình Parser tối ưu cho Tiếng Việt và Bảng biểu
             parser = LlamaParse(
                 api_key=self.api_key,
-                result_type="markdown",  # Output chuẩn Markdown
+                result_type="markdown",  # Output chuẩn Markdown #type: ignore
                 language="vi",           # Hỗ trợ tiếng Việt tốt hơn
                 verbose=True,
                 # Các options nâng cao để xử lý bảng phức tạp (Premium mode - tốn credit hơn chút nhưng ngon)

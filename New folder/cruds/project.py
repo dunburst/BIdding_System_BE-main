@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import select, or_
+from sqlalchemy import func, select, or_
 from typing import List, Optional
 from models import User, UserRole, BiddingTask, TaskAssignment
 
@@ -186,3 +186,82 @@ def _get_keywords_from_tags(allowed_tag_codes: List[str]) -> List[str]:
             result_keywords.extend(TAG_TO_KEYWORDS[code])
             
     return result_keywords
+
+def get_project_participants(db: Session, project_id: int) -> List[User]:
+    """
+    Lấy danh sách nhân sự tham gia dự án (Assignee, Leader, Member).
+    LOẠI TRỪ: Host (Chủ trì) và Reviewer (Người duyệt các task).
+    """
+    # 1. Lấy thông tin Dự án để biết Host và Leader
+    project = get_project(db, project_id)
+    if not project:
+        return []
+
+    # Danh sách ID cần LOẠI BỎ (Người duyệt)
+    excluded_ids = set()
+    if project.host_id:
+        excluded_ids.add(project.host_id)
+
+
+    # 2. Thu thập ID người tham gia (Participant IDs)
+    participant_ids = set()
+
+    # a. Trưởng nhóm thầu (Bid Team Leader)
+    if project.bid_team_leader_id:
+        participant_ids.add(project.bid_team_leader_id)
+
+    # b. Người thực hiện chính (Assignee) trong bảng Task
+    assignees = db.query(BiddingTask.assignee_id)\
+        .filter(BiddingTask.bidding_project_id == project_id)\
+        .filter(BiddingTask.assignee_id.isnot(None))\
+        .distinct().all()
+    
+    for a in assignees:
+        participant_ids.add(a.assignee_id)
+        
+    reviewers = db.query(BiddingTask.reviewer_id)\
+        .filter(BiddingTask.bidding_project_id == project_id)\
+        .filter(BiddingTask.reviewer_id.isnot(None))\
+        .distinct().all()
+    
+    for r in reviewers:
+        participant_ids.add(r.reviewer_id)
+
+    # c. Người được phối hợp (Assigned User) trong bảng Assignment
+    # Join bảng Task để lọc theo project_id
+    assigned_users = db.query(TaskAssignment.assigned_user_id)\
+        .join(BiddingTask, TaskAssignment.task_id == BiddingTask.id)\
+        .filter(BiddingTask.bidding_project_id == project_id)\
+        .filter(TaskAssignment.assigned_user_id.isnot(None))\
+        .distinct().all()
+
+    for u in assigned_users:
+        participant_ids.add(u.assigned_user_id)
+
+    # 3. Loại bỏ Người duyệt ra khỏi danh sách tham gia
+    # (Dùng phép trừ set: participants - excluded)
+    final_ids = participant_ids - excluded_ids
+
+    if not final_ids:
+        return []
+
+    # 4. Query lấy thông tin chi tiết User
+    users = db.query(User).filter(User.user_id.in_(final_ids)).all()
+    
+    return users
+
+def update_project_status(db: Session, project_id: int, new_status: str) -> Optional[BiddingProject]:
+    """
+    Cập nhật riêng trạng thái của dự án
+    """
+    project = db.get(BiddingProject, project_id)
+    if not project:
+        return None
+    
+    project.status = new_status
+    # Nếu muốn lưu vết thời gian update
+    project.updated_at = func.now()
+    
+    db.commit()
+    db.refresh(project)
+    return project

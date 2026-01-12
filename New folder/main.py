@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
 import models
 from database import engine, get_db
-from routers import bidding, auth, crawler, organization, user, abac, system, project, googlelogin, task, bidding_req
+from routers import bidding, auth, crawler, organization, user, abac, system, project, googlelogin, task, bidding_req, agent_api, onedrive_router, generation
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from mcp_drive.router import router as drive_router
@@ -48,6 +48,9 @@ app.include_router(googlelogin.router) # Gắn router Google Login
 app.include_router(task.router)
 app.include_router(drive_router)
 app.include_router(drafting.router)
+app.include_router(agent_api.router)
+app.include_router(onedrive_router.router)
+app.include_router(generation.router)
 
 # API Test kết nối
 @app.get("/")
@@ -55,10 +58,11 @@ def read_root():
     return {"message": "Hệ thống quản lý đấu thầu PC1 đang chạy!"}
 
 origins = [
-    "*", # Cho phép tất cả các nguồn (dùng cho dev/test)
+    # "*", # Cho phép tất cả các nguồn (dùng cho dev/test)
     # Hoặc bạn có thể chỉ định cụ thể:
-    # "http://localhost:3000",
-    # "http://192.168.1.10:3000",
+    "http://localhost:3000",
+    "http://26.152.34.61:3000",
+    "http://10.11.0.178:3000",
 ]
 
 app.add_middleware(
