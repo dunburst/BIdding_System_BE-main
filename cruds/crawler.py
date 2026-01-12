@@ -42,9 +42,17 @@ def delete_schedule(db: Session, schedule_id: int):
     return False
 
 # === RULE CRUD ===
-def get_rules(db: Session, skip: int = 0, limit: int = 100):
-    # Hàm này đã có order_by nên không bị lỗi
-    return db.query(CrawlRule).order_by(CrawlRule.priority.desc()).offset(skip).limit(limit).all()
+def get_rules(db: Session, skip: int = 0, limit: int = 100, is_active: Optional[bool] = None):
+    """
+    Lấy danh sách Rule, hỗ trợ lọc theo trạng thái is_active
+    """
+    query = db.query(CrawlRule)
+    
+    # --- [BỔ SUNG MỚI] ---
+    if is_active is not None:
+        query = query.filter(CrawlRule.is_active == is_active)
+        
+    return query.order_by(CrawlRule.priority.desc()).offset(skip).limit(limit).all()
 
 def get_rule_by_id(db: Session, rule_id: int):
     return db.query(CrawlRule).filter(CrawlRule.id == rule_id).first()

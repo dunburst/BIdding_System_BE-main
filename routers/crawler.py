@@ -53,8 +53,14 @@ def delete_schedule(id: int, db: Session = Depends(get_db)):
 # 2. API CHO RULE (LUẬT TÌM KIẾM)
 # ==========================================
 @router.get("/rules", response_model=BaseResponse[List[CrawlRuleResponse]])
-def read_rules(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    data = crawler_crud.get_rules(db, skip=skip, limit=limit)
+def read_rules(
+    skip: int = 0, 
+    limit: int = 100, 
+    is_active: Optional[bool] = Query(None, description="Lọc rule đang bật (true) hoặc tắt (false)"),
+    db: Session = Depends(get_db)
+):
+    # Truyền tham số is_active vào CRUD
+    data = crawler_crud.get_rules(db, skip=skip, limit=limit, is_active=is_active)
     return BaseResponse(success=True, status=200, message="Lấy danh sách luật thành công", data=data)
 
 @router.post("/rules", response_model=BaseResponse[CrawlRuleResponse])

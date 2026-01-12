@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Path
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from models import BiddingPackage, BiddingProject, TaskAssignment, User, BiddingTask, TaskStatus, UserRole
+from schemas.project import BiddingProjectDetailResponse, BiddingProjectResponse
 from utils.security import get_current_user
 from utils.abac import check_permission
 from utils.constants import AbacAction
@@ -299,6 +300,45 @@ def get_project_personnel_list(
     users = cruds.get_project_participants(db, project_id)
     
     return users
+
+@router.get("/{project_id}/dashboard", response_model=BiddingProjectDetailResponse)
+def get_project_dashboard(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Lấy thông tin chi tiết dự án KÈM THEO các chỉ số thống kê (Dashboard).
+    """
+    # 1. Lấy thông tin dự án gốc (SQLAlchemy Object)
+    project = cruds.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Dự án không tồn tại")
+
+    # 2. Check quyền
+    has_access = cruds.check_user_project_access(db, project_id, current_user)
+    if not has_access:
+        raise HTTPException(status_code=403, detail="Không có quyền truy cập.")
+
+    # 3. Tính toán thống kê (Pydantic Object)
+    stats = cruds.get_project_statistics(db, project_id)
+
+    # ==========================================================
+    # [FIX LỖI VALIDATION ERROR TẠI ĐÂY]
+    # ==========================================================
+    
+    # Bước A: Chuyển đổi Project ORM sang Pydantic cơ bản (chưa có stats)
+    project_base = BiddingProjectResponse.model_validate(project)
+
+    # Bước B: Tạo Response cuối cùng bằng cách gộp dữ liệu
+    # **project_base.model_dump(): Bung tất cả các trường cũ (id, name, status...)
+    # stats=stats: Gán thêm trường stats mới tính được
+    response_data = BiddingProjectDetailResponse(
+        **project_base.model_dump(), 
+        stats=stats
+    )
+    
+    return response_data
     
 @router.get("/folder/{project_id}/me")
 def get_project_files_by_user(

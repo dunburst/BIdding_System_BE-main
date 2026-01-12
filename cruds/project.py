@@ -4,7 +4,8 @@ from typing import List, Optional
 from models import User, UserRole, BiddingTask, TaskAssignment
 
 # Import model của bạn và schema ở trên
-from models import BiddingPackage, BiddingProject 
+from models import BiddingPackage, BiddingProject , TaskAssignment, TaskStatus, TaskPriority
+from schemas.project import ProjectStatistics
 from schemas.project import BiddingProjectCreate, BiddingProjectUpdate
 
 def create_project_from_package(db: Session, project_in: BiddingProjectCreate) -> BiddingProject:
@@ -265,3 +266,98 @@ def update_project_status(db: Session, project_id: int, new_status: str) -> Opti
     db.commit()
     db.refresh(project)
     return project
+
+def get_project_statistics(db: Session, project_id: int) -> ProjectStatistics:
+    """
+    Hàm tính toán các chỉ số KPI của dự án:
+    1. Deadline: Lấy ngày deadline xa nhất của các Task.
+    2. Tiến độ: (Số task COMPLETED / Tổng số task) * 100.
+    3. Nhân sự: Đếm unique (Host + Leader + Assignee + Reviewer + Assigned User).
+    4. Độ ưu tiên: Lấy độ ưu tiên cao nhất trong các Task đang chạy.
+    """
+    
+    # --- 1. LẤY DEADLINE XA NHẤT ---
+    # Query: Max deadline của task thuộc dự án này
+    stmt_deadline = select(func.max(BiddingTask.deadline)).where(
+        BiddingTask.bidding_project_id == project_id
+    )
+    max_deadline = db.execute(stmt_deadline).scalar()
+
+    # --- 2. TÍNH TIẾN ĐỘ ---
+    # Tổng số task (Loại bỏ task cha nếu muốn tính chính xác theo đầu việc cụ thể, ở đây ta đếm hết)
+    total_tasks = db.query(BiddingTask).filter(
+        BiddingTask.bidding_project_id == project_id
+    ).count()
+
+    completed_tasks = db.query(BiddingTask).filter(
+        BiddingTask.bidding_project_id == project_id,
+        BiddingTask.status == TaskStatus.COMPLETED
+    ).count()
+
+    progress = 0.0
+    if total_tasks > 0:
+        progress = round((completed_tasks / total_tasks) * 100, 2)
+
+    # --- 3. ĐẾM SỐ NGƯỜI THAM GIA (PARTICIPANTS) ---
+    # Logic: Union các user ID từ các nguồn khác nhau trong dự án
+    
+    # A. Lấy Host và Team Leader từ Project
+    project = db.get(BiddingProject, project_id)
+    participants = set()
+    if project:
+    #     if project.host_id: participants.add(project.host_id)
+        if project.bid_team_leader_id: participants.add(project.bid_team_leader_id)
+
+    # B. Lấy Assignee và Reviewer từ bảng Task
+    task_users = db.query(BiddingTask.assignee_id, BiddingTask.reviewer_id).filter(
+        BiddingTask.bidding_project_id == project_id
+    ).all()
+    
+    for assignee, reviewer in task_users:
+        if assignee: participants.add(assignee)
+        if reviewer: participants.add(reviewer)
+
+    # C. Lấy Assigned User từ bảng Assignment (Join với Task để filter theo Project)
+    assignment_users = db.query(TaskAssignment.assigned_user_id)\
+        .join(BiddingTask, TaskAssignment.task_id == BiddingTask.id)\
+        .filter(BiddingTask.bidding_project_id == project_id)\
+        .filter(TaskAssignment.assigned_user_id.isnot(None))\
+        .all()
+        
+    for (uid,) in assignment_users:
+        participants.add(uid)
+
+    participant_count = len(participants)
+
+    # --- 4. TÍNH ĐỘ ƯU TIÊN (PRIORITY) ---
+    # Logic: Nếu có bất kỳ task nào là HIGH -> Project là HIGH.
+    # Nếu không, nếu có MEDIUM -> Project là MEDIUM. Còn lại là LOW.
+    
+    # Kiểm tra xem có task HIGH nào không
+    has_high = db.query(BiddingTask).filter(
+        BiddingTask.bidding_project_id == project_id,
+        BiddingTask.priority == TaskPriority.HIGH,
+        BiddingTask.status != TaskStatus.COMPLETED # Chỉ xét task chưa xong
+    ).first()
+
+    current_priority = "LOW"
+    if has_high:
+        current_priority = "HIGH"
+    else:
+        # Check Medium
+        has_medium = db.query(BiddingTask).filter(
+            BiddingTask.bidding_project_id == project_id,
+            BiddingTask.priority == TaskPriority.MEDIUM,
+            BiddingTask.status != TaskStatus.COMPLETED
+        ).first()
+        if has_medium:
+            current_priority = "MEDIUM"
+
+    return ProjectStatistics(
+        deadline=max_deadline,
+        progress=progress,
+        total_tasks=total_tasks,
+        completed_tasks=completed_tasks,
+        participant_count=participant_count,
+        priority=current_priority
+    )
