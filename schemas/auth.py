@@ -39,6 +39,7 @@ class UserMeResponse(BaseModel):
     full_name: Optional[str] = Field(None, serialization_alias="fullName")
     role: str
     avatar_url: Optional[str] = Field(None, serialization_alias="avatarUrl")
+    status: bool
 
     class Config:
         # Cho phép map từ object ORM sang Pydantic

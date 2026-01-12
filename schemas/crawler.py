@@ -40,14 +40,20 @@ class CrawlRuleBase(BaseModel):
     
     # Cập nhật: Thêm Optional
     locations: Optional[List[str]] = Field(default_factory=list)
+    # --- [BỔ SUNG MỚI] ---
+    investor: Optional[List[str]] = Field(default_factory=list, description="Chủ đầu tư")
+    commune: Optional[List[str]] = Field(default_factory=list, description="Xã/Phường")
     priority: int = 1
 
-    # QUAN TRỌNG: Validator để chuyển None -> []
-    @field_validator('keywords_include', 'keywords_exclude', 'locations', mode='before')
+    # Cập nhật Validator để xử lý None -> [] cho 2 trường mới
+    @field_validator('keywords_include', 'keywords_exclude', 'locations', 'investor', 'commune', mode='before')
     @classmethod
     def convert_none_to_list(cls, v: Any):
         if v is None:
             return []
+        # Nếu người dùng gửi chuỗi string (VD: "EVN") thay vì list, tự convert thành ["EVN"]
+        if isinstance(v, str):
+            return [v] 
         return v
 
 class CrawlRuleCreate(CrawlRuleBase):
@@ -61,6 +67,9 @@ class CrawlRuleUpdate(BaseModel):
     min_budget: Optional[Decimal] = None
     max_budget: Optional[Decimal] = None
     locations: Optional[List[str]] = None
+    # --- [BỔ SUNG MỚI] ---
+    investor: Optional[List[str]] = None
+    commune: Optional[List[str]] = None
     priority: Optional[int] = None
 
 class CrawlRuleResponse(CrawlRuleBase):

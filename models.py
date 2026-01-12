@@ -211,6 +211,12 @@ class CrawlRule(Base):
     
     # Khu vực (JSON List)
     locations: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=True)
+    # --- [BỔ SUNG MỚI] ---
+    # Chủ đầu tư (Lưu danh sách tên các CĐT muốn tìm)
+    investor: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=True)
+    
+    # Xã/Phường (Lưu danh sách xã phường cụ thể)
+    commune: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=True)
     
     # Độ ưu tiên
     priority: Mapped[int] = mapped_column(Integer, default=1, nullable=True)
@@ -300,6 +306,7 @@ class BiddingPackage(Base):
     
     # 2. Quan hệ 1-n với File đính kèm
     files: Mapped[List["BiddingPackageFile"]] = relationship(back_populates="package", cascade="all, delete-orphan")
+    result: Mapped[Optional["BiddingResult"]] = relationship(back_populates="package", uselist=False, cascade="all, delete-orphan")
     
     
     # 1. Quan hệ 1-1 với Yêu cầu Tài chính & Thủ tục
@@ -333,7 +340,100 @@ class BiddingPackageFile(Base):
     file_path: Mapped[str] = mapped_column(String(500)) # Đường dẫn lưu trữ file
     package: Mapped["BiddingPackage"] = relationship(back_populates="files")
 
+# Bảng lưu kết quả chung (Gắn 1-1 với BiddingPackage)
+# --- Cập nhật file models.py ---
 
+class BiddingResult(Base):
+    __tablename__ = "bidding_results"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hsmt_id: Mapped[int] = mapped_column(ForeignKey("bidding_packages.hsmt_id"), unique=True)
+    
+    # --- [MỚI] THÔNG TIN CHUNG (GENERAL INFO) ---
+    result_status: Mapped[Optional[str]] = mapped_column(Unicode(255))        # Trạng thái KQLCNT
+    posting_date: Mapped[Optional[datetime]] = mapped_column(DateTime)        # Ngày đăng tải
+    
+    approved_budget: Mapped[Optional[Decimal]] = mapped_column(Numeric(30,2)) # Dự toán gói thầu được duyệt
+    package_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(30,2))   # Giá gói thầu
+
+    approval_date: Mapped[Optional[datetime]] = mapped_column(DateTime)       # Ngày phê duyệt
+    approving_agency: Mapped[Optional[str]] = mapped_column(Unicode(500))     # Cơ quan phê duyệt
+    decision_number: Mapped[Optional[str]] = mapped_column(String(100))       # Số quyết định phê duyệt
+    
+    # Link file/văn bản
+    decision_link: Mapped[Optional[str]] = mapped_column(String(500))         # Link Quyết định phê duyệt
+    ehsdt_report_link: Mapped[Optional[str]] = mapped_column(String(500))     # Link Báo cáo đánh giá tổng hợp E-HSDT
+    
+    bidding_result_text: Mapped[Optional[str]] = mapped_column(Unicode(255))  # Kết quả đấu thầu (VD: Có nhà thầu trúng thầu)
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Quan hệ
+    package: Mapped["BiddingPackage"] = relationship(back_populates="result")
+    
+    # [THAY ĐỔI] Tách người trúng thầu ra bảng riêng để lưu được nhiều thành viên trong Liên danh
+    winners: Mapped[List["BiddingResultWinner"]] = relationship(back_populates="result", cascade="all, delete-orphan")
+    failed_bidders: Mapped[List["BiddingResultFailed"]] = relationship(back_populates="result", cascade="all, delete-orphan")
+    items: Mapped[List["BiddingResultItem"]] = relationship(back_populates="result", cascade="all, delete-orphan")
+
+# [BẢNG MỚI] Lưu danh sách nhà thầu trúng thầu (Hỗ trợ Liên danh nhiều thành viên)
+class BiddingResultWinner(Base):
+    __tablename__ = "bidding_results_winners"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    result_id: Mapped[int] = mapped_column(ForeignKey("bidding_results.id"))
+    
+    bidder_code: Mapped[Optional[str]] = mapped_column(String(50))   # Mã định danh (vn...)
+    tax_code: Mapped[Optional[str]] = mapped_column(String(50))      # Mã số thuế
+    bidder_name: Mapped[Optional[str]] = mapped_column(Unicode(1000)) # Tên nhà thầu
+    role: Mapped[Optional[str]] = mapped_column(Unicode(255))        # Tên liên danh
+    
+    # Các thông tin giá trị (thường giống nhau cho cả liên danh, nhưng cứ lưu để tiện)
+    bid_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(30, 2)) # Giá dự thầu
+    corrected_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(30, 2)) #Giá dự thầu sau hiệu chỉnh
+    evaluated_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(30, 2)) # Giá đánh giá
+    winning_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(30, 2)) # Giá trúng thầu
+    technical_score: Mapped[Optional[str]] = mapped_column(String(100)) # Điểm kỹ thuật
+    execution_time: Mapped[Optional[str]] = mapped_column(Unicode(500)) # Thời gian thực hiện (6 tháng...)
+    # [MỚI] Thời gian thực hiện hợp đồng
+    contract_period: Mapped[Optional[str]] = mapped_column(Unicode(500)) # Thời gian thực hiện hợp đồng 
+    
+    # [MỚI] Các nội dung khác
+    other_content: Mapped[Optional[str]] = mapped_column(UnicodeText) # Nội dung khác (nếu có)
+    
+    result: Mapped["BiddingResult"] = relationship(back_populates="winners")
+
+class BiddingResultFailed(Base):
+    __tablename__ = "bidding_results_failed"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    result_id: Mapped[int] = mapped_column(ForeignKey("bidding_results.id"))
+    
+    bidder_code: Mapped[Optional[str]] = mapped_column(String(50))   # Mã định danh (vn...)
+    bidder_name: Mapped[Optional[str]] = mapped_column(Unicode(1000)) # Tên nhà thầu
+    tax_code: Mapped[Optional[str]] = mapped_column(String(50)) # Mã số thuế
+    
+    # [MỚI] Hỗ trợ Liên danh
+    joint_venture_name: Mapped[Optional[str]] = mapped_column(Unicode(1000)) # Tên Liên danh (nếu có)
+    
+    reason: Mapped[Optional[str]] = mapped_column(UnicodeText) # Lý do không trúng thầu
+    
+    result: Mapped["BiddingResult"] = relationship(back_populates="failed_bidders")
+
+class BiddingResultItem(Base):
+    __tablename__ = "bidding_results_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    result_id: Mapped[int] = mapped_column(ForeignKey("bidding_results.id"))
+    
+    item_name: Mapped[Optional[str]] = mapped_column(Unicode(1000)) # Tên hàng hóa, dịch vụ
+    model: Mapped[Optional[str]] = mapped_column(Unicode(500))      # Ký mã hiệu
+    brand: Mapped[Optional[str]] = mapped_column(Unicode(500))      # Nhãn hiệu (Mới)
+    manufacturer: Mapped[Optional[str]] = mapped_column(Unicode(500)) # Nhà sản xuất
+    origin: Mapped[Optional[str]] = mapped_column(Unicode(255)) # Xuất xứ
+    
+    # [MỚI] Thông tin chi tiết hàng hóa (ảnh cuối)
+    year_of_manufacture: Mapped[Optional[str]] = mapped_column(Unicode(100)) # Năm sản xuất
+    technical_specs: Mapped[Optional[str]] = mapped_column(UnicodeText)    # Cấu hình/Thông số kỹ thuật
+    
+    result: Mapped["BiddingResult"] = relationship(back_populates="items")
 # ==========================================
 # GROUP 2: TEMPLATES (Mẫu dự án/công việc)
 # ==========================================
