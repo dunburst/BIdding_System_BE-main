@@ -9,7 +9,8 @@ from utils.permission_service import get_user_allowed_tags_with_name
 from mcp_drive.service import drive_service
 from mcp_drive.router import _get_folder_tag
 from cruds.project import _get_keywords_from_tags
-
+from schemas.user import UserResponse
+from schemas.project import ProjectStatusUpdateSchema
 # Giả sử bạn có file dependencies để lấy DB session (get_db)
 from database import get_db 
 import cruds.project as cruds
@@ -277,6 +278,27 @@ def stop_project(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Lỗi khi dừng dự án: {str(e)}")
+
+@router.get("/{project_id}/personnel", response_model=List[UserResponse])
+def get_project_personnel_list(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Lấy danh sách nhân sự thực hiện dự án.
+    - Bao gồm: Trưởng nhóm thầu, Người thực hiện (Assignee), Người phối hợp.
+    - Loại trừ: Chủ trì (Host), Người duyệt (Reviewer).
+    """
+    # 1. Kiểm tra quyền truy cập dự án (Optional: nếu muốn bảo mật kỹ)
+    has_access = cruds.check_user_project_access(db, project_id, current_user)
+    if not has_access:
+         raise HTTPException(status_code=403, detail="Bạn không có quyền truy cập thông tin dự án này.")
+
+    # 2. Gọi hàm CRUD
+    users = cruds.get_project_participants(db, project_id)
+    
+    return users
     
 @router.get("/folder/{project_id}/me")
 def get_project_files_by_user(
@@ -369,3 +391,36 @@ def get_project_files_by_user(
         "total_items": len(visible_items),
         "data": visible_items
     }
+    
+@router.patch("/{project_id}/status", response_model=schemas.BiddingProjectResponse)
+def change_project_status(
+    project_id: int,
+    status_in: ProjectStatusUpdateSchema,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Thay đổi trạng thái dự án (VD: ACTIVE -> CLOSED).
+    Quyền hạn: Chỉ Admin, Manager hoặc Người chủ trì (Host) mới được đổi.
+    """
+    # 1. Tìm dự án
+    project = cruds.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Dự án không tồn tại")
+
+    # 2. Kiểm tra quyền (Authorization)
+    # Admin/Manager luôn có quyền
+    is_admin_or_manager = current_user.role in [UserRole.ADMIN, UserRole.MANAGER, UserRole.BID_MANAGER]
+    # Host của dự án có quyền
+    is_host = (project.host_id == current_user.user_id)
+
+    if not (is_admin_or_manager or is_host):
+        raise HTTPException(
+            status_code=403, 
+            detail="Bạn không có quyền thay đổi trạng thái dự án này (Chỉ dành cho Chủ trì hoặc Lãnh đạo)."
+        )
+
+    # 3. Cập nhật
+    updated_project = cruds.update_project_status(db, project_id, status_in.status)
+    
+    return updated_project

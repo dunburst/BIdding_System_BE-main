@@ -121,8 +121,8 @@ def login(
     
     # Nếu chọn "Ghi nhớ đăng nhập" -> Tăng thời gian sống lên 30 ngày cho Cookie
     if login_data.remember_me:
-        cookie_max_age = 3600 * 24 * 7 # 7 days
-        refresh_expires_duration = timedelta(days=REMEMBER_ME_DAYS)
+        cookie_max_age = 3600 # 1 hour in seconds
+        refresh_expires_duration = timedelta(hours=1)
     else:
         cookie_max_age = None # Session Cookie (Xóa khi tắt trình duyệt)
         refresh_expires_duration = timedelta(days=7)
