@@ -748,3 +748,15 @@ class BiddingReqEquipment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     package: Mapped["BiddingPackage"] = relationship(back_populates="equipment_reqs")
+    
+class DocumentRegistry(Base):
+    __tablename__ = "document_registry"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    source_file: Mapped[str] = mapped_column(String(255), unique=True, index=True) # Tên file
+    legal_level: Mapped[str] = mapped_column(String(50))      # Cấp độ pháp lý
+    legal_priority: Mapped[int] = mapped_column(Integer)      # Độ ưu tiên
+    promulgation_year: Mapped[int] = mapped_column(Integer)   # Năm ban hành
+    ingest_status: Mapped[str] = mapped_column(String(20))    # Trạng thái
+    total_chunks: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

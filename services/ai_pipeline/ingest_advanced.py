@@ -1,9 +1,9 @@
+# services/ai_pipeline/ingest_advanced.py
 import re
-from typing import List, Dict, Any
-# Bạn cần cài thư viện này: pip install langchain-text-splitters
+from typing import List, Dict, Any, Tuple # <--- [FIX 1] Import thêm Tuple
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# --- 1. HÀM TRÍCH XUẤT METADATA (NÂNG CẤP: FILE NAME + CONTENT) ---
+# --- 1. HÀM TRÍCH XUẤT METADATA ---
 def extract_legal_metadata(filename: str, content_preview: str = "") -> Dict[str, Any]:
     """
     Phân tích tên file VÀ nội dung đầu trang để lấy thông tin pháp lý.
@@ -55,7 +55,7 @@ def extract_legal_metadata(filename: str, content_preview: str = "") -> Dict[str
 
     return {
         "legal_level": level,
-        "legal_priority": priority, # [FIX] Sửa lỗi chính tả priorityy cũ
+        "legal_priority": priority, 
         "promulgation_year": year,
         "source_file": filename
     }
@@ -70,14 +70,16 @@ def clean_text(text: str) -> str:
             continue
         cleaned_lines.append(line)
     return "\n".join(cleaned_lines)
-# --- 2. HÀM XỬ LÝ CHÍNH (GIỮ NGUYÊN LOGIC CŨ, CHỈ THÊM THAM SỐ) ---
-def process_hierarchical_chunks(markdown_text: str, filename: str) -> List[Dict[str, Any]]:
+
+# --- 2. HÀM XỬ LÝ CHÍNH ---
+# [FIX 2] Sửa Type Hint trả về: Tuple[List[...], Dict[...]]
+def process_hierarchical_chunks(markdown_text: str, filename: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     
     # Bước 1: Tách Parent
     parent_pattern = r'(^#{1,3}\s+.+)'
     parts = re.split(parent_pattern, markdown_text, flags=re.MULTILINE)
     
-    # [NÂNG CẤP] Truyền thêm nội dung text vào để scan
+    # Truyền thêm nội dung text vào để scan metadata
     file_metadata = extract_legal_metadata(filename, content_preview=markdown_text)
     
     print(f"🏷️ Metadata (Updated) {filename}: {file_metadata}")
@@ -124,7 +126,7 @@ def process_hierarchical_chunks(markdown_text: str, filename: str) -> List[Dict[
 
     # Bước 2: Tách Child
     child_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000, # Tăng nhẹ size
+        chunk_size=1000, 
         chunk_overlap=200,
         separators=["\n\n", "\n", ". ", " ", ""]
     )
@@ -154,4 +156,6 @@ def process_hierarchical_chunks(markdown_text: str, filename: str) -> List[Dict[
                 final_chunks.append(create_chunk_dict(child_text))
             
     print(f"✅ [Ingest] Đã tạo ra {len(final_chunks)} vector search nodes.")
-    return final_chunks
+    
+    # Trả về cả chunks (List) và metadata (Dict)
+    return final_chunks, file_metadata
