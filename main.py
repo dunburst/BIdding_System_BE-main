@@ -63,6 +63,7 @@ origins = [
     "http://localhost:3000",
     "http://26.152.34.61:3000",
     "http://10.11.0.178:3000",
+    "https://bidding-management.vercel.app"
 ]
 
 app.add_middleware(

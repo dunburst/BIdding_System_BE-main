@@ -2,19 +2,26 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, Ba
 import shutil
 import os
 import uuid
-
+import io
+from services.ingestion_service import process_minio_document_background, ingestion_status_tracker
+from celery.result import AsyncResult
+from celery import Celery
+import google.generativeai as genai
+from minio_client import minio_handler
 # --- IMPORT CÁC SERVICES ĐÃ TẠO ---
 from services.ai_pipeline.llama_service import llama_service
 from services.requirement_service import RequirementService, get_req_service
 from services.drafting_bot import DraftingBot, get_drafting_bot
 from services.chroma_service import ChromaService, get_chroma_service
+from services.retrieval_service import RetrievalService, get_retrieval_service
 from fastapi.responses import HTMLResponse # <--- Import cái này
 import markdown # <--- Import thư viện chuyển đổi
 # --- IMPORT HÀM TIỆN ÍCH (CHUNKING) ---
 # Giả sử bạn để hàm chunk_by_chapters trong utils/chunking.py
 # Nếu chưa có file này, bạn có thể copy hàm chunk_by_chapters vào cuối file này cũng được
 from services.ai_pipeline.ingest import chunk_by_chapters 
-
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+celery_app = Celery('bidding_sender', broker=CELERY_BROKER_URL)
 router = APIRouter(
     prefix="/ai-bidding",
     tags=["AI Bidding (RAG)"],
@@ -29,7 +36,24 @@ current_session_context = {}
 # Đảm bảo thư mục tạm tồn tại
 TEMP_DIR = "temp_uploads"
 os.makedirs(TEMP_DIR, exist_ok=True)
+# --- KHỞI TẠO GEMINI AGENT (Thêm đoạn này vào router) ---
+GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
+genai.configure(api_key=GOOGLE_API_KEY)
 
+# Tạo một class Wrapper đơn giản để gọi chat
+class GeminiAgent:
+    def __init__(self):
+        self.model = genai.GenerativeModel('gemini-2.5-flash') # Hoặc gemini-1.5-pro
+
+    def chat(self, prompt: str) -> str:
+        try:
+            response = self.model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            return f"Error Gemini: {str(e)}"
+
+# Khởi tạo instance
+gemini_agent = GeminiAgent()
 # ==============================================================================
 # 1. API: DẠY BOT (LEARN / INGESTION)
 # ==============================================================================
@@ -199,3 +223,101 @@ async def reset_session(chroma_service: ChromaService = Depends(get_chroma_servi
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+# ==============================================================================
+# 1. API: UPLOAD FILE & XỬ LÝ NGẦM (BACKGROUND TASKS)
+# ==============================================================================
+@router.post("/ingest-async", summary="Upload tài liệu lớn (No Celery)")
+async def ingest_document_async(
+    background_tasks: BackgroundTasks,  # <--- Dùng cái này của FastAPI
+    file: UploadFile = File(...),
+):
+    """
+    1. Upload file lên MinIO.
+    2. Tạo Task ID.
+    3. Đẩy việc xử lý vào BackgroundTasks (không chặn UI).
+    """
+    safe_filename = file.filename or "unknown.pdf"
+    # Tạo đường dẫn lưu trong MinIO
+    minio_path = f"raw_inputs/{safe_filename}"
+    task_id = str(uuid.uuid4()) # Tạo ID thủ công để theo dõi
+    
+    try:
+        # --- BƯỚC 1: UPLOAD LÊN MINIO TỪ RAM ---
+        file_content = await file.read()
+        file_size = len(file_content)
+        file_stream = io.BytesIO(file_content)
+        
+        minio_url = minio_handler.upload_file_obj(
+            file_data=file_stream,
+            length=file_size,
+            object_name=minio_path,
+            content_type=file.content_type or "application/octet-stream"
+        )
+        
+        if not minio_url:
+            raise HTTPException(status_code=500, detail="Lỗi upload MinIO")
+
+        # --- BƯỚC 2: GIAO VIỆC CHO BACKGROUND TASKS ---
+        # Gọi hàm logic trong services/ingestion_service.py
+        background_tasks.add_task(
+            process_minio_document_background, 
+            task_id, 
+            minio_path, 
+            safe_filename
+        )
+                
+        return {
+            "status": "queued",
+            "task_id": task_id,
+            "minio_path": minio_path,
+            "message": "File đã lên MinIO và đang xử lý ngầm."
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi: {str(e)}")
+
+# ==============================================================================
+# 2. API: KIỂM TRA TIẾN ĐỘ TASK (DÙNG RAM)
+# ==============================================================================
+@router.get("/tasks/{task_id}", summary="Kiểm tra trạng thái xử lý file")
+async def get_task_status(task_id: str):
+    """
+    Lấy trạng thái từ biến toàn cục `ingestion_status_tracker` (trong RAM).
+    """
+    # Lấy thông tin từ Dictionary
+    task_info = ingestion_status_tracker.get(task_id)
+    
+    if not task_info:
+        # Nếu chưa có thông tin (có thể task vừa tạo chưa kịp chạy dòng code đầu tiên)
+        return {
+            "task_id": task_id,
+            "status": "PENDING",
+            "message": "Task đang chờ khởi động..."
+        }
+    
+    return {
+        "task_id": task_id,
+        "status": task_info.get("status"), # PROGRESS, SUCCESS, FAILURE
+        "progress": {
+            "message": task_info.get("message"),
+        },
+        "result": task_info.get("result")
+    }
+
+@router.post("/search")
+async def search_knowledge(query: str, retrieval_service: RetrievalService = Depends(get_retrieval_service)):
+    # Chỉ tìm văn bản từ năm 2014 trở lại đây (để tránh Luật 2005 cũ rích)
+    filters = {
+        "year": {"$gte": 2014} 
+    }
+    
+    results = retrieval_service.search_legal_docs(query, filters=filters)
+    
+    # Prompting cho Gemini
+    context_str = "\n\n".join([
+        f"--- Nguồn: {r['source']} (Năm {r['year']}) ---\n{r['parent_content']}" 
+        for r in results
+    ])
+    
+    return gemini_agent.chat(f"Dựa vào luật sau:\n{context_str}\n\nTrả lời: {query}")

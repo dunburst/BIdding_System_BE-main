@@ -569,18 +569,71 @@ class ResultCrawlerBot:
         except Exception as e:
             logger.error(f"Processing Error {pkg.ma_tbmt}: {str(e)}")
 
+    # def run(self):
+    #     pkgs = self.db.query(models.BiddingPackage).filter(models.BiddingPackage.trang_thai == models.PackageStatus.SUBMITTED).all()
+    #     logger.info(f"Found {len(pkgs)} SUBMITTED packages.")
+    #     for index, pkg in enumerate(pkgs):
+    #         driver = self.start_driver()
+    #         if not driver: continue
+    #         try:
+    #             self.search_and_process(driver, pkg)
+    #         finally:
+    #             driver.quit()
+    #             time.sleep(2)
+    # Sửa lại hàm run() trong ResultCrawlerBot
     def run(self):
-        pkgs = self.db.query(models.BiddingPackage).filter(models.BiddingPackage.trang_thai == models.PackageStatus.SUBMITTED).all()
+        pkgs = self.db.query(models.BiddingPackage).filter(
+            models.BiddingPackage.trang_thai == models.PackageStatus.SUBMITTED
+        ).all()
+        
         logger.info(f"Found {len(pkgs)} SUBMITTED packages.")
-        for index, pkg in enumerate(pkgs):
-            driver = self.start_driver()
-            if not driver: continue
-            try:
-                self.search_and_process(driver, pkg)
-            finally:
-                driver.quit()
-                time.sleep(2)
+        if not pkgs: return
 
+        # 1. Khởi động driver lần đầu
+        driver = self.start_driver()
+        
+        # [QUAN TRỌNG] Nếu ngay từ đầu đã không bật được thì dừng luôn
+        if not driver: 
+            logger.error("❌ Không khởi động được Driver ngay từ đầu. Dừng Bot.")
+            return
+
+        try:
+            for index, pkg in enumerate(pkgs):
+                logger.info(f"Processing {index + 1}/{len(pkgs)}: {pkg.ma_tbmt}")
+                
+                # Kiểm tra lại driver trước khi dùng (đề phòng vòng lặp trước làm driver thành None)
+                if not driver:
+                    logger.warning("⚠️ Driver đang bị None, đang thử khởi động lại...")
+                    driver = self.start_driver()
+                    if not driver:
+                        logger.error("❌ Khởi động lại thất bại. Bỏ qua gói này.")
+                        continue # Bỏ qua gói này, thử gói sau
+
+                try:
+                    self.search_and_process(driver, pkg)
+                except Exception as e:
+                    logger.error(f"Error processing {pkg.ma_tbmt}: {e}")
+                    
+                    # Cơ chế Reset Driver khi gặp lỗi nặng
+                    try:
+                        if driver: # Kiểm tra trước khi quit
+                            driver.quit()
+                    except: pass
+                    
+                    # Khởi động lại driver mới cho vòng lặp tiếp theo
+                    logger.info("🔄 Đang khởi động lại Driver mới do lỗi...")
+                    driver = self.start_driver() 
+
+        finally:
+            # [FIX LỖI CỦA BẠN TẠI ĐÂY]
+            # Chỉ gọi quit() nếu driver KHÔNG PHẢI LÀ None
+            if driver is not None:
+                try:
+                    driver.quit()
+                except Exception as e:
+                    logger.warning(f"Lỗi khi đóng driver: {e}")
+            
+            logger.info("Done processing all packages.")
 if __name__ == "__main__":
     bot = ResultCrawlerBot()
     bot.run()
