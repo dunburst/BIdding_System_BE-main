@@ -8,13 +8,13 @@ from urllib.parse import quote
 # Nếu chạy bot trên cùng máy cài MinIO thì để localhost.
 # Nếu bot chạy máy khác thì thay bằng IP máy chứa MinIO (VD: 192.168.1.xxx)
 # --- CẤU HÌNH MINIO (Ưu tiên lấy từ biến môi trường Docker, nếu không có mới lấy giá trị mặc định) ---
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "10.10.0.158:9000")
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "rebecca-insertion-colony-forestry.trycloudflare.com")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin_user")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "MinioStrongPassword2024!")
 MINIO_BUCKET = "files"
 MINIO_BUCKET_JKANCON = "jkancon"
 # Chuyển chuỗi "true"/"false" từ env thành boolean
-MINIO_SECURE = os.getenv("MINIO_SECURE", "False").lower() == "true"
+MINIO_SECURE = True
 
 logger = logging.getLogger("MinIO")
 
@@ -56,7 +56,7 @@ class MinIOHandler:
 
             # Mã hóa URL
             safe_object_name = quote(object_name, safe='/')
-            protocol = "https" if MINIO_SECURE else "http"
+            protocol = "https" #if MINIO_SECURE else "http"
             url = f"{protocol}://{MINIO_ENDPOINT}/{target_bucket}/{safe_object_name}"
             return url
         except Exception as e:
@@ -67,8 +67,6 @@ class MinIOHandler:
     def upload_file_obj(self, file_data, length, object_name, content_type="application/octet-stream", bucket_name=None):
         if not self.client:
             return None
-
-       
 
         try:
             target_bucket = bucket_name if bucket_name else MINIO_BUCKET
@@ -86,7 +84,7 @@ class MinIOHandler:
 
             # Tạo URL trả về
             safe_object_name = quote(object_name, safe='/')
-            protocol = "https" if MINIO_SECURE else "http"
+            protocol = "https" #if MINIO_SECURE else "http"
             url = f"{protocol}://{MINIO_ENDPOINT}/{target_bucket}/{safe_object_name}"
             return url
         except Exception as e:
