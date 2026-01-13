@@ -5,7 +5,11 @@ import re
 from typing import List, Dict, Any, Optional
 from functools import lru_cache
 from fastapi import Depends
-
+# [FIX 1] KHAI BÁO BIẾN TOÀN CỤC (GLOBAL)
+# Biến này sẽ giữ model trong RAM mãi mãi, không bị reset khi gọi hàm
+global_reranker = None
+# Biến lưu instance của Service
+_retrieval_service_instance = None
 class RetrievalService:
     def __init__(self, chroma_service: ChromaService):
         self.chroma = chroma_service
@@ -13,6 +17,24 @@ class RetrievalService:
         # BAAI/bge-reranker-v2-m3 là top tier hiện nay
         print("⚖️ Đang tải model Re-ranking (bge-reranker-v2-m3)...")
         self.reranker = CrossEncoder('BAAI/bge-reranker-v2-m3', max_length=512)
+        # [FIX 2] CHECK XEM ĐÃ CÓ MODEL CHƯA, NẾU CHƯA MỚI LOAD
+        # global global_reranker
+        # if global_reranker is None:
+        #     print("⚖️ Đang tải model Re-ranking (Chạy lần đầu tiên)...")
+        #     # [LỜI KHUYÊN] Model 'bge-reranker-v2-m3' rất nặng (500MB+). 
+        #     # Nếu chạy CPU, bạn nên đổi sang 'cross-encoder/ms-marco-MiniLM-L-6-v2' (nhẹ hơn 10 lần)
+            
+        #     # Option 1: Model hiện tại (Tốt nhưng Chậm trên CPU)
+        #     # global_reranker = CrossEncoder('BAAI/bge-reranker-v2-m3', max_length=512)
+            
+        #     # Option 2: Model nhẹ (Khuyên dùng cho CPU)
+        #     print("🚀 Đang dùng model nhẹ ms-marco-MiniLM-L-6-v2 cho nhanh...")
+        #     global_reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
+            
+        # else:
+        #     print("⚡ Sử dụng lại model Re-ranking đã có trong RAM.")
+            
+        # self.reranker = global_reranker
 
     def search_with_rerank(self, query: str, top_k=5):
         """
@@ -163,8 +185,17 @@ class RetrievalService:
         return unique_results
     
 # --- PROVIDER ---
-@lru_cache()
+# @lru_cache()
+# def get_retrieval_service(
+#     chroma_service: ChromaService = Depends(get_chroma_service)
+# ) -> RetrievalService:
+#     return RetrievalService(chroma_service)
+
 def get_retrieval_service(
     chroma_service: ChromaService = Depends(get_chroma_service)
 ) -> RetrievalService:
-    return RetrievalService(chroma_service)
+    global _retrieval_service_instance
+    # Nếu chưa có thì tạo mới
+    if _retrieval_service_instance is None:
+        _retrieval_service_instance = RetrievalService(chroma_service)
+    return _retrieval_service_instance

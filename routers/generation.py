@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, BackgroundTasks, Depends
 import shutil
 import os
@@ -50,12 +51,14 @@ class OpenAIAgent:
     def __init__(self):
         if not OPENAI_API_KEY:
             print("⚠️ Cảnh báo: Chưa cấu hình OPENAI_API_KEY trong file .env")
-        
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        # [THÊM MỚI] Lấy base_url từ env
+        base_url = os.getenv("OPENAI_API_BASE")
+
+        self.client = OpenAI(api_key=OPENAI_API_KEY, base_url=base_url)
         # Sử dụng model gpt-4o (tốt nhất) hoặc gpt-4o-mini (tiết kiệm)
         self.model_name = "gpt-4o" 
 
-    def chat(self, prompt: str, system_role: str = None) -> str:
+    def chat(self, prompt: str, system_role: Optional[str] = None) -> str:
         try:
             messages = []
             
@@ -80,7 +83,7 @@ class OpenAIAgent:
                 temperature=0.1, # Giữ nhiệt độ thấp để bot trung thực với dữ liệu
                 max_tokens=2000
             )
-            return response.choices[0].message.content
+            return response.choices[0].message.content or ""
         except Exception as e:
             return f"❌ Lỗi OpenAI: {str(e)}"
 

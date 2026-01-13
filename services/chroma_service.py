@@ -22,12 +22,16 @@ class ChromaService:
         # )
         # --- CẤU HÌNH OPENAI EMBEDDING (text-embedding-3-large) ---
         api_key = os.getenv("OPENAI_API_KEY")
+        # [FIX] Lấy thêm endpoint/domain từ biến môi trường
+        # Nếu bạn không set biến này, nó sẽ fallback về None (dùng mặc định của OpenAI)
+        api_base = os.getenv("OPENAI_API_BASE")  # Ví dụ: "https://your-custom-domain.com/v1"
         if not api_key:
             print("⚠️ Cảnh báo: Thiếu OPENAI_API_KEY. Vector Search sẽ lỗi.")
 
         self.embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
             api_key=api_key,
             model_name="text-embedding-3-large"
+            , api_base=api_base
         )
 
         # 3. Tạo Collection: VĂN PHONG MẪU
