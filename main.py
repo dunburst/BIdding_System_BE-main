@@ -50,7 +50,7 @@ app.include_router(drive_router)
 app.include_router(drafting.router)
 # app.include_router(agent_api.router)
 app.include_router(onedrive_router.router)
-# app.include_router(generation.router)
+app.include_router(generation.router)
 
 # API Test kết nối
 @app.get("/")
