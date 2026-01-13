@@ -3,6 +3,9 @@ import shutil
 import os
 import uuid
 import io
+from database import get_db, engine, Base
+from models import DocumentRegistry
+from sqlalchemy.orm import Session
 from services.ingestion_service import process_minio_document_background, ingestion_status_tracker
 from celery.result import AsyncResult
 from celery import Celery
@@ -321,3 +324,15 @@ async def search_knowledge(query: str, retrieval_service: RetrievalService = Dep
     ])
     
     return gemini_agent.chat(f"Dựa vào luật sau:\n{context_str}\n\nTrả lời: {query}")
+
+@router.get("/documents", summary="Lấy danh sách file (Từ SQL Database)")
+async def get_documents_from_sql(db: Session = Depends(get_db)):
+    """
+    Lấy danh sách tài liệu đã ingest từ bảng SQL.
+    """
+    docs = db.query(DocumentRegistry).order_by(DocumentRegistry.created_at.desc()).all()
+    
+    return {
+        "count": len(docs),
+        "data": docs
+    }
