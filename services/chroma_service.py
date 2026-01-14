@@ -22,12 +22,16 @@ class ChromaService:
         # )
         # --- CẤU HÌNH OPENAI EMBEDDING (text-embedding-3-large) ---
         api_key = os.getenv("OPENAI_API_KEY")
+        # [FIX] Lấy thêm endpoint/domain từ biến môi trường
+        # Nếu bạn không set biến này, nó sẽ fallback về None (dùng mặc định của OpenAI)
+        api_base = os.getenv("OPENAI_API_BASE")  # Ví dụ: "https://your-custom-domain.com/v1"
         if not api_key:
             print("⚠️ Cảnh báo: Thiếu OPENAI_API_KEY. Vector Search sẽ lỗi.")
 
         self.embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
             api_key=api_key,
             model_name="text-embedding-3-large"
+            , api_base=api_base
         )
 
         # 3. Tạo Collection: VĂN PHONG MẪU
@@ -110,32 +114,38 @@ class ChromaService:
         except Exception as e:
             print(f"❌ Lỗi khi lưu vào ChromaDB: {e}")
             
-    def save_hierarchical_chunks(self, chunks, source_filename):
+    # [CHANGE] Thêm tham số collection_name
+    def save_hierarchical_chunks(self, chunks, source_filename, collection_name="legal_docs"):
         """
-        Lưu chunks đã xử lý theo mô hình Parent-Child
+        Lưu chunks vào collection được chỉ định
         """
+        # Lấy hoặc tạo Collection theo tên người dùng nhập
+        target_collection = self.client.get_or_create_collection(
+            name=collection_name, 
+            embedding_function=self.embedding_fn # type: ignore
+        )
+
         ids = []
-        documents = [] # Child content
+        documents = []
         metadatas = []
         
         for chunk in chunks:
             ids.append(str(uuid.uuid4()))
             documents.append(chunk['page_content'])
-            metadatas.append(chunk['metadata']) # Chứa parent_content
+            metadatas.append(chunk['metadata']) 
             
-        # Batch insert (Tăng tốc độ)
         BATCH_SIZE = 50
         total = len(ids)
         
         try:
             for i in range(0, total, BATCH_SIZE):
                 end = i + BATCH_SIZE
-                self.legal_collection.add(
+                target_collection.add(
                     ids=ids[i:end],
                     documents=documents[i:end],
                     metadatas=metadatas[i:end]
                 )
-            print(f"💾 Đã lưu {total} vectors vào DB.")
+            print(f"💾 Đã lưu {total} vectors vào Collection '{collection_name}'.")
         except Exception as e:
             print(f"❌ Lỗi lưu Chroma: {e}")
 
@@ -167,7 +177,43 @@ class ChromaService:
             print("🧹 Đã dọn sạch bộ nhớ yêu cầu cũ.")
         except Exception as e:
             print(f"⚠️ Lỗi khi clear collection: {e}")
-
+            
+    # [CHANGE] Cập nhật hàm xóa để xóa đúng collection
+    def delete_document_vectors(self, source_filename: str, collection_name="legal_docs"):
+        try:
+            print(f"🗑️ Đang tiến hành xóa vectors của: {source_filename} trong {collection_name}...")
+            
+            target_collection = self.client.get_collection(name=collection_name)
+            target_collection.delete(
+                where={"source": source_filename}
+            )
+            
+            print(f"✅ Đã xóa sạch vectors của file {source_filename}.")
+            return True
+        except ValueError:
+            print(f"⚠️ Collection {collection_name} không tồn tại, bỏ qua bước xóa.")
+            return True
+        except Exception as e:
+            print(f"❌ Lỗi khi xóa vector trong Chroma: {e}")
+            return False
+        
+        # 👇 THÊM HÀM NÀY VÀO CUỐI CLASS
+    def list_all_collections(self) -> list:
+        """
+        Lấy danh sách tên tất cả các Collection đang tồn tại trong ChromaDB.
+        """
+        try:
+            # list_collections trả về một list các object Collection
+            collections = self.client.list_collections()
+            
+            # Chúng ta chỉ cần lấy tên (name) của chúng
+            collection_names = [c.name for c in collections]
+            
+            print(f"📂 Tìm thấy {len(collection_names)} collections: {collection_names}")
+            return collection_names
+        except Exception as e:
+            print(f"❌ Lỗi khi lấy danh sách collection: {e}")
+            return []
 # --- THÊM ĐOẠN NÀY ---
 @lru_cache()
 def get_chroma_service() -> ChromaService:

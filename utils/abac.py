@@ -1,10 +1,47 @@
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 from sqlalchemy.orm import Session
 import enum
 from models import AbacPolicy, AbacAttribute, User, PolicyEffect
 from utils.constants import AbacAction
 from typing import List
 
+# Biến global lưu trữ Policy trong RAM
+# Cấu trúc: { "bidding_packages": [PolicyObj1, PolicyObj2], "users": [...] }
+_POLICY_STORE: Dict[str, List[AbacPolicy]] = {}
+def get_policies_from_cache(db: Session, resource_name: str) -> List[AbacPolicy]:
+    """
+    Hàm này thay thế cho câu lệnh db.query(...) 
+    Nó sẽ kiểm tra trong RAM trước, nếu chưa có mới gọi DB.
+    """
+    global _POLICY_STORE
+    
+    # 1. Nếu đã có trong RAM, trả về ngay (Tốn 0.00001 giây)
+    if resource_name in _POLICY_STORE:
+        return _POLICY_STORE[resource_name]
+    
+    # 2. Nếu chưa có, query DB một lần duy nhất
+    print(f"🔄 [CACHE MISS] Loading policies for {resource_name} from DB...")
+    policies = db.query(AbacPolicy).filter(
+        AbacPolicy.target_resource == resource_name,
+        AbacPolicy.is_active == True
+    ).order_by(AbacPolicy.priority.desc()).all()
+    
+    # 3. Lưu vào RAM
+    _POLICY_STORE[resource_name] = policies
+    
+    return policies
+def invalidate_policy_cache(resource_name: Optional[str] = None):
+    """
+    Hàm này dùng để XÓA cache khi Admin cập nhật/thêm/sửa policy.
+    Bắt buộc hệ thống phải load lại dữ liệu mới nhất.
+    """
+    global _POLICY_STORE
+    if resource_name and resource_name in _POLICY_STORE:
+        del _POLICY_STORE[resource_name]
+        print(f"🧹 [CACHE CLEARED] Resource: {resource_name}")
+    else:
+        _POLICY_STORE.clear()
+        print("🧹 [CACHE CLEARED] All resources")
 # Biến toàn cục lưu Cache Mapping (Key -> Path)
 # VD: { "user.org_unit_type": "org_unit.unit_type" }
 ATTRIBUTE_MAPPING_CACHE: Dict[str, str] = {}
@@ -163,11 +200,16 @@ def check_permission(db: Session, user: User, resource: Union[str, Any], action:
     if not ATTRIBUTE_MAPPING_CACHE:
         load_attribute_mapping(db)
         
-    # Query Policy
-    policies = db.query(AbacPolicy).filter(
-        AbacPolicy.target_resource == res_name,
-        AbacPolicy.is_active == True
-    ).order_by(AbacPolicy.priority.desc()).all()
+    # # Query Policy
+    # policies = db.query(AbacPolicy).filter(
+    #     AbacPolicy.target_resource == res_name,
+    #     AbacPolicy.is_active == True
+    # ).order_by(AbacPolicy.priority.desc()).all()
+    # --- THAY ĐỔI Ở ĐÂY ---
+    # Thay vì: policies = db.query(AbacPolicy)...
+    # Dùng hàm cache:
+    policies = get_policies_from_cache(db, res_name) 
+    # ----------------------
     
     if not policies: return False # Zero Trust
     

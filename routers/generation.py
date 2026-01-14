@@ -1,4 +1,7 @@
+import asyncio
+from typing import Optional
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, BackgroundTasks, Depends
+from fastapi.responses import StreamingResponse
 import shutil
 import os
 import uuid
@@ -50,12 +53,15 @@ class OpenAIAgent:
     def __init__(self):
         if not OPENAI_API_KEY:
             print("⚠️ Cảnh báo: Chưa cấu hình OPENAI_API_KEY trong file .env")
-        
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        # [THÊM MỚI] Lấy base_url từ env
+        base_url = os.getenv("OPENAI_API_BASE")
+
+        self.client = OpenAI(api_key=OPENAI_API_KEY, base_url=base_url)
         # Sử dụng model gpt-4o (tốt nhất) hoặc gpt-4o-mini (tiết kiệm)
         self.model_name = "gpt-4o" 
+        self.image_model = "dall-e-2" # Model tạo ảnh
 
-    def chat(self, prompt: str, system_role: str = None) -> str:
+    def chat(self, prompt: str, system_role: Optional[str] = None) -> str:
         try:
             messages = []
             
@@ -80,9 +86,40 @@ class OpenAIAgent:
                 temperature=0.1, # Giữ nhiệt độ thấp để bot trung thực với dữ liệu
                 max_tokens=2000
             )
-            return response.choices[0].message.content
+            return response.choices[0].message.content or ""
         except Exception as e:
             return f"❌ Lỗi OpenAI: {str(e)}"
+        
+    # 3. SỬA TYPE HINT: Thêm Optional[str] để chấp nhận trả về None
+    def generate_image(self, prompt: str) -> Optional[str]:
+        """
+        Hàm gọi tạo ảnh. Trả về URL ảnh hoặc None nếu lỗi.
+        """
+        try:
+            print(f"🎨 Đang vẽ hình với prompt: {prompt}")
+            
+            # 4. CẤU HÌNH CHO DALL-E 2
+            # Lưu ý quan trọng: DALL-E 2 KHÔNG có tham số 'quality' và 'style'.
+            # Phải xóa đi, nếu không API sẽ trả lỗi ngay lập tức.
+            response = self.client.images.generate(
+                model=self.image_model,
+                prompt=prompt,
+                n=1,
+                size="1024x1024"
+                # quality="standard",  <-- XÓA DÒNG NÀY (Chỉ DALL-E 3 mới có)
+                # style="vivid"        <-- XÓA DÒNG NÀY (Chỉ DALL-E 3 mới có)
+            )
+            
+            # Lấy URL ảnh từ response
+            if response.data:
+                image_url = response.data[0].url
+                return image_url
+            else:
+                return None
+                
+        except Exception as e:
+            print(f"❌ Lỗi tạo ảnh: {str(e)}")
+            return None
 
 # Khởi tạo instance
 openai_agent = OpenAIAgent()
@@ -241,15 +278,26 @@ async def reset_session(chroma_service: ChromaService = Depends(get_chroma_servi
 # ==============================================================================
 # 5. API: UPLOAD FILE & XỬ LÝ NGẦM
 # ==============================================================================
-@router.post("/ingest-async", summary="Upload tài liệu lớn (No Celery)")
+@router.post("/ingest-async", summary="Upload tài liệu kèm thông tin Metadata thủ công")
 async def ingest_document_async(
     background_tasks: BackgroundTasks, 
     file: UploadFile = File(...),
+    # [NEW] Thêm các trường nhập liệu thủ công
+    legal_level: Optional[str] = Form(None, description="Cấp độ pháp lý (law, decree, circular...)"),
+    promulgation_year: Optional[int] = Form(None, description="Năm ban hành"),
+    collection_name: str = Form("legal_docs", description="Tên Collection lưu trữ Vector")
 ):
     safe_filename = file.filename or "unknown.pdf"
     minio_path = f"raw_inputs/{safe_filename}"
     task_id = str(uuid.uuid4())
     
+    # Gom metadata thủ công vào dict
+    manual_metadata = {
+        "legal_level": legal_level,
+        "promulgation_year": promulgation_year,
+        "collection_name": collection_name
+    }
+
     try:
         # BƯỚC 1: UPLOAD LÊN MINIO TỪ RAM
         file_content = await file.read()
@@ -267,18 +315,21 @@ async def ingest_document_async(
             raise HTTPException(status_code=500, detail="Lỗi upload MinIO")
 
         # BƯỚC 2: GIAO VIỆC CHO BACKGROUND TASKS
+        # [CHANGE] Truyền thêm manual_metadata vào hàm xử lý
         background_tasks.add_task(
             process_minio_document_background, 
             task_id, 
             minio_path, 
-            safe_filename
+            safe_filename,
+            manual_metadata # <--- Truyền tham số mới
         )
                 
         return {
             "status": "queued",
             "task_id": task_id,
             "minio_path": minio_path,
-            "message": "File đã lên MinIO và đang xử lý ngầm."
+            "metadata_received": manual_metadata,
+            "message": "File đang được xử lý ngầm với thông tin bạn cung cấp."
         }
         
     except Exception as e:
@@ -307,42 +358,148 @@ async def get_task_status(task_id: str):
 # ==============================================================================
 # [MODIFIED] API SEARCH DÙNG OPENAI
 # ==============================================================================
+# @router.post("/search")
+# async def search_knowledge(query: str, retrieval_service: RetrievalService = Depends(get_retrieval_service)):
+    
+#     # 1. Tìm kiếm dữ liệu (Phần này nhanh, khoảng 1-3s)
+#     # filters = {"year": {"$gte": 2014}} 
+#     filters = None 
+    
+#     results = retrieval_service.search_legal_docs(query, filters=filters)
+    
+#     # Nếu không tìm thấy, trả về text bình thường (nhanh)
+#     if not results:
+#         return "Xin lỗi, tôi không tìm thấy văn bản nào trong cơ sở dữ liệu."
+
+#     # 2. Tạo Context String
+#     context_str = "\n\n".join([
+#         f"--- TÀI LIỆU: {r['source']} (Năm {r['year']}) ---\n{r['parent_content']}" 
+#         for r in results
+#     ])
+    
+#     # 3. Tạo Prompt
+#     full_prompt = f"""
+#     Dưới đây là các văn bản pháp luật được trích xuất từ cơ sở dữ liệu:
+#     ---------------------
+#     {context_str}
+#     ---------------------
+
+#     CÂU HỎI: "{query}"
+
+#     YÊU CẦU:
+#     1. Trả lời trực tiếp vào câu hỏi, không vòng vo.
+#     2. BẮT BUỘC phải trích dẫn nguồn gốc (Theo Khoản..., Điều..., Văn bản nào?).
+#     3. Nếu các văn bản trên không chứa đủ thông tin để trả lời, hãy nói rõ: "Thông tin không có trong tài liệu được cung cấp".
+#     """
+    
+#     # 4. [QUAN TRỌNG] Tạo hàm Generator để Stream dữ liệu
+#     async def response_generator():
+#         # Gọi trực tiếp client của openai_agent để dùng chế độ stream
+#         stream = openai_agent.client.chat.completions.create(
+#             model="gpt-4o", # Hoặc model bạn đang cấu hình
+#             messages=[
+#                 {"role": "system", "content": "Bạn là trợ lý pháp lý chuyên nghiệp."},
+#                 {"role": "user", "content": full_prompt}
+#             ],
+#             temperature=0.1,
+#             stream=True  # <--- BẬT CHẾ ĐỘ STREAMING
+#         )
+
+#         # Lặp qua từng mảnh dữ liệu (chunk) được trả về
+#         for chunk in stream:
+#             if chunk.choices[0].delta.content:
+#                 # Yield từng chữ ra socket ngay lập tức
+#                 yield chunk.choices[0].delta.content
+
+#     # 5. Trả về StreamingResponse thay vì return string
+#     # media_type="text/event-stream" giúp Frontend hiểu đây là dòng dữ liệu
+#     return StreamingResponse(response_generator(), media_type="text/event-stream")
 @router.post("/search")
-async def search_knowledge(query: str, retrieval_service: RetrievalService = Depends(get_retrieval_service)):
+async def search_knowledge(
+    query: str, 
+    # [NEW] Thêm cờ để ép buộc vẽ hoặc tự động phát hiện
+    force_image: bool = False, 
+    retrieval_service: RetrievalService = Depends(get_retrieval_service)
+):
     
-    # [FIX 3] Tạm thời bỏ filter năm để test xem có ra kết quả không
-    # filters = {"year": {"$gte": 2014}} 
-    filters = None 
-    
-    results = retrieval_service.search_legal_docs(query, filters=filters)
+    # 1. Tìm kiếm dữ liệu (RAG)
+    results = retrieval_service.search_legal_docs(query)
     
     if not results:
-        # Gợi ý debug cho bạn dễ nhìn log
-        return "Xin lỗi, tôi không tìm thấy văn bản nào. (Hãy kiểm tra lại xem đã chạy API /learn-sample-document chưa?)"
-
-    # 2. Tạo Context String
-    context_str = "\n\n".join([
-        f"--- TÀI LIỆU: {r['source']} (Năm {r['year']}) ---\n{r['parent_content']}" 
-        for r in results
-    ])
+        # Nếu không có docs, vẫn có thể để AI chém gió hoặc trả về lỗi, tùy bạn
+        context_str = "Không tìm thấy tài liệu tham khảo."
+    else:
+        context_str = "\n\n".join([
+            f"--- TÀI LIỆU: {r['source']} (Năm {r['year']}) ---\n{r['parent_content']}" 
+            for r in results
+        ])
     
-    # 3. Tạo Prompt chi tiết cho OpenAI
+    # 2. Tạo Prompt cho GPT-4o
     full_prompt = f"""
-    Dưới đây là các văn bản pháp luật được trích xuất từ cơ sở dữ liệu:
+    Dưới đây là các văn bản pháp luật:
     ---------------------
     {context_str}
     ---------------------
 
-    CÂU HỎI CỦA NGƯỜI DÙNG: "{query}"
+    CÂU HỎI: "{query}"
 
-    YÊU CẦU TRẢ LỜI:
-    1. Trả lời trực tiếp vào câu hỏi, không vòng vo.
-    2. BẮT BUỘC phải trích dẫn nguồn gốc (Theo Khoản..., Điều..., Văn bản nào?).
-    3. Nếu các văn bản trên không chứa đủ thông tin để trả lời, hãy nói rõ: "Thông tin không có trong tài liệu được cung cấp".
+    YÊU CẦU:
+    1. Trả lời chi tiết dựa trên văn bản.
+    2. Trích dẫn nguồn.
     """
     
-    # 4. Gọi OpenAI Agent
-    return openai_agent.chat(full_prompt)
+    # [LOGIC MỚI] Kiểm tra xem người dùng có ý định muốn xem hình ảnh không
+    # Ví dụ: "Vẽ sơ đồ quy trình...", "Hình ảnh minh họa..."
+    keywords_drawing = ["vẽ", "hình ảnh", "sơ đồ", "minh họa", "draw", "diagram", "image"]
+    should_draw = force_image or any(k in query.lower() for k in keywords_drawing)
+
+    # 3. Generator function (Xử lý Streaming)
+    async def response_generator():
+        # --- PHẦN 1: TRẢ LỜI VĂN BẢN (TEXT STREAM) ---
+        stream = openai_agent.client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "Bạn là trợ lý pháp lý chuyên nghiệp."},
+                {"role": "user", "content": full_prompt}
+            ],
+            temperature=0.1,
+            stream=True 
+        )
+
+        full_answer_text = ""
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                full_answer_text += content
+                yield content # Đẩy chữ về client ngay lập tức
+
+        # --- PHẦN 2: TẠO HÌNH ẢNH (NẾU CẦN) ---
+        if should_draw:
+            yield "\n\n---\n*🎨 Đang tạo hình ảnh minh họa... (Vui lòng đợi vài giây)*\n"
+            
+            # Tạo prompt cho DALL-E dựa trên câu trả lời vừa rồi
+            # Mẹo: Nhờ GPT tóm tắt lại nội dung thành prompt vẽ tranh bằng tiếng Anh (DALL-E hiểu tiếng Anh tốt hơn)
+            image_prompt_response = openai_agent.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "Bạn là chuyên gia viết prompt cho DALL-E."},
+                    {"role": "user", "content": f"Hãy viết một prompt tiếng Anh ngắn gọn (dưới 100 từ) mô tả một hình ảnh minh họa/sơ đồ cho nội dung sau: {query}. Chỉ trả về prompt, không nói gì thêm."}
+                ]
+            )
+            dalle_prompt = image_prompt_response.choices[0].message.content or f"Illustration for: {query}"
+            
+            # Gọi hàm tạo ảnh (chạy trong thread pool để không chặn luồng async)
+            # Lưu ý: OpenAI Sync Client chặn I/O, nên dùng to_thread
+            image_url = await asyncio.to_thread(openai_agent.generate_image, dalle_prompt)
+            
+            if image_url:
+                # Trả về cú pháp Markdown để Frontend tự render ảnh
+                yield f"\n![Minh họa]({image_url})\n"
+                yield f"\n*Gợi ý prompt: {dalle_prompt}*"
+            else:
+                yield "\n*(Xin lỗi, không thể tạo được hình ảnh lúc này)*"
+
+    return StreamingResponse(response_generator(), media_type="text/event-stream")
 
 @router.get("/documents", summary="Lấy danh sách file (Từ SQL Database)")
 async def get_documents_from_sql(db: Session = Depends(get_db)):
@@ -354,4 +511,80 @@ async def get_documents_from_sql(db: Session = Depends(get_db)):
     return {
         "count": len(docs),
         "data": docs
+    }
+    
+@router.delete("/documents/{filename}", summary="Xóa tài liệu (SQL + Vector + MinIO)")
+async def delete_document(
+    filename: str,
+    db: Session = Depends(get_db),
+    chroma_service: ChromaService = Depends(get_chroma_service)
+):
+    """
+    API xóa toàn bộ dữ liệu liên quan đến 1 file:
+    1. Xóa trong SQL Database (DocumentRegistry).
+    2. Xóa Vectors trong ChromaDB.
+    3. (Option) Xóa file gốc trên MinIO.
+    """
+    
+    # 1. Kiểm tra file có trong SQL không
+    doc_record = db.query(DocumentRegistry).filter(DocumentRegistry.source_file == filename).first()
+    
+    if not doc_record:
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy file '{filename}' trong hệ thống.")
+
+    try:
+        # --- BƯỚC 1: XÓA SQL ---
+        db.delete(doc_record)
+        db.commit()
+        print(f"✅ Đã xóa metadata trong SQL: {filename}")
+
+        # --- BƯỚC 2: XÓA CHROMA VECTOR ---
+        # Gọi hàm vừa viết ở Bước 1
+        chroma_service.delete_document_vectors(filename)
+
+        # --- BƯỚC 3: XÓA FILE GỐC TRÊN MINIO (Khuyên dùng) ---
+        # Đường dẫn MinIO lưu lúc upload là "raw_inputs/{filename}"
+        minio_path = f"raw_inputs/{filename}"
+        try:
+            minio_handler.delete_file(minio_path) # Giả sử minio_handler có hàm delete_file hoặc remove_object
+            # Nếu dùng thư viện minio gốc: minio_handler.client.remove_object("bucket_name", minio_path)
+            print(f"✅ Đã xóa file gốc trên MinIO: {minio_path}")
+        except Exception as e:
+            print(f"⚠️ Không xóa được file trên MinIO (có thể file không tồn tại): {e}")
+
+        return {
+            "status": "success", 
+            "message": f"Đã xóa hoàn toàn tài liệu: {filename}",
+            "deleted_layers": ["SQL Metadata", "Chroma Vectors", "MinIO File"]
+        }
+
+    except Exception as e:
+        db.rollback() # Hoàn tác nếu lỗi SQL
+        raise HTTPException(status_code=500, detail=f"Lỗi khi xóa tài liệu: {str(e)}")
+    
+@router.get("/collections", summary="Lấy danh sách Collection (Từ Chroma & SQL)")
+async def get_all_collections(
+    chroma_service: ChromaService = Depends(get_chroma_service),
+    db: Session = Depends(get_db)
+):
+    """
+    API này trả về 2 danh sách:
+    1. active_in_chroma: Các collection thực tế đang có trong Vector DB.
+    2. used_in_sql: Các collection được ghi nhận trong SQL (đang chứa file).
+    """
+    
+    # 1. Lấy từ ChromaDB (Thực tế vật lý)
+    chroma_cols = chroma_service.list_all_collections()
+    
+    # 2. Lấy từ SQL (Dữ liệu quản lý)
+    # Query này tương đương: SELECT DISTINCT collection_name FROM document_registry
+    sql_cols_query = db.query(DocumentRegistry.collection_name).distinct().all()
+    # Kết quả trả về là list các tuple [('name1',), ('name2',)], cần flatten ra
+    sql_cols = [row[0] for row in sql_cols_query if row[0]]
+
+    return {
+        "active_in_chroma": chroma_cols,
+        "used_in_sql": sql_cols,
+        "count_chroma": len(chroma_cols),
+        "count_sql": len(sql_cols)
     }
