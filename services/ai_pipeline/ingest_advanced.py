@@ -3,6 +3,13 @@ import re
 from typing import List, Dict, Any, Tuple # <--- [FIX 1] Import thêm Tuple
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+# Hàm map priority dựa trên text level
+def get_priority_from_level(level_str: str) -> int:
+    level = level_str.lower()
+    if "law" in level or "luật" in level: return 3
+    if "decree" in level or "nghị định" in level: return 2
+    if "circular" in level or "thông tư" in level: return 1
+    return 0
 # --- 1. HÀM TRÍCH XUẤT METADATA ---
 def extract_legal_metadata(filename: str, content_preview: str = "") -> Dict[str, Any]:
     """
@@ -73,16 +80,33 @@ def clean_text(text: str) -> str:
 
 # --- 2. HÀM XỬ LÝ CHÍNH ---
 # [FIX 2] Sửa Type Hint trả về: Tuple[List[...], Dict[...]]
-def process_hierarchical_chunks(markdown_text: str, filename: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+# [CHANGE] Thêm tham số manual_metadata
+def process_hierarchical_chunks(
+    markdown_text: str, 
+    filename: str, 
+    manual_metadata: Dict[str, Any] = {} # <--- Param mới
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     
     # Bước 1: Tách Parent
     parent_pattern = r'(^#{1,3}\s+.+)'
     parts = re.split(parent_pattern, markdown_text, flags=re.MULTILINE)
     
-    # Truyền thêm nội dung text vào để scan metadata
-    file_metadata = extract_legal_metadata(filename, content_preview=markdown_text)
+    # Lấy metadata tự động
+    auto_metadata = extract_legal_metadata(filename, content_preview=markdown_text)
     
-    print(f"🏷️ Metadata (Updated) {filename}: {file_metadata}")
+    # [LOGIC MỚI] Ghi đè bằng manual_metadata nếu có
+    final_metadata = auto_metadata.copy()
+    
+    if manual_metadata.get("legal_level"):
+        manual_level = str(manual_metadata["legal_level"])
+        final_metadata["legal_level"] = manual_level
+        # Tự động tính lại priority để SQL sắp xếp đúng
+        final_metadata["legal_priority"] = get_priority_from_level(manual_level)
+        
+    if manual_metadata.get("promulgation_year"):
+        final_metadata["promulgation_year"] = int(manual_metadata["promulgation_year"])
+
+    print(f"🏷️ Metadata Final (Merged): {final_metadata}")
     
     parent_chunks = []
     
@@ -92,16 +116,15 @@ def process_hierarchical_chunks(markdown_text: str, filename: str) -> Tuple[List
             "title": "Giới thiệu / Mở đầu",
             "content": parts[0].strip(),
             "category": "general",
-            **file_metadata
+            **final_metadata # Dùng metadata đã merge
         })
 
-    # Loop qua các phần còn lại
+    # Loop qua các phần còn lại (Logic cũ giữ nguyên)
     for i in range(1, len(parts), 2):
         header = parts[i].strip()
         content = parts[i+1].strip() if i+1 < len(parts) else ""
         full_parent_content = f"{header}\n\n{content}"
         
-        # Logic phân loại (Tagging)
         clean_title = re.sub(r'#+', '', header).strip()
         lower_title = clean_title.lower()
         
@@ -119,7 +142,7 @@ def process_hierarchical_chunks(markdown_text: str, filename: str) -> Tuple[List
             "title": clean_title,
             "content": full_parent_content,
             "category": category,
-            **file_metadata 
+            **final_metadata # Dùng metadata đã merge
         })
 
     print(f"📦 [Ingest] Tìm thấy {len(parent_chunks)} chương lớn.")
@@ -158,4 +181,4 @@ def process_hierarchical_chunks(markdown_text: str, filename: str) -> Tuple[List
     print(f"✅ [Ingest] Đã tạo ra {len(final_chunks)} vector search nodes.")
     
     # Trả về cả chunks (List) và metadata (Dict)
-    return final_chunks, file_metadata
+    return final_chunks, final_metadata

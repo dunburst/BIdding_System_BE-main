@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 from models import AbacAttribute, AbacPolicy
 from schemas.abac import AbacAttributeCreate, AbacAttributeUpdate, AbacPolicyCreate, AbacPolicyUpdate
 from typing import List, Optional
-
+from utils.abac import invalidate_policy_cache
 # ==========================================
 # CRUD CHO ABAC ATTRIBUTE
 # ==========================================
@@ -76,6 +76,8 @@ def create_policy(db: Session, policy: AbacPolicyCreate):
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
+    # 👉 THÊM DÒNG NÀY: Xóa cache của resource tương ứng để lần sau load lại cái mới
+    invalidate_policy_cache(policy.target_resource)
     return db_obj
 
 def update_policy(db: Session, policy_id: int, policy_in: AbacPolicyUpdate):
@@ -90,11 +92,16 @@ def update_policy(db: Session, policy_id: int, policy_in: AbacPolicyUpdate):
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
+    # 👉 THÊM DÒNG NÀY
+    invalidate_policy_cache(db_obj.target_resource)
     return db_obj
 
 def delete_policy(db: Session, policy_id: int):
     db_obj = get_policy(db, policy_id)
     if db_obj:
+        target_res = db_obj.target_resource # Lưu tên resource trước khi xóa
         db.delete(db_obj)
         db.commit()
+        # 👉 THÊM DÒNG NÀY
+        invalidate_policy_cache(target_res)
     return db_obj

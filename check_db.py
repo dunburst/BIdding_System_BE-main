@@ -72,7 +72,8 @@ if __name__ == "__main__":
     print("🚀 BẮT ĐẦU XUẤT DỮ LIỆU RA EXCEL/CSV...\n")
     
     # Xuất cả 2 kho
-    export_collection_to_csv("current_requirements")
-    export_collection_to_csv("bidding_docs")
+    # export_collection_to_csv("current_requirements")
+    # export_collection_to_csv("bidding_docs")
+    export_collection_to_csv("legal_docs")
     
     print("\n🎉 Hoàn tất. Hãy mở các file .csv vừa tạo bằng Excel để xem.")

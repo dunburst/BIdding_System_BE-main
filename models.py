@@ -758,5 +758,6 @@ class DocumentRegistry(Base):
     legal_priority: Mapped[int] = mapped_column(Integer)      # Độ ưu tiên
     promulgation_year: Mapped[int] = mapped_column(Integer)   # Năm ban hành
     ingest_status: Mapped[str] = mapped_column(String(20))    # Trạng thái
-    total_chunks: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    total_chunks: Mapped[int] = mapped_column(Integer, default=0)# Tổng số chunks
+    collection_name: Mapped[str] = mapped_column(String(100), default="legal_docs")# Tên collection trong vector DB
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())# Ngày tạo
