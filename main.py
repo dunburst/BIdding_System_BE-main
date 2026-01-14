@@ -48,7 +48,7 @@ app.include_router(googlelogin.router) # Gắn router Google Login
 app.include_router(task.router)
 app.include_router(drive_router)
 app.include_router(drafting.router)
-app.include_router(agent_api.router)
+# app.include_router(agent_api.router)
 app.include_router(onedrive_router.router)
 app.include_router(generation.router)
 
@@ -58,10 +58,12 @@ def read_root():
     return {"message": "Hệ thống quản lý đấu thầu PC1 đang chạy!"}
 
 origins = [
-    "*", # Cho phép tất cả các nguồn (dùng cho dev/test)
+    # "*", # Cho phép tất cả các nguồn (dùng cho dev/test)
+    # Hoặc bạn có thể chỉ định cụ thể:
     "http://localhost:3000",
     "http://26.152.34.61:3000",
     "http://10.11.0.178:3000",
+    "https://bidding-management.vercel.app"
 ]
 
 app.add_middleware(

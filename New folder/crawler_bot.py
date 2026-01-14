@@ -27,6 +27,9 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.support.ui import Select
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.chrome.service import Service as ChromeService
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger   
@@ -75,12 +78,42 @@ class MuasamcongDBBot:
             "plugins.always_open_pdf_externally": True
         }
         self.edge_options.add_experimental_option("prefs", self.prefs)
+        
+        # # Cấu hình Chrome cho Docker (Linux)
+        # self.chrome_options = ChromeOptions()
+        # self.chrome_options.add_argument("--window-size=1920,1080")
+        # self.chrome_options.add_argument("--disable-notifications")
+        # self.chrome_options.add_argument("--disable-popup-blocking")
+        
+        # # QUAN TRỌNG: Chạy trên Docker Linux bắt buộc phải có các dòng này
+        # self.chrome_options.add_argument("--headless=new") # Chạy ẩn, không hiện giao diện
+        # self.chrome_options.add_argument("--no-sandbox")
+        # self.chrome_options.add_argument("--disable-dev-shm-usage")
+        # self.chrome_options.add_argument("--disable-gpu")
+        
+        # self.prefs = {
+        #     "download.default_directory": self.download_dir,
+        #     "download.prompt_for_download": False,
+        #     "plugins.always_open_pdf_externally": True
+        # }
+        # self.chrome_options.add_experimental_option("prefs", self.prefs)
 
     def start_driver(self):
         if not os.path.exists(self.driver_path):
             logger.error("Không tìm thấy msedgedriver.exe")
             return None
         return webdriver.Edge(service=Service(self.driver_path), options=self.edge_options)
+    
+        # try:
+        #     # Tự động tải driver phù hợp môi trường (Windows/Linux)
+        #     # Yêu cầu cài: pip install webdriver-manager
+        #     return webdriver.Chrome(
+        #         service=ChromeService(ChromeDriverManager().install()), 
+        #         options=self.chrome_options
+        #     )
+        # except Exception as e:
+        #     logger.error(f"Lỗi khởi động Driver: {e}")
+        #     return None
     
     
     def create_crawl_log(self, rule_id):
@@ -346,20 +379,36 @@ class MuasamcongDBBot:
                 logger.error("-> Không nhấn được nút Tìm kiếm")
                 return
 
-            # Pagination 50
+            # ---------------------------------------------------------
+            # [BỔ SUNG] CHỌN HIỂN THỊ 50 BẢN GHI/TRANG
+            # ---------------------------------------------------------
             try:
+                # 1. Scroll xuống cuối trang
                 driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(1)
-                dropdown = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'pagination')]//div[contains(@class, 'select')]"))
+                time.sleep(2)
+
+                # 2. Tìm thẻ <select> chứa option 50
+                # XPath này nghĩa là: Tìm thẻ select nào mà bên trong nó có option giá trị là '50'
+                # Đây là cách tìm chính xác nhất dựa trên ảnh bạn gửi
+                select_xpath = "//select[./option[@value='50']]"
+                
+                select_element = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, select_xpath))
                 )
-                dropdown.click()
-                time.sleep(1)
-                opt_50 = driver.find_element(By.XPATH, "//div[contains(@title, '50') or contains(text(), '50')]")
-                opt_50.click()
+                
+                # 3. Sử dụng thư viện Select của Selenium để chọn
+                select_obj = Select(select_element)
+                select_obj.select_by_value("50")
+                
+                logger.info("-> Đã chọn hiển thị 50 bản ghi/trang.")
+
+                # 4. Đợi trang load lại dữ liệu
                 time.sleep(5)
-            except:
-                logger.warning("-> Không chỉnh được số bản ghi (dùng mặc định).")
+
+            except Exception as e:
+                logger.warning(f"-> Không thay đổi được số bản ghi: {str(e)}")
+            
+            # ---------------------------------------------------------
 
             # Get Links
             list_packages = []
@@ -536,7 +585,7 @@ class MuasamcongDBBot:
                 driver.execute_script("arguments[0].click();", btn_webform)
                 
                 # 3. Xử lý Viewer (Tab mới)
-                time.sleep(5)
+                time.sleep(10)
                 if len(driver.window_handles) > 1:
                     driver.switch_to.window(driver.window_handles[-1])
                     logger.info("-> Đã chuyển sang tab Viewer.")
@@ -548,7 +597,7 @@ class MuasamcongDBBot:
                         btn_xpath = "//button[contains(@class, 'btn-primary') and contains(., 'Tải về')]"
                         
                         logger.info("-> Đang tìm nút Tải về (btn-primary) ở Main Frame...")
-                        btn = WebDriverWait(driver, 7).until(
+                        btn = WebDriverWait(driver, 5).until(
                             EC.element_to_be_clickable((By.XPATH, btn_xpath))
                         )
                         
@@ -738,17 +787,42 @@ def run_scheduler_system():
             scheduler.shutdown()
             
 if __name__ == "__main__":
-    # --- THÊM DÒNG NÀY ĐỂ CHECK XEM NÓ CÓ NHẬN CODE MỚI KHÔNG ---
-    print("!!! ĐANG CHẠY CHẾ ĐỘ THỦ CÔNG (KHÔNG PHẢI SCHEDULER) !!!") 
+    # print("!!! ĐANG CHẠY CHẾ ĐỘ THỦ CÔNG (KHÔNG PHẢI SCHEDULER) !!!") 
     
-    target_url = "https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?..." # (Link của bạn)
+    # target_url = "https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=detail-v2&type=es-notify-contractor&stepCode=notify-contractor-step-1-tbmt&id=75bd7be1-2709-4dc5-bebb-7d8ee38d11fe&notifyId=75bd7be1-2709-4dc5-bebb-7d8ee38d11fe&inputResultId=undefined&bidOpenId=undefined&techReqId=undefined&bidPreNotifyResultId=undefined&bidPreOpenId=undefined&processApply=LDT&bidMode=1_MTHS&notifyNo=IB2500638706&planNo=PL2500369345&pno=undefined&step=tbmt&isInternet=1&caseKHKQ=undefined&bidForm=DTRR" # (Link của bạn)
 
-    print(f"🚀 BẮT ĐẦU CHẠY NGAY LẬP TỨC CHO LINK:\n{target_url}")
+    # print(f"🚀 BẮT ĐẦU CHẠY NGAY LẬP TỨC CHO LINK:\n{target_url}")
     
-    try:
-        bot = MuasamcongDBBot()
-        bot.process_package(target_url)
-        print("✅ ĐÃ CHẠY XONG!")
-    except Exception as e:
-        print(f"❌ CÓ LỖI XẢY RA: {e}")
-    # run_scheduler_system()
+    # try:
+    #     bot = MuasamcongDBBot()
+    #     bot.process_package(target_url)
+    #     print("✅ ĐÃ CHẠY XONG!")
+    # except Exception as e:
+    #     print(f"❌ CÓ LỖI XẢY RA: {e}")
+    # print("!!! ĐANG CHẠY CHẾ ĐỘ TEST NHANH (DEBUG) !!!")
+    
+    # # Khởi tạo Bot
+    # bot = MuasamcongDBBot()
+
+    # try:
+    #     # [SỬA LẠI] Thay vì tạo class MockRule, ta khởi tạo trực tiếp Model từ models.py
+    #     # Điều này giúp thỏa mãn Type Hint và tránh lỗi đỏ
+    #     test_rule = models.CrawlRule(
+    #         id=99999,  # ID giả
+    #         rule_name="TEST_DEBUG_PAGINATION",
+    #         keywords_include=["xây lắp"],  # Nhập từ khóa phổ biến để ra nhiều kết quả
+    #         business_field=None,
+    #         min_budget=None,
+    #         max_budget=None
+    #     )
+
+    #     print(f"🚀 Bắt đầu test search với từ khóa: {test_rule.keywords_include}")
+        
+    #     # Bây giờ bot.execute_rule_search sẽ chấp nhận biến test_rule này
+    #     bot.execute_rule_search(test_rule)
+        
+    #     print("✅ Test hoàn tất.")
+
+    # except Exception as e:
+    #     logger.error(f"❌ Lỗi khi test: {e}")
+    run_scheduler_system()

@@ -30,7 +30,6 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.chrome.service import Service as ChromeService
-from webdriver_manager.chrome import ChromeDriverManager # Cần thêm vào requirements.txt nếu chưa có
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger   
@@ -941,45 +940,27 @@ def run_scheduler_system():
             scheduler.shutdown()
             
 if __name__ == "__main__":
-    #TEST RIÊNG CHO 1 LINK CỤ THỂ
-    # print("!!! ĐANG CHẠY CHẾ ĐỘ THỦ CÔNG (KHÔNG PHẢI SCHEDULER) !!!") 
+    # --- TEST RIÊNG CHO 1 LINK CỤ THỂ ---
+    # print("!!! ĐANG CHẠY CHẾ ĐỘ THỦ CÔNG (TEST LINK LẺ) !!!") 
     
-    # target_url = "https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=detail-v2&type=es-notify-contractor&stepCode=notify-contractor-step-1-tbmt&id=75bd7be1-2709-4dc5-bebb-7d8ee38d11fe&notifyId=75bd7be1-2709-4dc5-bebb-7d8ee38d11fe&inputResultId=undefined&bidOpenId=undefined&techReqId=undefined&bidPreNotifyResultId=undefined&bidPreOpenId=undefined&processApply=LDT&bidMode=1_MTHS&notifyNo=IB2500638706&planNo=PL2500369345&pno=undefined&step=tbmt&isInternet=1&caseKHKQ=undefined&bidForm=DTRR" # (Link của bạn)
+    # # Link gói thầu bạn muốn test
+    # target_url = "https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=detail-v2&type=es-notify-contractor&stepCode=notify-contractor-step-4-kqlcnt&id=9ede5000-9134-4f82-906f-79ae559d7aee&notifyId=9ede5000-9134-4f82-906f-79ae559d7aee&inputResultId=c5be4e20-9e84-4f67-bd18-e16dc372c715&bidOpenId=4940bce6-9c3c-4536-b2f6-0d1020e2b8bf&techReqId=undefined&bidPreNotifyResultId=undefined&bidPreOpenId=undefined&processApply=LDT&bidMode=1_MTHS&notifyNo=IB2500166683&planNo=PL2500074522&pno=undefined&step=tbmt&isInternet=1&caseKHKQ=undefined&bidForm=DTRR"
 
     # print(f"🚀 BẮT ĐẦU CHẠY NGAY LẬP TỨC CHO LINK:\n{target_url}")
     
     # try:
+    #     # Khởi tạo Bot
     #     bot = MuasamcongDBBot()
+        
+    #     # Chạy hàm xử lý
     #     bot.process_package(target_url)
+        
     #     print("✅ ĐÃ CHẠY XONG!")
     # except Exception as e:
     #     print(f"❌ CÓ LỖI XẢY RA: {e}")
-    # print("!!! ĐANG CHẠY CHẾ ĐỘ TEST NHANH (DEBUG) !!!")
-    
-    # # Khởi tạo Bot
-    # bot = MuasamcongDBBot()
-
-    # try:
-    #     # [SỬA LẠI] Thay vì tạo class MockRule, ta khởi tạo trực tiếp Model từ models.py
-    #     # Điều này giúp thỏa mãn Type Hint và tránh lỗi đỏ
-    #     test_rule = models.CrawlRule(
-    #         id=99999,  # ID giả
-    #         rule_name="TEST_DEBUG_PAGINATION",
-    #         keywords_include=["xây lắp"],  # Nhập từ khóa phổ biến để ra nhiều kết quả
-    #         business_field=None,
-    #         min_budget=None,
-    #         max_budget=None
-    #     )
-
-    #     print(f"🚀 Bắt đầu test search với từ khóa: {test_rule.keywords_include}")
-        
-    #     # Bây giờ bot.execute_rule_search sẽ chấp nhận biến test_rule này
-    #     bot.execute_rule_search(test_rule)
-        
-    #     print("✅ Test hoàn tất.")
-
-    # except Exception as e:
-    #     logger.error(f"❌ Lỗi khi test: {e}")
+    #     # In thêm chi tiết lỗi để debug nếu cần
+    #     import traceback
+    #     traceback.print_exc()
     
     # TEST TÌM KIẾM NÂNG CAO VƠI RULE TRONG DB
     # print("!!! ĐANG CHẠY CHẾ ĐỘ TEST THỦ CÔNG (DEBUG) !!!")

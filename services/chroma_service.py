@@ -14,11 +14,24 @@ class ChromaService:
         self.db_path = "./chroma_db"
         self.client = chromadb.PersistentClient(path=self.db_path)
         
-        # [CHANGE] Sử dụng SentenceTransformer (Local - Free)
-        # Yêu cầu cài đặt: pip install sentence-transformers
-        print("📥 Đang tải/load model Embedding (all-MiniLM-L6-v2)...")
-        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
+        # # [CHANGE] Sử dụng SentenceTransformer (Local - Free)
+        # # Yêu cầu cài đặt: pip install sentence-transformers
+        # print("📥 Đang tải/load model Embedding (all-MiniLM-L6-v2)...")
+        # self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+        #     model_name="all-MiniLM-L6-v2"
+        # )
+        # --- CẤU HÌNH OPENAI EMBEDDING (text-embedding-3-large) ---
+        api_key = os.getenv("OPENAI_API_KEY")
+        # [FIX] Lấy thêm endpoint/domain từ biến môi trường
+        # Nếu bạn không set biến này, nó sẽ fallback về None (dùng mặc định của OpenAI)
+        api_base = os.getenv("OPENAI_API_BASE")  # Ví dụ: "https://your-custom-domain.com/v1"
+        if not api_key:
+            print("⚠️ Cảnh báo: Thiếu OPENAI_API_KEY. Vector Search sẽ lỗi.")
+
+        self.embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
+            api_key=api_key,
+            model_name="text-embedding-3-large"
+            , api_base=api_base
         )
 
         # 3. Tạo Collection: VĂN PHONG MẪU
@@ -30,6 +43,11 @@ class ChromaService:
         # 4. Tạo Collection: YÊU CẦU ĐẦU VÀO
         self.req_collection = self.client.get_or_create_collection(
             name="current_requirements",
+            embedding_function=self.embedding_fn # type: ignore
+        )
+        # Tạo Collection
+        self.legal_collection = self.client.get_or_create_collection(
+            name="legal_docs", 
             embedding_function=self.embedding_fn # type: ignore
         )
 
@@ -95,6 +113,35 @@ class ChromaService:
             print(f"✅ Đã lưu {total_docs} vectors vào Collection: {collection.name}")
         except Exception as e:
             print(f"❌ Lỗi khi lưu vào ChromaDB: {e}")
+            
+    def save_hierarchical_chunks(self, chunks, source_filename):
+        """
+        Lưu chunks đã xử lý theo mô hình Parent-Child
+        """
+        ids = []
+        documents = [] # Child content
+        metadatas = []
+        
+        for chunk in chunks:
+            ids.append(str(uuid.uuid4()))
+            documents.append(chunk['page_content'])
+            metadatas.append(chunk['metadata']) # Chứa parent_content
+            
+        # Batch insert (Tăng tốc độ)
+        BATCH_SIZE = 50
+        total = len(ids)
+        
+        try:
+            for i in range(0, total, BATCH_SIZE):
+                end = i + BATCH_SIZE
+                self.legal_collection.add(
+                    ids=ids[i:end],
+                    documents=documents[i:end],
+                    metadatas=metadatas[i:end]
+                )
+            print(f"💾 Đã lưu {total} vectors vào DB.")
+        except Exception as e:
+            print(f"❌ Lỗi lưu Chroma: {e}")
 
     # --- CÁC HÀM GỌI TỪ BÊN NGOÀI ---
 
