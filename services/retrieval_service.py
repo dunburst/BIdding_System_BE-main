@@ -15,26 +15,26 @@ class RetrievalService:
         self.chroma = chroma_service
         # Model Re-ranking chuyên dụng cho đa ngôn ngữ (bao gồm tiếng Việt)
         # BAAI/bge-reranker-v2-m3 là top tier hiện nay
-        print("⚖️ Đang tải model Re-ranking (bge-reranker-v2-m3)...")
-        self.reranker = CrossEncoder('BAAI/bge-reranker-v2-m3', max_length=512)
+        # print("⚖️ Đang tải model Re-ranking (bge-reranker-v2-m3)...")
+        # self.reranker = CrossEncoder('BAAI/bge-reranker-v2-m3', max_length=512)
         # [FIX 2] CHECK XEM ĐÃ CÓ MODEL CHƯA, NẾU CHƯA MỚI LOAD
-        # global global_reranker
-        # if global_reranker is None:
-        #     print("⚖️ Đang tải model Re-ranking (Chạy lần đầu tiên)...")
-        #     # [LỜI KHUYÊN] Model 'bge-reranker-v2-m3' rất nặng (500MB+). 
-        #     # Nếu chạy CPU, bạn nên đổi sang 'cross-encoder/ms-marco-MiniLM-L-6-v2' (nhẹ hơn 10 lần)
+        global global_reranker
+        if global_reranker is None:
+            print("⚖️ Đang tải model Re-ranking (Chạy lần đầu tiên)...")
+            # [LỜI KHUYÊN] Model 'bge-reranker-v2-m3' rất nặng (500MB+). 
+            # Nếu chạy CPU, bạn nên đổi sang 'cross-encoder/ms-marco-MiniLM-L-6-v2' (nhẹ hơn 10 lần)
             
-        #     # Option 1: Model hiện tại (Tốt nhưng Chậm trên CPU)
-        #     # global_reranker = CrossEncoder('BAAI/bge-reranker-v2-m3', max_length=512)
+            # Option 1: Model hiện tại (Tốt nhưng Chậm trên CPU)
+            # global_reranker = CrossEncoder('BAAI/bge-reranker-v2-m3', max_length=512)
             
-        #     # Option 2: Model nhẹ (Khuyên dùng cho CPU)
-        #     print("🚀 Đang dùng model nhẹ ms-marco-MiniLM-L-6-v2 cho nhanh...")
-        #     global_reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
+            # Option 2: Model nhẹ (Khuyên dùng cho CPU)
+            print("🚀 Đang dùng model nhẹ ms-marco-MiniLM-L-6-v2 cho nhanh...")
+            global_reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
             
-        # else:
-        #     print("⚡ Sử dụng lại model Re-ranking đã có trong RAM.")
+        else:
+            print("⚡ Sử dụng lại model Re-ranking đã có trong RAM.")
             
-        # self.reranker = global_reranker
+        self.reranker = global_reranker
 
     def search_with_rerank(self, query: str, top_k=5):
         """
