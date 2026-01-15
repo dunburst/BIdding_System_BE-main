@@ -75,12 +75,8 @@ origins = [
     "http://localhost:3000",
     "http://26.152.34.61:3000",
     "http://10.10.0.158:3000",
-<<<<<<< HEAD
-    "https://bidding-management.vercel.app"
-=======
     "https://bidding-management.vercel.app",
     "https://baptist-nerve-coupled-evaluating.trycloudflare.com"
->>>>>>> 1008d1a85dfc9531f26ebed41e4126ded8944eb6
 ]
 
 app.add_middleware(
