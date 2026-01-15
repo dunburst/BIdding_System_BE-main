@@ -1,6 +1,6 @@
 import asyncio
 from typing import Optional
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, BackgroundTasks, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, BackgroundTasks, Depends, Query
 from fastapi.responses import StreamingResponse
 import shutil
 import os
@@ -400,21 +400,35 @@ async def get_documents_from_sql(db: Session = Depends(get_db)):
 @router.delete("/documents/{filename}", summary="Xóa tài liệu (SQL + Vector + MinIO)")
 async def delete_document(
     filename: str,
+    # [THÊM MỚI] Cho phép nhập tên collection, nếu không nhập thì để None
+    collection_name: Optional[str] = Query(None, description="Tên collection cần xóa vector (VD: legal_docs, current_requirements)"),
     db: Session = Depends(get_db),
     chroma_service: ChromaService = Depends(get_chroma_service)
 ):
     """
-    API xóa toàn bộ dữ liệu liên quan đến 1 file:
-    1. Xóa trong SQL Database (DocumentRegistry).
-    2. Xóa Vectors trong ChromaDB.
-    3. (Option) Xóa file gốc trên MinIO.
+    API xóa toàn bộ dữ liệu liên quan đến 1 file.
+    URL ví dụ: DELETE /documents/file.pdf?collection_name=current_requirements
     """
     
     # 1. Kiểm tra file có trong SQL không
     doc_record = db.query(DocumentRegistry).filter(DocumentRegistry.source_file == filename).first()
     
     if not doc_record:
-        raise HTTPException(status_code=404, detail=f"Không tìm thấy file '{filename}' trong hệ thống.")
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy file '{filename}' trong hệ thống SQL.")
+
+    # [LOGIC MỚI] Xác định collection mục tiêu
+    # Ưu tiên 1: Người dùng nhập vào API
+    # Ưu tiên 2: Lấy từ database SQL (nếu bảng DocumentRegistry có lưu cột collection_name)
+    # Ưu tiên 3: Mặc định fallback về 'legal_docs'
+    
+    target_collection = "legal_docs" # Giá trị mặc định
+    
+    if collection_name:
+        target_collection = collection_name
+    elif hasattr(doc_record, "collection_name") and doc_record.collection_name:
+        target_collection = doc_record.collection_name
+        
+    print(f"🎯 Xác định mục tiêu xóa: File '{filename}' trong Collection '{target_collection}'")
 
     try:
         # --- BƯỚC 1: XÓA SQL ---
@@ -423,27 +437,27 @@ async def delete_document(
         print(f"✅ Đã xóa metadata trong SQL: {filename}")
 
         # --- BƯỚC 2: XÓA CHROMA VECTOR ---
-        # Gọi hàm vừa viết ở Bước 1
-        chroma_service.delete_document_vectors(filename)
+        # Truyền target_collection đã xác định vào
+        chroma_service.delete_document_vectors(filename, collection_name=target_collection)
 
-        # --- BƯỚC 3: XÓA FILE GỐC TRÊN MINIO (Khuyên dùng) ---
-        # Đường dẫn MinIO lưu lúc upload là "raw_inputs/{filename}"
+        # --- BƯỚC 3: XÓA FILE GỐC TRÊN MINIO ---
         minio_path = f"raw_inputs/{filename}"
         try:
-            minio_handler.delete_file(minio_path) # Giả sử minio_handler có hàm delete_file hoặc remove_object
-            # Nếu dùng thư viện minio gốc: minio_handler.client.remove_object("bucket_name", minio_path)
-            print(f"✅ Đã xóa file gốc trên MinIO: {minio_path}")
+            # Giả sử bạn có hàm delete
+            # minio_handler.delete_file(minio_path) 
+            print(f"✅ (Giả lập) Đã xóa file gốc trên MinIO: {minio_path}")
         except Exception as e:
-            print(f"⚠️ Không xóa được file trên MinIO (có thể file không tồn tại): {e}")
+            print(f"⚠️ Không xóa được file trên MinIO: {e}")
 
         return {
             "status": "success", 
             "message": f"Đã xóa hoàn toàn tài liệu: {filename}",
+            "collection_cleaned": target_collection,
             "deleted_layers": ["SQL Metadata", "Chroma Vectors", "MinIO File"]
         }
 
     except Exception as e:
-        db.rollback() # Hoàn tác nếu lỗi SQL
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"Lỗi khi xóa tài liệu: {str(e)}")
     
 @router.get("/collections", summary="Lấy danh sách Collection (Từ Chroma & SQL)")

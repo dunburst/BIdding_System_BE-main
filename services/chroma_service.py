@@ -303,20 +303,48 @@ class ChromaService:
         except Exception as e:
             print(f"⚠️ Lỗi khi clear collection: {e}")
             
-    # [CHANGE] Cập nhật hàm xóa để xóa đúng collection
-    def delete_document_vectors(self, source_filename: str, collection_name="legal_docs"):
+    def delete_document_vectors(self, source_filename: str, collection_name: str):
+        """
+        Xóa vector dựa trên filename và collection name được truyền vào.
+        """
         try:
             print(f"🗑️ Đang tiến hành xóa vectors của: {source_filename} trong {collection_name}...")
             
             target_collection = self.client.get_collection(name=collection_name)
-            target_collection.delete(
-                where={"source": source_filename}
-            )
             
-            print(f"✅ Đã xóa sạch vectors của file {source_filename}.")
+            # [CẢI TIẾN] Xóa triệt để các biến thể key metadata
+            # Vì lịch sử code có lúc lưu 'source', lúc lưu 'source_file', lúc lưu 'filename'
+            # Chúng ta sẽ thử xóa cả 3 trường hợp để đảm bảo sạch sẽ.
+            
+            deleted_count = 0
+            
+            # 1. Xóa theo key chuẩn "source"
+            try:
+                target_collection.delete(where={"source": source_filename})
+                deleted_count += 1
+            except: pass
+
+            # 2. Xóa theo key cũ "source_file" (nếu có)
+            try:
+                target_collection.delete(where={"source_file": source_filename})
+                deleted_count += 1
+            except: pass
+
+            # 3. Xóa theo key "filename" (nếu có)
+            try:
+                target_collection.delete(where={"filename": source_filename})
+                deleted_count += 1
+            except: pass
+            
+            # 4. Xóa theo key "project_name" kết hợp source (nếu là requirement)
+            # Logic: Nếu collection là requirement, có thể cần xóa theo ID hoặc metadata phức tạp hơn
+            # Nhưng tạm thời delete where source là đủ mạnh.
+
+            print(f"✅ Đã gửi lệnh xóa vectors cho file {source_filename}.")
             return True
+
         except ValueError:
-            print(f"⚠️ Collection {collection_name} không tồn tại, bỏ qua bước xóa.")
+            print(f"⚠️ Collection '{collection_name}' không tồn tại trong Chroma, bỏ qua bước xóa vector.")
             return True
         except Exception as e:
             print(f"❌ Lỗi khi xóa vector trong Chroma: {e}")
