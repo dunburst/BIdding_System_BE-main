@@ -38,7 +38,7 @@ def get_task_detail_reviewer_view(
 # --- CÁC API QUẢN LÝ USER ---
 
 # 1. Tạo User mới
-@router.post("/", response_model=schemas.UserResponse)
+@router.post("", response_model=schemas.UserResponse)
 def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db_user = crud_user.get_user_by_email(db, email=user.email)
     if db_user:
@@ -46,7 +46,7 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     return crud_user.create_user(db=db, user=user)
 
 # 2. Lấy danh sách Users
-@router.get("/", response_model=List[schemas.UserResponse])
+@router.get("", response_model=List[schemas.UserResponse])
 def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     users = crud_user.get_users(db, skip=skip, limit=limit)
     return users

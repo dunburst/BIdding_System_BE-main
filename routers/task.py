@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 router = APIRouter(prefix="/tasks", tags=["Bidding Tasks"])
 
-@router.post("/", response_model=TaskResponse)
+@router.post("", response_model=TaskResponse)
 def create_new_task(
     task_in: TaskCreate, 
     db: Session = Depends(get_db),

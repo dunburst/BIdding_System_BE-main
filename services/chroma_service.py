@@ -1,3 +1,4 @@
+from typing import Any, Dict, Optional, List
 import chromadb
 from chromadb.utils import embedding_functions
 import os
@@ -154,8 +155,31 @@ class ChromaService:
     def save_styles(self, chunks, source_filename):
         self._save_to_collection(self.style_collection, chunks, source_filename)
 
-    def save_requirements(self, chunks, source_filename):
-        self._save_to_collection(self.req_collection, chunks, source_filename)
+    # --- [UPDATE 1] LƯU DỮ LIỆU KÈM NHÃN DỰ ÁN ---
+    def save_requirements(self, chunks: List[Dict[str, Any]], source_filename: str, project_name: str):
+        collection = self.client.get_or_create_collection("current_requirements")
+        
+        ids = []
+        documents = []
+        metadatas = []
+
+        for idx, chunk in enumerate(chunks):
+            # Tạo ID: kết hợp project + filename + index để tránh trùng
+            chunk_id = f"{project_name}_{source_filename}_{idx}"
+            
+            # Lấy metadata gốc và thêm project_name vào
+            meta = chunk.get("metadata", {}).copy()
+            meta["source"] = source_filename
+            meta["project_name"] = project_name  # <--- KEY CHANGE: Đánh nhãn dự án
+            
+            ids.append(chunk_id)
+            documents.append(chunk.get("page_content", ""))
+            metadatas.append(meta)
+
+        if ids:
+            # Upsert để nếu trùng ID (cùng file, cùng dự án update lại) thì nó tự ghi đè
+            collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
+            print(f"💾 Đã lưu {len(ids)} chunks vào dự án '{project_name}' (File: {source_filename})")
         
     def save_chunks_to_db(self, chunks, source_filename):
         """Alias tương thích ngược"""
@@ -164,8 +188,109 @@ class ChromaService:
     def query_styles(self, query_text, n_results=2):
         return self.style_collection.query(query_texts=[query_text], n_results=n_results)
 
-    def query_requirements(self, query_text, n_results=5):
-        return self.req_collection.query(query_texts=[query_text], n_results=n_results)
+    # --- [UPDATE 2] TÌM KIẾM CÓ LỌC THEO DỰ ÁN ---
+    # --- [FIXED] SỬA LỖI TYPE HINT ---
+    def query_requirements(self, query_text: str, n_results: int = 5, project_name: Optional[str] = None) -> Any: 
+        # Đổi return type thành Any hoặc dict để tránh lỗi "QueryResult is not assignable..."
+        
+        collection = self.client.get_collection("current_requirements")
+        
+        # [FIX] Khai báo kiểu tường minh là Dict[str, Any] để bypass lỗi "dict[str, str] is not assignable to Where"
+        where_filter: Dict[str, Any] = {} 
+        
+        if project_name:
+            where_filter["project_name"] = project_name
+
+        # Nếu dict rỗng thì gán None
+        final_where = where_filter if where_filter else None
+
+        print(f"🔍 Querying Chroma with filter: {final_where}")
+
+        return collection.query(
+            query_texts=[query_text],
+            n_results=n_results,
+            where=final_where 
+        )
+        
+    def list_files_in_collection(self, collection_name: str) -> List[str]:
+        """
+        Lấy danh sách TẤT CẢ các file (unique) đang có trong collection.
+        Sửa lỗi: Thêm limit=None để quét sạch DB.
+        """
+        try:
+            print(f"📂 Đang quét collection: {collection_name}...")
+            # 1. Lấy collection
+            try:
+                collection = self.client.get_collection(collection_name)
+            except Exception:
+                print(f"⚠️ Collection '{collection_name}' chưa tồn tại hoặc tên sai.")
+                return []
+            
+            # 2. Lấy dữ liệu
+            # [QUAN TRỌNG] Phải có limit=None, nếu không nó chỉ lấy 10 dòng đầu
+            results = collection.get(
+                include=["metadatas"],
+                limit=None 
+            )
+            
+            files = set()
+            metadatas = results.get("metadatas")
+            
+            # Debug: In ra số lượng vector tìm thấy
+            count = len(metadatas) if metadatas else 0
+            print(f"📊 Tìm thấy {count} vectors trong collection.")
+
+            if metadatas: 
+                for meta in metadatas:
+                    if meta:
+                        # Kiểm tra cả 2 trường hợp key phổ biến để chắc chắn không bị sót
+                        if "source" in meta:
+                            files.add(str(meta["source"]))
+                        elif "source_file" in meta:
+                            files.add(str(meta["source_file"]))
+                        elif "filename" in meta:
+                            files.add(str(meta["filename"]))
+            
+            final_list = list(files)
+            print(f"✅ Kết quả: Tìm thấy {len(final_list)} file unique: {final_list}")
+            return final_list
+
+        except Exception as e:
+            print(f"❌ Lỗi khi list file: {str(e)}")
+            return []
+        
+
+    # --- [FIX LỖI NONE TYPE] ---
+    def list_source_files(self, collection_name: str = "current_requirements", project_name: Optional[str] = None) -> List[str]:
+        try:
+            collection = self.client.get_collection(collection_name)
+            
+            where_filter = {}
+            if project_name:
+                where_filter["project_name"] = project_name
+            final_where = where_filter if where_filter else None
+
+            # Lấy metadata
+            results = collection.get(
+                include=["metadatas"],
+                where=final_where
+            )
+            
+            files = set()
+            
+            # [QUAN TRỌNG] Kiểm tra xem key 'metadatas' có tồn tại và có dữ liệu không
+            metadatas = results.get("metadatas")
+            
+            if metadatas: # Chỉ chạy vòng lặp nếu metadatas không phải None
+                for meta in metadatas:
+                    if meta and "source" in meta:
+                        files.add(str(meta["source"]))
+            
+            return list(files)
+
+        except Exception as e:
+            print(f"⚠️ Lỗi lấy danh sách file: {str(e)}")
+            return []
     
     def clear_current_requirements(self):
         try:
@@ -217,7 +342,7 @@ class ChromaService:
         
 
 # --- HÀM MỚI QUAN TRỌNG CHO AGENT ---
-    def query_collection(self, collection_name: str, query_texts: list, n_results: int, where: dict = None):
+    def query_collection(self, collection_name: str, query_texts: list, n_results: int, where: Optional[dict] = None):
         """Cho phép tìm kiếm linh hoạt trên bất kỳ collection nào"""
         try:
             col = self.client.get_collection(name=collection_name)

@@ -16,7 +16,7 @@ router = APIRouter(prefix="/abac", tags=["ABAC Configuration"])
 # ENDPOINTS CHO ATTRIBUTES
 # ==========================================
 
-@router.post("/attributes/", response_model=AbacAttributeResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/attributes", response_model=AbacAttributeResponse, status_code=status.HTTP_201_CREATED)
 def create_attribute(attr_in: AbacAttributeCreate, db: Session = Depends(get_db)):
     # Check trùng attr_key
     existing_attr = crud.get_attribute_by_key(db, attr_key=attr_in.attr_key)
@@ -24,7 +24,7 @@ def create_attribute(attr_in: AbacAttributeCreate, db: Session = Depends(get_db)
         raise HTTPException(status_code=400, detail="Attribute key already exists")
     return crud.create_attribute(db=db, attribute=attr_in)
 
-@router.get("/attributes/", response_model=List[AbacAttributeResponse])
+@router.get("/attributes", response_model=List[AbacAttributeResponse])
 def read_attributes(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return crud.get_attributes(db, skip=skip, limit=limit)
 
@@ -53,11 +53,11 @@ def delete_attribute(attribute_id: int, db: Session = Depends(get_db)):
 # ENDPOINTS CHO POLICIES
 # ==========================================
 
-@router.post("/policies/", response_model=AbacPolicyResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/policies", response_model=AbacPolicyResponse, status_code=status.HTTP_201_CREATED)
 def create_policy(policy_in: AbacPolicyCreate, db: Session = Depends(get_db)):
     return crud.create_policy(db=db, policy=policy_in)
 
-@router.get("/policies/", response_model=List[AbacPolicyResponse])
+@router.get("/policies", response_model=List[AbacPolicyResponse])
 def read_policies(
     skip: int = 0, 
     limit: int = 100, 

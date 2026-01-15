@@ -33,6 +33,18 @@ app = FastAPI(
     title="PC1 Bidding Management System",
     # lifespan=lifespan # <--- Gắn vào đây
 )
+# --- THÊM ĐOẠN NÀY ---
+@app.middleware("http")
+async def strip_trailing_slash_middleware(request: Request, call_next):
+    # Nếu path không phải là root "/" và có dấu "/" ở cuối
+    if request.url.path != "/" and request.url.path.endswith("/"):
+        # Sửa lại path trong scope của request (bỏ dấu / cuối)
+        # Ví dụ: /bidding-packages/ -> /bidding-packages
+        request.scope["path"] = request.url.path.rstrip("/")
+        
+    response = await call_next(request)
+    return response
+# ---
 app.add_middleware(SessionMiddleware, secret_key="bi_mat_khong_bat_mi")
 
 app.include_router(auth.router)
@@ -62,8 +74,9 @@ origins = [
     # Hoặc bạn có thể chỉ định cụ thể:
     "http://localhost:3000",
     "http://26.152.34.61:3000",
-    "http://10.11.0.178:3000",
-    "https://bidding-management.vercel.app"
+    "http://10.10.0.158:3000",
+    "https://bidding-management.vercel.app",
+    "https://baptist-nerve-coupled-evaluating.trycloudflare.com"
 ]
 
 app.add_middleware(
@@ -113,4 +126,4 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=36636, timeout_keep_alive=120)
+    uvicorn.run(app, host="0.0.0.0", port=43210, timeout_keep_alive=120)

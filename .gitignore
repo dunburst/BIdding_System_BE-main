@@ -1,3 +1,6 @@
+venv/
 chroma_db/
 chroma.sqlite3
 /New folder
+__pycache__/
+*.pyc
