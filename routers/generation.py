@@ -15,7 +15,7 @@ from celery import Celery
 # [CHANGE] Thư viện OpenAI
 from openai import OpenAI 
 from minio_client import minio_handler
-
+from services.chapter1_agent import Chapter1Agent
 # --- IMPORT CÁC SERVICES ĐÃ TẠO ---
 from services.ai_pipeline.llama_service import llama_service
 from services.requirement_service import RequirementService, get_req_service
@@ -59,7 +59,6 @@ class OpenAIAgent:
         self.client = OpenAI(api_key=OPENAI_API_KEY, base_url=base_url)
         # Sử dụng model gpt-4o (tốt nhất) hoặc gpt-4o-mini (tiết kiệm)
         self.model_name = "gpt-4o" 
-        self.image_model = "dall-e-2" # Model tạo ảnh
 
     def chat(self, prompt: str, system_role: Optional[str] = None) -> str:
         try:
@@ -89,37 +88,6 @@ class OpenAIAgent:
             return response.choices[0].message.content or ""
         except Exception as e:
             return f"❌ Lỗi OpenAI: {str(e)}"
-        
-    # 3. SỬA TYPE HINT: Thêm Optional[str] để chấp nhận trả về None
-    def generate_image(self, prompt: str) -> Optional[str]:
-        """
-        Hàm gọi tạo ảnh. Trả về URL ảnh hoặc None nếu lỗi.
-        """
-        try:
-            print(f"🎨 Đang vẽ hình với prompt: {prompt}")
-            
-            # 4. CẤU HÌNH CHO DALL-E 2
-            # Lưu ý quan trọng: DALL-E 2 KHÔNG có tham số 'quality' và 'style'.
-            # Phải xóa đi, nếu không API sẽ trả lỗi ngay lập tức.
-            response = self.client.images.generate(
-                model=self.image_model,
-                prompt=prompt,
-                n=1,
-                size="1024x1024"
-                # quality="standard",  <-- XÓA DÒNG NÀY (Chỉ DALL-E 3 mới có)
-                # style="vivid"        <-- XÓA DÒNG NÀY (Chỉ DALL-E 3 mới có)
-            )
-            
-            # Lấy URL ảnh từ response
-            if response.data:
-                image_url = response.data[0].url
-                return image_url
-            else:
-                return None
-                
-        except Exception as e:
-            print(f"❌ Lỗi tạo ảnh: {str(e)}")
-            return None
 
 # Khởi tạo instance
 openai_agent = OpenAIAgent()
@@ -358,85 +326,28 @@ async def get_task_status(task_id: str):
 # ==============================================================================
 # [MODIFIED] API SEARCH DÙNG OPENAI
 # ==============================================================================
-# @router.post("/search")
-# async def search_knowledge(query: str, retrieval_service: RetrievalService = Depends(get_retrieval_service)):
-    
-#     # 1. Tìm kiếm dữ liệu (Phần này nhanh, khoảng 1-3s)
-#     # filters = {"year": {"$gte": 2014}} 
-#     filters = None 
-    
-#     results = retrieval_service.search_legal_docs(query, filters=filters)
-    
-#     # Nếu không tìm thấy, trả về text bình thường (nhanh)
-#     if not results:
-#         return "Xin lỗi, tôi không tìm thấy văn bản nào trong cơ sở dữ liệu."
-
-#     # 2. Tạo Context String
-#     context_str = "\n\n".join([
-#         f"--- TÀI LIỆU: {r['source']} (Năm {r['year']}) ---\n{r['parent_content']}" 
-#         for r in results
-#     ])
-    
-#     # 3. Tạo Prompt
-#     full_prompt = f"""
-#     Dưới đây là các văn bản pháp luật được trích xuất từ cơ sở dữ liệu:
-#     ---------------------
-#     {context_str}
-#     ---------------------
-
-#     CÂU HỎI: "{query}"
-
-#     YÊU CẦU:
-#     1. Trả lời trực tiếp vào câu hỏi, không vòng vo.
-#     2. BẮT BUỘC phải trích dẫn nguồn gốc (Theo Khoản..., Điều..., Văn bản nào?).
-#     3. Nếu các văn bản trên không chứa đủ thông tin để trả lời, hãy nói rõ: "Thông tin không có trong tài liệu được cung cấp".
-#     """
-    
-#     # 4. [QUAN TRỌNG] Tạo hàm Generator để Stream dữ liệu
-#     async def response_generator():
-#         # Gọi trực tiếp client của openai_agent để dùng chế độ stream
-#         stream = openai_agent.client.chat.completions.create(
-#             model="gpt-4o", # Hoặc model bạn đang cấu hình
-#             messages=[
-#                 {"role": "system", "content": "Bạn là trợ lý pháp lý chuyên nghiệp."},
-#                 {"role": "user", "content": full_prompt}
-#             ],
-#             temperature=0.1,
-#             stream=True  # <--- BẬT CHẾ ĐỘ STREAMING
-#         )
-
-#         # Lặp qua từng mảnh dữ liệu (chunk) được trả về
-#         for chunk in stream:
-#             if chunk.choices[0].delta.content:
-#                 # Yield từng chữ ra socket ngay lập tức
-#                 yield chunk.choices[0].delta.content
-
-#     # 5. Trả về StreamingResponse thay vì return string
-#     # media_type="text/event-stream" giúp Frontend hiểu đây là dòng dữ liệu
-#     return StreamingResponse(response_generator(), media_type="text/event-stream")
 @router.post("/search")
-async def search_knowledge(
-    query: str, 
-    # [NEW] Thêm cờ để ép buộc vẽ hoặc tự động phát hiện
-    force_image: bool = False, 
-    retrieval_service: RetrievalService = Depends(get_retrieval_service)
-):
+async def search_knowledge(query: str, retrieval_service: RetrievalService = Depends(get_retrieval_service)):
     
-    # 1. Tìm kiếm dữ liệu (RAG)
-    results = retrieval_service.search_legal_docs(query)
+    # 1. Tìm kiếm dữ liệu (Phần này nhanh, khoảng 1-3s)
+    # filters = {"year": {"$gte": 2014}} 
+    filters = None 
     
+    results = retrieval_service.search_legal_docs(query, filters=filters)
+    
+    # Nếu không tìm thấy, trả về text bình thường (nhanh)
     if not results:
-        # Nếu không có docs, vẫn có thể để AI chém gió hoặc trả về lỗi, tùy bạn
-        context_str = "Không tìm thấy tài liệu tham khảo."
-    else:
-        context_str = "\n\n".join([
-            f"--- TÀI LIỆU: {r['source']} (Năm {r['year']}) ---\n{r['parent_content']}" 
-            for r in results
-        ])
+        return "Xin lỗi, tôi không tìm thấy văn bản nào trong cơ sở dữ liệu."
+
+    # 2. Tạo Context String
+    context_str = "\n\n".join([
+        f"--- TÀI LIỆU: {r['source']} (Năm {r['year']}) ---\n{r['parent_content']}" 
+        for r in results
+    ])
     
-    # 2. Tạo Prompt cho GPT-4o
+    # 3. Tạo Prompt
     full_prompt = f"""
-    Dưới đây là các văn bản pháp luật:
+    Dưới đây là các văn bản pháp luật được trích xuất từ cơ sở dữ liệu:
     ---------------------
     {context_str}
     ---------------------
@@ -444,61 +355,32 @@ async def search_knowledge(
     CÂU HỎI: "{query}"
 
     YÊU CẦU:
-    1. Trả lời chi tiết dựa trên văn bản.
-    2. Trích dẫn nguồn.
+    1. Trả lời trực tiếp vào câu hỏi, không vòng vo.
+    2. BẮT BUỘC phải trích dẫn nguồn gốc (Theo Khoản..., Điều..., Văn bản nào?).
+    3. Nếu các văn bản trên không chứa đủ thông tin để trả lời, hãy nói rõ: "Thông tin không có trong tài liệu được cung cấp".
     """
     
-    # [LOGIC MỚI] Kiểm tra xem người dùng có ý định muốn xem hình ảnh không
-    # Ví dụ: "Vẽ sơ đồ quy trình...", "Hình ảnh minh họa..."
-    keywords_drawing = ["vẽ", "hình ảnh", "sơ đồ", "minh họa", "draw", "diagram", "image"]
-    should_draw = force_image or any(k in query.lower() for k in keywords_drawing)
-
-    # 3. Generator function (Xử lý Streaming)
+    # 4. [QUAN TRỌNG] Tạo hàm Generator để Stream dữ liệu
     async def response_generator():
-        # --- PHẦN 1: TRẢ LỜI VĂN BẢN (TEXT STREAM) ---
+        # Gọi trực tiếp client của openai_agent để dùng chế độ stream
         stream = openai_agent.client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o", # Hoặc model bạn đang cấu hình
             messages=[
                 {"role": "system", "content": "Bạn là trợ lý pháp lý chuyên nghiệp."},
                 {"role": "user", "content": full_prompt}
             ],
             temperature=0.1,
-            stream=True 
+            stream=True  # <--- BẬT CHẾ ĐỘ STREAMING
         )
 
-        full_answer_text = ""
+        # Lặp qua từng mảnh dữ liệu (chunk) được trả về
         for chunk in stream:
-            content = chunk.choices[0].delta.content
-            if content:
-                full_answer_text += content
-                yield content # Đẩy chữ về client ngay lập tức
+            if chunk.choices[0].delta.content:
+                # Yield từng chữ ra socket ngay lập tức
+                yield chunk.choices[0].delta.content
 
-        # --- PHẦN 2: TẠO HÌNH ẢNH (NẾU CẦN) ---
-        if should_draw:
-            yield "\n\n---\n*🎨 Đang tạo hình ảnh minh họa... (Vui lòng đợi vài giây)*\n"
-            
-            # Tạo prompt cho DALL-E dựa trên câu trả lời vừa rồi
-            # Mẹo: Nhờ GPT tóm tắt lại nội dung thành prompt vẽ tranh bằng tiếng Anh (DALL-E hiểu tiếng Anh tốt hơn)
-            image_prompt_response = openai_agent.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": "Bạn là chuyên gia viết prompt cho DALL-E."},
-                    {"role": "user", "content": f"Hãy viết một prompt tiếng Anh ngắn gọn (dưới 100 từ) mô tả một hình ảnh minh họa/sơ đồ cho nội dung sau: {query}. Chỉ trả về prompt, không nói gì thêm."}
-                ]
-            )
-            dalle_prompt = image_prompt_response.choices[0].message.content or f"Illustration for: {query}"
-            
-            # Gọi hàm tạo ảnh (chạy trong thread pool để không chặn luồng async)
-            # Lưu ý: OpenAI Sync Client chặn I/O, nên dùng to_thread
-            image_url = await asyncio.to_thread(openai_agent.generate_image, dalle_prompt)
-            
-            if image_url:
-                # Trả về cú pháp Markdown để Frontend tự render ảnh
-                yield f"\n![Minh họa]({image_url})\n"
-                yield f"\n*Gợi ý prompt: {dalle_prompt}*"
-            else:
-                yield "\n*(Xin lỗi, không thể tạo được hình ảnh lúc này)*"
-
+    # 5. Trả về StreamingResponse thay vì return string
+    # media_type="text/event-stream" giúp Frontend hiểu đây là dòng dữ liệu
     return StreamingResponse(response_generator(), media_type="text/event-stream")
 
 @router.get("/documents", summary="Lấy danh sách file (Từ SQL Database)")
@@ -588,3 +470,28 @@ async def get_all_collections(
         "count_chroma": len(chroma_cols),
         "count_sql": len(sql_cols)
     }
+
+@router.post("/agent/generate-chapter-1", summary="Agent viết Chương 1 (Retrieve -> Rerank -> Generate)")
+async def generate_chapter_1(
+    project_name: str = Form(..., description="Tên đầy đủ của dự án/gói thầu"),
+    retrieval_service: RetrievalService = Depends(get_retrieval_service),
+):
+    try:
+        # 1. Khởi tạo OpenAI Client
+        openai_client = OpenAI() # Nó sẽ tự đọc OPENAI_API_KEY từ env
+        
+        # 2. Khởi tạo Agent
+        # Agent này sẽ tự load model Reranking (sentence-transformers)
+        agent = Chapter1Agent(retrieval_service, openai_client)
+        
+        # 3. Thực thi
+        # Quá trình này có thể mất 10-20s do phải Rerank và chờ GPT-4o
+        content = agent.write(project_name)
+        
+        return {
+            "status": "success",
+            "project": project_name,
+            "data": content
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi Agent: {str(e)}")
