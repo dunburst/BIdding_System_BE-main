@@ -1,3 +1,4 @@
+from typing import Optional
 import chromadb
 from chromadb.utils import embedding_functions
 import os
@@ -213,6 +214,27 @@ class ChromaService:
             return collection_names
         except Exception as e:
             print(f"❌ Lỗi khi lấy danh sách collection: {e}")
+            return []
+        
+
+# --- HÀM MỚI QUAN TRỌNG CHO AGENT ---
+    def query_collection(self, collection_name: str, query_texts: list, n_results: int, where: Optional[dict] = None):
+        """Cho phép tìm kiếm linh hoạt trên bất kỳ collection nào"""
+        try:
+            col = self.client.get_collection(name=collection_name)
+            results = col.query(query_texts=query_texts, n_results=n_results, where=where)
+            
+            formatted_results = []
+            if results['documents']:
+                for i, doc in enumerate(results['documents'][0]):
+                    formatted_results.append({
+                        "content": doc,
+                        "metadata": results['metadatas'][0][i] if results['metadatas'] else {},
+                        "id": results['ids'][0][i]
+                    })
+            return formatted_results
+        except Exception as e:
+            print(f"⚠️ Lỗi query collection '{collection_name}': {e}")
             return []
 # --- THÊM ĐOẠN NÀY ---
 @lru_cache()

@@ -15,7 +15,7 @@ from celery import Celery
 # [CHANGE] Thư viện OpenAI
 from openai import OpenAI 
 from minio_client import minio_handler
-
+from services.chapter1_agent import Chapter1Agent
 # --- IMPORT CÁC SERVICES ĐÃ TẠO ---
 from services.ai_pipeline.llama_service import llama_service
 from services.requirement_service import RequirementService, get_req_service
@@ -471,3 +471,28 @@ async def get_all_collections(
         "count_chroma": len(chroma_cols),
         "count_sql": len(sql_cols)
     }
+
+@router.post("/agent/generate-chapter-1", summary="Agent viết Chương 1 (Retrieve -> Rerank -> Generate)")
+async def generate_chapter_1(
+    project_name: str = Form(..., description="Tên đầy đủ của dự án/gói thầu"),
+    retrieval_service: RetrievalService = Depends(get_retrieval_service),
+):
+    try:
+        # 1. Khởi tạo OpenAI Client
+        openai_client = OpenAI() # Nó sẽ tự đọc OPENAI_API_KEY từ env
+        
+        # 2. Khởi tạo Agent
+        # Agent này sẽ tự load model Reranking (sentence-transformers)
+        agent = Chapter1Agent(retrieval_service, openai_client)
+        
+        # 3. Thực thi
+        # Quá trình này có thể mất 10-20s do phải Rerank và chờ GPT-4o
+        content = agent.write(project_name)
+        
+        return {
+            "status": "success",
+            "project": project_name,
+            "data": content
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi Agent: {str(e)}")
