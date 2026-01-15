@@ -10,32 +10,27 @@ from services.ai_pipeline.ingest import chunk_by_chapters
 class RequirementService:
     def __init__(self, chroma_service: ChromaService):
         self.chroma = chroma_service
-    def process_requirement_file(self, file_path: str, filename: str) -> str:
-        """
-        1. Đọc file HSMT qua LlamaParse
-        2. Cắt nhỏ thành từng chương
-        3. Lưu vào Vector DB (Collection: current_requirements)
-        """
-        print(f"📖 Đang đọc Hồ sơ yêu cầu từ: {filename}...")
+    # Thêm tham số project_name vào hàm này
+    def process_requirement_file(self, file_path: str, filename: str, project_name: str) -> str:
         
-        # Bước 1: Parse PDF -> Markdown
+        print(f"📖 Đang đọc Hồ sơ yêu cầu cho dự án [{project_name}] từ: {filename}...")
+        
+        # 1. Parse PDF -> Markdown
         full_text = llama_service.parse_pdf_to_markdown(file_path)
         
         if not full_text:
             return ""
+        
 
-        # Bước 2: Dọn dẹp DB cũ (Để đảm bảo Bot không nhớ nhầm dự án trước)
-        # Tùy logic business, ở đây tôi chọn xóa cũ nạp mới cho sạch
-        # chroma_service.clear_current_requirements()
-
-        # Bước 3: Cắt nhỏ (Chunking)
+        # 2. Cắt nhỏ (Chunking)
         chunks = chunk_by_chapters(full_text)
         print(f"✂️ Đã cắt yêu cầu thành {len(chunks)} chương/phần.")
 
-        # Bước 4: Lưu vào ChromaDB (Requirement Collection)
-        self.chroma.save_requirements(chunks, source_filename=filename)
+        # 3. Lưu vào ChromaDB kèm Project Name
+        # Gọi hàm save mới đã sửa ở trên
+        self.chroma.save_requirements(chunks, source_filename=filename, project_name=project_name)
         
-        return full_text # Vẫn trả về text để xem preview nếu cần
+        return full_text
     
     # --- HÀM MỚI (CHUYỂN VÀO ĐÂY) ---
     def process_large_document_background(self, file_path: str, original_filename: str):

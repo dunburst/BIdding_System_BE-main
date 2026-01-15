@@ -126,4 +126,4 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=36636, timeout_keep_alive=120)
+    uvicorn.run(app, host="0.0.0.0", port=43210, timeout_keep_alive=120)

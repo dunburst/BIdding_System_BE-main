@@ -135,30 +135,31 @@ async def learn_document_async(
 # ==============================================================================
 # 2. API: ĐỌC YÊU CẦU ĐẦU VÀO (INPUT REQUIREMENT)
 # ==============================================================================
-@router.post("/upload-requirement", summary="Upload HSMT để lấy dữ liệu đầu vào")
-async def upload_requirement(file: UploadFile = File(...), service: RequirementService = Depends(get_req_service)):
-    
-    safe_filename = file.filename or "unknown_requirement.pdf"
+# 2. CẬP NHẬT API UPLOAD REQUIREMENT
+@router.post("/upload-requirement", summary="Upload HSMT gán vào Dự Án cụ thể")
+async def upload_requirement(
+    file: UploadFile = File(...), 
+    project_name: str = Form(..., description="Tên định danh dự án (VD: du_an_benh_vien_x)"), # <--- Thêm field này
+    service: RequirementService = Depends(get_req_service)
+):
+    safe_filename = file.filename or "unknown_req.pdf"
     file_path = os.path.join(TEMP_DIR, f"req_{uuid.uuid4()}_{safe_filename}")
     
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
-        print(f"📖 Đang đọc yêu cầu từ: {safe_filename}")
-
-        requirement_text = service.process_requirement_file(file_path, safe_filename)
+        # Truyền project_name vào service
+        requirement_text = service.process_requirement_file(file_path, safe_filename, project_name)
         
         return {
             "status": "success",
-            "message": "Đã đọc và lưu yêu cầu thành công!",
-            "file_name": safe_filename,
-            "content_preview": requirement_text[:200] + "..." 
+            "message": f"Đã thêm tài liệu vào dự án '{project_name}'",
+            "project": project_name,
+            "file": safe_filename
         }
-
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi: {str(e)}")
-    
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -471,6 +472,23 @@ async def get_all_collections(
         "count_chroma": len(chroma_cols),
         "count_sql": len(sql_cols)
     }
+    
+# 1. API LIST FILES TRONG COLLECTION
+@router.get("/collection/{collection_name}/files", summary="Lấy danh sách file trong 1 Collection")
+async def list_collection_files(
+    collection_name: str,
+    chroma_service: ChromaService = Depends(get_chroma_service)
+):
+    """
+    Trả về danh sách các tên file duy nhất đang có trong collection vector.
+    """
+    files = chroma_service.list_files_in_collection(collection_name)
+    return {
+        "collection": collection_name,
+        "total_files": len(files),
+        "files": files
+    }
+    
 
 @router.post("/agent/generate-chapter-1", summary="Agent viết Chương 1 (Retrieve -> Rerank -> Generate)")
 async def generate_chapter_1(
