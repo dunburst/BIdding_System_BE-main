@@ -90,7 +90,7 @@ def get_history_filter_options(
         message="Lấy dữ liệu bộ lọc thành công",
         data=data
     )
-@router.post("/", response_model=BaseResponse[schemas.BiddingPackageResponse])
+@router.post("", response_model=BaseResponse[schemas.BiddingPackageResponse])
 def create_package(
     package: schemas.BiddingPackageBase, # Hoặc BiddingPackageCreate nếu bạn tách riêng
     db: Session = Depends(get_db)
@@ -113,7 +113,7 @@ def create_package(
 # ==========================================
 # 2. LẤY DANH SÁCH (GET LIST - CÓ FILTER & SEARCH)
 # ==========================================
-@router.get("/", response_model=BaseResponse[schemas.BiddingPackagePagination])
+@router.get("", response_model=BaseResponse[schemas.BiddingPackagePagination])
 def get_packages(
     skip: int = Query(0, ge=0), 
     limit: int = Query(100, ge=1),

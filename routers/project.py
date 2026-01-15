@@ -23,7 +23,7 @@ router = APIRouter(
 )
 
 # --- API: TẠO DỰ ÁN ---
-@router.post("/", response_model=schemas.BiddingProjectResponse)
+@router.post("", response_model=schemas.BiddingProjectResponse)
 def create_project(
     project_in: schemas.BiddingProjectCreate, 
     db: Session = Depends(get_db),
@@ -156,7 +156,7 @@ def create_project(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 # --- API: LẤY DANH SÁCH & TÌM KIẾM ---
-@router.get("/", response_model=List[schemas.BiddingProjectDetailResponse])
+@router.get("", response_model=List[schemas.BiddingProjectDetailResponse])
 def read_projects(
     skip: int = 0,
     limit: int = 100,

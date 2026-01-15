@@ -13,7 +13,7 @@ router = APIRouter(
 )
 
 # API 1: Tạo đơn vị mới
-@router.post("/", response_model=schemas.OrganizationalUnitResponse)
+@router.post("", response_model=schemas.OrganizationalUnitResponse)
 def create_org_unit(unit: schemas.OrganizationalUnitCreate, db: Session = Depends(get_db)):
     # Check trùng mã (Optional)
     existing = db.query(OrganizationalUnit).filter_by(unit_code=unit.unit_code).first()
@@ -66,7 +66,7 @@ def get_all_subsidiaries(db: Session = Depends(get_db)):
     return crud_org.get_all_subsidiaries(db)
 
 # API 3: Lấy danh sách phẳng (Dropdown list)
-@router.get("/", response_model=List[schemas.OrganizationalUnitResponse])
+@router.get("", response_model=List[schemas.OrganizationalUnitResponse])
 def read_org_units(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return crud_org.get_units(db, skip=skip, limit=limit)
 
