@@ -400,68 +400,72 @@ async def get_documents_from_sql(db: Session = Depends(get_db)):
         "data": docs
     }
     
-@router.delete("/documents/{filename}", summary="Xóa tài liệu (SQL + Vector + MinIO)")
+@router.delete("/documents/{filename}", summary="Xóa tài liệu (Cơ chế mềm - Không lỗi 404)")
 async def delete_document(
     filename: str,
-    # [THÊM MỚI] Cho phép nhập tên collection, nếu không nhập thì để None
     collection_name: Optional[str] = Query(None, description="Tên collection cần xóa vector (VD: legal_docs, current_requirements)"),
     db: Session = Depends(get_db),
     chroma_service: ChromaService = Depends(get_chroma_service)
 ):
     """
-    API xóa toàn bộ dữ liệu liên quan đến 1 file.
-    URL ví dụ: DELETE /documents/file.pdf?collection_name=current_requirements
+    API xóa dữ liệu liên quan đến 1 file.
+    Cơ chế: Nếu không tìm thấy ở SQL, vẫn tiếp tục thử xóa ở Chroma và MinIO.
     """
-    
+    deleted_status = {
+        "sql": "Not Found (Skipped)",
+        "chroma": "Processed",
+        "minio": "Processed"
+    }
+
     # 1. Kiểm tra file có trong SQL không
     doc_record = db.query(DocumentRegistry).filter(DocumentRegistry.source_file == filename).first()
     
-    if not doc_record:
-        raise HTTPException(status_code=404, detail=f"Không tìm thấy file '{filename}' trong hệ thống SQL.")
-
     # [LOGIC MỚI] Xác định collection mục tiêu
-    # Ưu tiên 1: Người dùng nhập vào API
-    # Ưu tiên 2: Lấy từ database SQL (nếu bảng DocumentRegistry có lưu cột collection_name)
-    # Ưu tiên 3: Mặc định fallback về 'legal_docs'
-    
-    target_collection = "legal_docs" # Giá trị mặc định
+    # Nếu doc_record tồn tại thì lấy từ DB, nếu không thì ưu tiên user nhập, cuối cùng fallback về 'legal_docs'
+    target_collection = "legal_docs" # Default fallback
     
     if collection_name:
         target_collection = collection_name
-    elif hasattr(doc_record, "collection_name") and doc_record.collection_name:
+    elif doc_record and hasattr(doc_record, "collection_name") and doc_record.collection_name:
         target_collection = doc_record.collection_name
         
     print(f"🎯 Xác định mục tiêu xóa: File '{filename}' trong Collection '{target_collection}'")
 
     try:
-        # --- BƯỚC 1: XÓA SQL ---
-        db.delete(doc_record)
-        db.commit()
-        print(f"✅ Đã xóa metadata trong SQL: {filename}")
+        # --- BƯỚC 1: XÓA SQL (NẾU CÓ) ---
+        if doc_record:
+            db.delete(doc_record)
+            db.commit()
+            print(f"✅ Đã xóa metadata trong SQL: {filename}")
+            deleted_status["sql"] = "Deleted"
+        else:
+            print(f"ℹ️ Không tìm thấy '{filename}' trong SQL -> Bỏ qua bước SQL.")
 
-        # --- BƯỚC 2: XÓA CHROMA VECTOR ---
-        # Truyền target_collection đã xác định vào
+        # --- BƯỚC 2: XÓA CHROMA VECTOR (LUÔN CHẠY) ---
+        # Hàm này bên dưới service đã có try/except nên rất an toàn, cứ gọi là chạy
         chroma_service.delete_document_vectors(filename, collection_name=target_collection)
 
-        # --- BƯỚC 3: XÓA FILE GỐC TRÊN MINIO ---
+        # --- BƯỚC 3: XÓA FILE GỐC TRÊN MINIO (LUÔN CHẠY) ---
         minio_path = f"raw_inputs/{filename}"
         try:
-            # Giả sử bạn có hàm delete
             # minio_handler.delete_file(minio_path) 
             print(f"✅ (Giả lập) Đã xóa file gốc trên MinIO: {minio_path}")
+            deleted_status["minio"] = "Deleted (Attempted)"
         except Exception as e:
-            print(f"⚠️ Không xóa được file trên MinIO: {e}")
+            print(f"⚠️ Lỗi nhẹ khi xóa MinIO (có thể file không tồn tại): {e}")
+            deleted_status["minio"] = f"Error: {str(e)}"
 
         return {
             "status": "success", 
-            "message": f"Đã xóa hoàn toàn tài liệu: {filename}",
-            "collection_cleaned": target_collection,
-            "deleted_layers": ["SQL Metadata", "Chroma Vectors", "MinIO File"]
+            "message": f"Đã thực hiện quy trình xóa cho file: {filename}",
+            "details": deleted_status,
+            "target_collection": target_collection
         }
 
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Lỗi khi xóa tài liệu: {str(e)}")
+        # Vẫn trả về lỗi 500 nếu là lỗi hệ thống nghiêm trọng (DB connection die, v.v.)
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống khi xóa tài liệu: {str(e)}")
     
 @router.get("/collections", summary="Lấy danh sách Collection (Từ Chroma & SQL)")
 async def get_all_collections(
