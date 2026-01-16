@@ -305,49 +305,32 @@ class ChromaService:
             
     def delete_document_vectors(self, source_filename: str, collection_name: str):
         """
-        Xóa vector dựa trên filename và collection name được truyền vào.
+        Xóa vector an toàn. Luôn trả về True trừ khi lỗi kết nối nghiêm trọng.
         """
         try:
-            print(f"🗑️ Đang tiến hành xóa vectors của: {source_filename} trong {collection_name}...")
+            print(f"🗑️ Đang tiến hành quét xóa vectors của: {source_filename} trong {collection_name}...")
             
-            target_collection = self.client.get_collection(name=collection_name)
-            
+            try:
+                target_collection = self.client.get_collection(name=collection_name)
+            except ValueError:
+                # Lỗi này xảy ra khi collection chưa được tạo -> Coi như đã xóa sạch.
+                print(f"⚠️ Collection '{collection_name}' chưa tồn tại -> Bỏ qua.")
+                return True
+
             # [CẢI TIẾN] Xóa triệt để các biến thể key metadata
-            # Vì lịch sử code có lúc lưu 'source', lúc lưu 'source_file', lúc lưu 'filename'
-            # Chúng ta sẽ thử xóa cả 3 trường hợp để đảm bảo sạch sẽ.
+            # ChromaDB .delete() không báo lỗi nếu where clause không tìm thấy item nào.
+            # Nên cứ gọi thoải mái.
             
-            deleted_count = 0
+            target_collection.delete(where={"source": source_filename})
+            target_collection.delete(where={"source_file": source_filename})
+            target_collection.delete(where={"filename": source_filename})
             
-            # 1. Xóa theo key chuẩn "source"
-            try:
-                target_collection.delete(where={"source": source_filename})
-                deleted_count += 1
-            except: pass
-
-            # 2. Xóa theo key cũ "source_file" (nếu có)
-            try:
-                target_collection.delete(where={"source_file": source_filename})
-                deleted_count += 1
-            except: pass
-
-            # 3. Xóa theo key "filename" (nếu có)
-            try:
-                target_collection.delete(where={"filename": source_filename})
-                deleted_count += 1
-            except: pass
-            
-            # 4. Xóa theo key "project_name" kết hợp source (nếu là requirement)
-            # Logic: Nếu collection là requirement, có thể cần xóa theo ID hoặc metadata phức tạp hơn
-            # Nhưng tạm thời delete where source là đủ mạnh.
-
-            print(f"✅ Đã gửi lệnh xóa vectors cho file {source_filename}.")
+            print(f"✅ Đã gửi lệnh xóa vectors (nếu có) cho file {source_filename}.")
             return True
 
-        except ValueError:
-            print(f"⚠️ Collection '{collection_name}' không tồn tại trong Chroma, bỏ qua bước xóa vector.")
-            return True
         except Exception as e:
-            print(f"❌ Lỗi khi xóa vector trong Chroma: {e}")
+            # Chỉ in log lỗi hệ thống, không làm crash luồng chính
+            print(f"❌ Lỗi ngoại lệ khi gọi ChromaDB (kết nối/timeout...): {e}")
             return False
         
         # 👇 THÊM HÀM NÀY VÀO CUỐI CLASS
