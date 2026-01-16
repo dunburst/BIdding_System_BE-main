@@ -4,28 +4,36 @@ import enum
 from models import AbacPolicy, AbacAttribute, User, PolicyEffect
 from utils.constants import AbacAction
 from typing import List
+from sqlalchemy.orm import selectinload
 
 # Biến global lưu trữ Policy trong RAM
 # Cấu trúc: { "bidding_packages": [PolicyObj1, PolicyObj2], "users": [...] }
+# Cách chuyên nghiệp hơn (Optional):
+# policies_pydantic = [AbacPolicyResponse.model_validate(p) for p in policies]
+# _POLICY_STORE[resource_name] = policies_pydantic
 _POLICY_STORE: Dict[str, List[AbacPolicy]] = {}
 def get_policies_from_cache(db: Session, resource_name: str) -> List[AbacPolicy]:
-    """
-    Hàm này thay thế cho câu lệnh db.query(...) 
-    Nó sẽ kiểm tra trong RAM trước, nếu chưa có mới gọi DB.
-    """
     global _POLICY_STORE
     
-    # 1. Nếu đã có trong RAM, trả về ngay (Tốn 0.00001 giây)
+    # 1. Nếu đã có trong RAM, trả về ngay
     if resource_name in _POLICY_STORE:
         return _POLICY_STORE[resource_name]
     
-    # 2. Nếu chưa có, query DB một lần duy nhất
+    # 2. Nếu chưa có, query DB
     print(f"🔄 [CACHE MISS] Loading policies for {resource_name} from DB...")
+    
+    # --- BƯỚC 1: Xóa .options(selectinload...) ---
     policies = db.query(AbacPolicy).filter(
         AbacPolicy.target_resource == resource_name,
         AbacPolicy.is_active == True
     ).order_by(AbacPolicy.priority.desc()).all()
     
+    # --- BƯỚC 2: Cắt object khỏi Session (Quan trọng) ---
+    for policy in policies:
+        # Expunge giúp biến object thành object độc lập, 
+        # giữ nguyên data hiện tại trong RAM và không bao giờ gọi lại DB nữa.
+        db.expunge(policy) 
+        
     # 3. Lưu vào RAM
     _POLICY_STORE[resource_name] = policies
     

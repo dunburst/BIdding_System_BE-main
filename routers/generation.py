@@ -6,6 +6,9 @@ import shutil
 import os
 import uuid
 import io
+import logging
+logging.basicConfig(level=logging.INFO) 
+logger = logging.getLogger(__name__) # <--- THÊM DÒNG NÀY
 from database import get_db, engine, Base
 from models import DocumentRegistry
 from sqlalchemy.orm import Session
@@ -504,21 +507,41 @@ async def list_collection_files(
     }
     
 
-@router.post("/agent/generate-chapter-1", summary="Agent viết Chương 1 (Retrieve -> Rerank -> Generate)")
+# @router.post("/agent/generate-chapter-1", summary="Agent viết Chương 1 (Retrieve -> Rerank -> Generate)")
+# async def generate_chapter_1(
+#     project_name: str = Form(..., description="Tên đầy đủ của dự án/gói thầu"),
+#     retrieval_service: RetrievalService = Depends(get_retrieval_service),
+# ):
+#     try:
+#         # 1. Khởi tạo OpenAI Client
+#         openai_client = OpenAI() # Nó sẽ tự đọc OPENAI_API_KEY từ env
+        
+#         # 2. Khởi tạo Agent
+#         # Agent này sẽ tự load model Reranking (sentence-transformers)
+#         agent = Chapter1Agent(retrieval_service, openai_client)
+        
+#         # 3. Thực thi
+#         # Quá trình này có thể mất 10-20s do phải Rerank và chờ GPT-4o
+#         content = agent.write(project_name)
+        
+#         return {
+#             "status": "success",
+#             "project": project_name,
+#             "data": content
+#         }
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Lỗi Agent: {str(e)}")
+
+@router.post("/agent/generate-chapter-1", summary="Agent viết Chương 1 (LangGraph Version)")
 async def generate_chapter_1(
     project_name: str = Form(..., description="Tên đầy đủ của dự án/gói thầu"),
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
 ):
     try:
-        # 1. Khởi tạo OpenAI Client
-        openai_client = OpenAI() # Nó sẽ tự đọc OPENAI_API_KEY từ env
+        # 1. Khởi tạo Agent (Agent tự lo việc init OpenAI và Reranker)
+        agent = Chapter1Agent(retrieval_service)
         
-        # 2. Khởi tạo Agent
-        # Agent này sẽ tự load model Reranking (sentence-transformers)
-        agent = Chapter1Agent(retrieval_service, openai_client)
-        
-        # 3. Thực thi
-        # Quá trình này có thể mất 10-20s do phải Rerank và chờ GPT-4o
+        # 2. Thực thi Graph
         content = agent.write(project_name)
         
         return {
@@ -527,4 +550,6 @@ async def generate_chapter_1(
             "data": content
         }
     except Exception as e:
+        # Log lỗi chi tiết ra console
+        print(f"Lỗi Agent: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Lỗi Agent: {str(e)}")
