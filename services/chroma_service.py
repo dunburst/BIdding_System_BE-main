@@ -304,22 +304,34 @@ class ChromaService:
             print(f"⚠️ Lỗi khi clear collection: {e}")
             
     # [CHANGE] Cập nhật hàm xóa để xóa đúng collection
-    def delete_document_vectors(self, source_filename: str, collection_name="legal_docs"):
+    def delete_document_vectors(self, source_filename: str, collection_name: str):
+        """
+        Xóa vector an toàn. Luôn trả về True trừ khi lỗi kết nối nghiêm trọng.
+        """
         try:
-            print(f"🗑️ Đang tiến hành xóa vectors của: {source_filename} trong {collection_name}...")
+            print(f"🗑️ Đang tiến hành quét xóa vectors của: {source_filename} trong {collection_name}...")
             
-            target_collection = self.client.get_collection(name=collection_name)
-            target_collection.delete(
-                where={"source": source_filename}
-            )
+            try:
+                target_collection = self.client.get_collection(name=collection_name)
+            except ValueError:
+                # Lỗi này xảy ra khi collection chưa được tạo -> Coi như đã xóa sạch.
+                print(f"⚠️ Collection '{collection_name}' chưa tồn tại -> Bỏ qua.")
+                return True
+
+            # [CẢI TIẾN] Xóa triệt để các biến thể key metadata
+            # ChromaDB .delete() không báo lỗi nếu where clause không tìm thấy item nào.
+            # Nên cứ gọi thoải mái.
             
-            print(f"✅ Đã xóa sạch vectors của file {source_filename}.")
+            target_collection.delete(where={"source": source_filename})
+            target_collection.delete(where={"source_file": source_filename})
+            target_collection.delete(where={"filename": source_filename})
+            
+            print(f"✅ Đã gửi lệnh xóa vectors (nếu có) cho file {source_filename}.")
             return True
-        except ValueError:
-            print(f"⚠️ Collection {collection_name} không tồn tại, bỏ qua bước xóa.")
-            return True
+
         except Exception as e:
-            print(f"❌ Lỗi khi xóa vector trong Chroma: {e}")
+            # Chỉ in log lỗi hệ thống, không làm crash luồng chính
+            print(f"❌ Lỗi ngoại lệ khi gọi ChromaDB (kết nối/timeout...): {e}")
             return False
         
         # 👇 THÊM HÀM NÀY VÀO CUỐI CLASS

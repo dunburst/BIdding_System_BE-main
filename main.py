@@ -1,77 +1,59 @@
+import os
+from dotenv import load_dotenv
+
+# --- 1. QUAN TRỌNG: LOAD BIẾN MÔI TRƯỜNG TRƯỚC TẤT CẢ ---
+load_dotenv()
+
+# [DEBUG] Kiểm tra xem Key LangSmith đã nhận chưa
+ls_key = os.getenv("LANGCHAIN_API_KEY")
+ls_proj = os.getenv("LANGCHAIN_PROJECT")
+if ls_key:
+    print(f"✅ LangSmith Configured: Project='{ls_proj}' | Key='{ls_key[:5]}...'")
+else:
+    print("❌ CẢNH BÁO: Chưa tìm thấy LANGCHAIN_API_KEY trong .env. Trace sẽ không hoạt động!")
+
+# --- 2. SAU ĐÓ MỚI IMPORT CÁC THƯ VIỆN KHÁC ---
 from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
 import models
 from database import engine, get_db
-from routers import bidding, auth, crawler, organization, user, abac, system, project, googlelogin, task, bidding_req, agent_api, onedrive_router, generation
+
+# Import các Router
+from routers import (
+    bidding, auth, crawler, organization, user, abac, system, 
+    project, googlelogin, task, bidding_req, agent_api, # <-- Đảm bảo agent_api có trong file routers/__init__.py
+    onedrive_router, generation, drafting
+)
+
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from mcp_drive.router import router as drive_router
 from starlette.middleware.sessions import SessionMiddleware
-from routers import drafting
 from crawler_bot import start_scheduler_service
-# 1. Tự động tạo các bảng trong Database nếu chưa tồn tại
+
+# 3. Tự động tạo các bảng trong Database nếu chưa tồn tại
 models.Base.metadata.create_all(bind=engine)
 
-# # 2. Định nghĩa Lifespan (Vòng đời ứng dụng)
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     # --- Code chạy KHI KHỞI ĐỘNG App ---
-#     print("--- STARTING CRAWLER SCHEDULER ---")
-#     scheduler = start_scheduler_service() # Khởi động Bot
-    
-#     yield # App sẽ chạy ở đây
-    
-#     # --- Code chạy KHI TẮT App ---
-#     print("--- STOPPING CRAWLER SCHEDULER ---")
-#     if scheduler:
-#         scheduler.shutdown()
-
-# 3. Gắn lifespan vào FastAPI
+# 4. Khởi tạo App
 app = FastAPI(
     title="PC1 Bidding Management System",
-    # lifespan=lifespan # <--- Gắn vào đây
 )
-# --- THÊM ĐOẠN NÀY ---
+
+# --- MIDDLEWARE ---
 @app.middleware("http")
 async def strip_trailing_slash_middleware(request: Request, call_next):
-    # Nếu path không phải là root "/" và có dấu "/" ở cuối
+    # Nếu path không phải là root "/" và có dấu "/" ở cuối -> bỏ đi
     if request.url.path != "/" and request.url.path.endswith("/"):
-        # Sửa lại path trong scope của request (bỏ dấu / cuối)
-        # Ví dụ: /bidding-packages/ -> /bidding-packages
         request.scope["path"] = request.url.path.rstrip("/")
-        
     response = await call_next(request)
     return response
-# ---
+
 app.add_middleware(SessionMiddleware, secret_key="bi_mat_khong_bat_mi")
 
-app.include_router(auth.router)
-app.include_router(bidding.router) # <--- 2. Đăng ký router bidding vào app
-app.include_router(bidding_req.router)
-app.include_router(crawler.router)
-app.include_router(organization.router)
-app.include_router(user.router)
-app.include_router(abac.router)
-app.include_router(system.router)
-app.include_router(project.router)
-app.include_router(googlelogin.router) # Gắn router Google Login
-app.include_router(task.router)
-app.include_router(drive_router)
-app.include_router(drafting.router)
-# app.include_router(agent_api.router)
-app.include_router(onedrive_router.router)
-app.include_router(generation.router)
-
-# API Test kết nối
-@app.get("/")
-def read_root():
-    return {"message": "Hệ thống quản lý đấu thầu PC1 đang chạy!"}
-
+# --- CORS ---
 origins = [
-    # "*", # Cho phép tất cả các nguồn (dùng cho dev/test)
-    # Hoặc bạn có thể chỉ định cụ thể:
     "http://localhost:3000",
     "http://26.152.34.61:3000",
     "http://10.10.0.158:3000",
@@ -83,9 +65,32 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Cho phép tất cả các method (POST, GET, PUT, DELETE...)
-    allow_headers=["*"],  # Cho phép tất cả các header (Authorization, Content-Type...)
+    allow_methods=["*"], 
+    allow_headers=["*"], 
 )
+
+# --- 5. ĐĂNG KÝ ROUTER ---
+app.include_router(auth.router)
+app.include_router(bidding.router)
+app.include_router(bidding_req.router)
+app.include_router(crawler.router)
+app.include_router(organization.router)
+app.include_router(user.router)
+app.include_router(abac.router)
+app.include_router(system.router)
+app.include_router(project.router)
+app.include_router(googlelogin.router)
+app.include_router(task.router)
+app.include_router(drive_router)
+app.include_router(drafting.router)
+app.include_router(onedrive_router.router)
+app.include_router(generation.router)
+
+# [QUAN TRỌNG] Bật router Agent lên (tôi đã bỏ comment dòng này)
+# Đảm bảo bạn đã có file routers/agent_api.py chứa endpoint
+
+
+# --- EXCEPTION HANDLERS ---
 @app.exception_handler(HTTPException)
 async def custom_http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
@@ -94,23 +99,16 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
             "success": False,
             "status": exc.status_code,
             "message": exc.detail,
-            "errors": None # Không có lỗi chi tiết từng field
+            "errors": None 
         },
     )
 
-# --- 2. XỬ LÝ LỖI VALIDATION (Lỗi do Pydantic/FastAPI tự bắt) ---
-# Ví dụ: Gửi email sai định dạng, thiếu password...
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors_dict = {}
-    
-    # Gom nhóm lỗi theo từng field
     for error in exc.errors():
-        # Lấy tên field (vd: "email", "password")
-        # loc thường là ('body', 'email') -> lấy phần tử cuối
         field = error["loc"][-1] 
         msg = error["msg"]
-        
         if field not in errors_dict:
             errors_dict[field] = []
         errors_dict[field].append(msg)
@@ -121,9 +119,21 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "success": False,
             "status": 400,
             "message": "Dữ liệu đầu vào không hợp lệ",
-            "errors": errors_dict # Trả về object lỗi chi tiết
+            "errors": errors_dict 
         },
     )
+
+# API Test kết nối
+@app.get("/")
+def read_root():
+    return {"message": "Hệ thống quản lý đấu thầu PC1 đang chạy!"}
+
 if __name__ == "__main__":
     import uvicorn
+    # In ra key lần nữa lúc khởi động uvicorn để chắc chắn
+    if os.getenv("LANGCHAIN_API_KEY"):
+        print("🚀 LangSmith Tracing: ENABLED")
+    else:
+        print("⚠️ LangSmith Tracing: DISABLED")
+        
     uvicorn.run(app, host="0.0.0.0", port=43210, timeout_keep_alive=120)

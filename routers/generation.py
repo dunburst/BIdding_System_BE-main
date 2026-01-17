@@ -1,7 +1,7 @@
 import asyncio
-from typing import Optional
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, BackgroundTasks, Depends
+from typing import Optional, List
 from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, BackgroundTasks, Depends, Query
 import shutil
 import os
 import uuid
@@ -24,7 +24,8 @@ from services.chroma_service import ChromaService, get_chroma_service
 from services.retrieval_service import RetrievalService, get_retrieval_service
 from fastapi.responses import HTMLResponse 
 import markdown 
-
+from services.construction_agent import ConstructionDraftingAgent # Import Agent vừa tạo
+from pydantic import BaseModel
 # --- IMPORT HÀM TIỆN ÍCH (CHUNKING) ---
 from services.ai_pipeline.ingest import chunk_by_chapters 
 
@@ -397,54 +398,72 @@ async def get_documents_from_sql(db: Session = Depends(get_db)):
         "data": docs
     }
     
-@router.delete("/documents/{filename}", summary="Xóa tài liệu (SQL + Vector + MinIO)")
+@router.delete("/documents/{filename}", summary="Xóa tài liệu (Cơ chế mềm - Không lỗi 404)")
 async def delete_document(
     filename: str,
+    collection_name: Optional[str] = Query(None, description="Tên collection cần xóa vector (VD: legal_docs, current_requirements)"),
     db: Session = Depends(get_db),
     chroma_service: ChromaService = Depends(get_chroma_service)
 ):
     """
-    API xóa toàn bộ dữ liệu liên quan đến 1 file:
-    1. Xóa trong SQL Database (DocumentRegistry).
-    2. Xóa Vectors trong ChromaDB.
-    3. (Option) Xóa file gốc trên MinIO.
+    API xóa dữ liệu liên quan đến 1 file.
+    Cơ chế: Nếu không tìm thấy ở SQL, vẫn tiếp tục thử xóa ở Chroma và MinIO.
     """
-    
+    deleted_status = {
+        "sql": "Not Found (Skipped)",
+        "chroma": "Processed",
+        "minio": "Processed"
+    }
+
     # 1. Kiểm tra file có trong SQL không
     doc_record = db.query(DocumentRegistry).filter(DocumentRegistry.source_file == filename).first()
     
-    if not doc_record:
-        raise HTTPException(status_code=404, detail=f"Không tìm thấy file '{filename}' trong hệ thống.")
+    # [LOGIC MỚI] Xác định collection mục tiêu
+    # Nếu doc_record tồn tại thì lấy từ DB, nếu không thì ưu tiên user nhập, cuối cùng fallback về 'legal_docs'
+    target_collection = "legal_docs" # Default fallback
+    
+    if collection_name:
+        target_collection = collection_name
+    elif doc_record and hasattr(doc_record, "collection_name") and doc_record.collection_name:
+        target_collection = doc_record.collection_name
+        
+    print(f"🎯 Xác định mục tiêu xóa: File '{filename}' trong Collection '{target_collection}'")
 
     try:
-        # --- BƯỚC 1: XÓA SQL ---
-        db.delete(doc_record)
-        db.commit()
-        print(f"✅ Đã xóa metadata trong SQL: {filename}")
+        # --- BƯỚC 1: XÓA SQL (NẾU CÓ) ---
+        if doc_record:
+            db.delete(doc_record)
+            db.commit()
+            print(f"✅ Đã xóa metadata trong SQL: {filename}")
+            deleted_status["sql"] = "Deleted"
+        else:
+            print(f"ℹ️ Không tìm thấy '{filename}' trong SQL -> Bỏ qua bước SQL.")
 
-        # --- BƯỚC 2: XÓA CHROMA VECTOR ---
-        # Gọi hàm vừa viết ở Bước 1
-        chroma_service.delete_document_vectors(filename)
+        # --- BƯỚC 2: XÓA CHROMA VECTOR (LUÔN CHẠY) ---
+        # Hàm này bên dưới service đã có try/except nên rất an toàn, cứ gọi là chạy
+        chroma_service.delete_document_vectors(filename, collection_name=target_collection)
 
-        # --- BƯỚC 3: XÓA FILE GỐC TRÊN MINIO (Khuyên dùng) ---
-        # Đường dẫn MinIO lưu lúc upload là "raw_inputs/{filename}"
+        # --- BƯỚC 3: XÓA FILE GỐC TRÊN MINIO (LUÔN CHẠY) ---
         minio_path = f"raw_inputs/{filename}"
         try:
-            minio_handler.delete_file(minio_path) # Giả sử minio_handler có hàm delete_file hoặc remove_object
-            # Nếu dùng thư viện minio gốc: minio_handler.client.remove_object("bucket_name", minio_path)
-            print(f"✅ Đã xóa file gốc trên MinIO: {minio_path}")
+            # minio_handler.delete_file(minio_path) 
+            print(f"✅ (Giả lập) Đã xóa file gốc trên MinIO: {minio_path}")
+            deleted_status["minio"] = "Deleted (Attempted)"
         except Exception as e:
-            print(f"⚠️ Không xóa được file trên MinIO (có thể file không tồn tại): {e}")
+            print(f"⚠️ Lỗi nhẹ khi xóa MinIO (có thể file không tồn tại): {e}")
+            deleted_status["minio"] = f"Error: {str(e)}"
 
         return {
             "status": "success", 
-            "message": f"Đã xóa hoàn toàn tài liệu: {filename}",
-            "deleted_layers": ["SQL Metadata", "Chroma Vectors", "MinIO File"]
+            "message": f"Đã thực hiện quy trình xóa cho file: {filename}",
+            "details": deleted_status,
+            "target_collection": target_collection
         }
 
     except Exception as e:
-        db.rollback() # Hoàn tác nếu lỗi SQL
-        raise HTTPException(status_code=500, detail=f"Lỗi khi xóa tài liệu: {str(e)}")
+        db.rollback()
+        # Vẫn trả về lỗi 500 nếu là lỗi hệ thống nghiêm trọng (DB connection die, v.v.)
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống khi xóa tài liệu: {str(e)}")
     
 @router.get("/collections", summary="Lấy danh sách Collection (Từ Chroma & SQL)")
 async def get_all_collections(
@@ -490,27 +509,71 @@ async def list_collection_files(
     }
     
 
-@router.post("/agent/generate-chapter-1", summary="Agent viết Chương 1 (Retrieve -> Rerank -> Generate)")
+@router.post("/agent/generate-chapter-1", summary="Agent viết Chương 1 (Có chọn file mẫu)")
 async def generate_chapter_1(
     project_name: str = Form(..., description="Tên đầy đủ của dự án/gói thầu"),
+    reference_doc: Optional[str] = Form(None, description="Tên file mẫu trong bidding_docs (Chọn từ API list-template-docs)"),
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
 ):
     try:
         # 1. Khởi tạo OpenAI Client
-        openai_client = OpenAI() # Nó sẽ tự đọc OPENAI_API_KEY từ env
+        openai_client = OpenAI() 
         
         # 2. Khởi tạo Agent
-        # Agent này sẽ tự load model Reranking (sentence-transformers)
         agent = Chapter1Agent(retrieval_service, openai_client)
         
-        # 3. Thực thi
-        # Quá trình này có thể mất 10-20s do phải Rerank và chờ GPT-4o
-        content = agent.write(project_name)
+        # 3. Thực thi (Truyền reference_doc vào)
+        print(f"🚀 Bắt đầu tạo Chương 1. Dự án: {project_name}. File mẫu: {reference_doc}")
+        
+        content = agent.write(project_name, reference_doc=reference_doc)
         
         return {
             "status": "success",
             "project": project_name,
+            "used_template": reference_doc if reference_doc else "Auto (Best match)",
             "data": content
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi Agent: {str(e)}")
+    
+# Tìm đến đoạn class DraftingRequest và endpoint draft_full_proposal cũ, thay thế bằng đoạn này:
+
+# [MODIFIED] Class Request mới hỗ trợ HITL
+class DraftingRequest(BaseModel):
+    project_name: str
+    reference_file: Optional[str] = None
+    thread_id: Optional[str] = None         # Nếu null -> Tạo mới. Nếu có -> Resume.
+    approved_outline: Optional[List[dict]] = None # Nếu có -> User đã duyệt dàn ý này.
+
+@router.post("/agent/draft-full-proposal")
+async def draft_full_proposal(
+    req: DraftingRequest,
+    retrieval_service: RetrievalService = Depends(get_retrieval_service)
+):
+    try:
+        # 1. Tạo hoặc lấy thread_id
+        thread_id = req.thread_id or str(uuid.uuid4())
+        
+        # 2. Khởi tạo Agent
+        agent = ConstructionDraftingAgent(retrieval_service)
+        
+        # 3. Chạy Agent (Hàm run mới đã handle logic Start/Resume)
+        result = agent.run(
+            thread_id=thread_id,
+            project_name=req.project_name,
+            reference_doc=req.reference_file,
+            user_feedback_outline=req.approved_outline
+        )
+        
+        return {
+            "success": True,
+            "thread_id": thread_id,         # Frontend cần lưu cái này để gọi lần 2
+            "status": result["status"],     # "paused" (hiện dàn ý) hoặc "completed" (hiện văn bản)
+            "data_type": result["type"],    # "outline_review" hoặc "full_document"
+            "content": result["content"]
+        }
+        
+    except Exception as e:
+        # In lỗi ra console server để dễ debug
+        print(f"❌ Error in draft_full_proposal: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

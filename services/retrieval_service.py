@@ -141,45 +141,26 @@ class RetrievalService:
         print(f"🔍 [Legal Search] Tìm thấy {len(unique_results)} văn bản phù hợp.")
         return unique_results
 
-# --- HÀM BẮT BUỘC CHO AGENT ---
-    # --- CẬP NHẬT HÀM NÀY ĐỂ KHỚP VỚI AGENT ---
-    def search(self, query: str, collection_name: str = "current_requirements", top_k: int = 10, project_name: Optional[str] = None):
+    # --- [ĐÃ SỬA] HÀM NÀY ĐÃ THÊM THAM SỐ filters ĐỂ SỬA LỖI ---
+    def search(self, query: str, collection_name: str = "current_requirements", top_k: int = 10, filters: Optional[Dict] = None):
         """
-        Hàm này Agent sẽ gọi để lấy dữ liệu.
-        [UPDATE]: Thêm xử lý project_name và format kết quả trả về.
+        [NEW] Hàm tìm kiếm tổng quát, hỗ trợ chọn Collection và Filter.
+        Phục vụ cho Agent.
         """
-        print(f"🔍 Agent đang tìm: '{query}' trong [{collection_name}] (Project: {project_name})")
+        # Nếu user không truyền tên, mặc định tìm trong requirements
+        target_collection = collection_name if collection_name else "current_requirements"
         
-        # 1. Tạo bộ lọc Project
-        where_filter = {}
-        if project_name:
-            where_filter["project_name"] = project_name
-            
-        # 2. Gọi Chroma (Giả sử bạn có hàm query_requirements hoặc query_collection trong ChromaService)
-        # Lưu ý: Dùng hàm query_requirements đã sửa ở bước trước để hỗ trợ 'where'
-        raw_results = self.chroma.query_requirements(
-            query_text=query,
+        print(f"🔍 Agent Searching '{query}' in [{target_collection}] (Filters: {filters})...")
+        
+        # Gọi hàm query_collection của ChromaService
+        # Lưu ý: ChromaService phải có hàm query_collection (đã cập nhật ở bước trước)
+        results = self.chroma.query_collection(
+            collection_name=target_collection,
+            query_texts=[query],
             n_results=top_k,
-            project_name=project_name # Truyền thẳng project_name vào
+            where=filters # <--- QUAN TRỌNG: Truyền filters vào đây
         )
-
-        # 3. [QUAN TRỌNG] Chuyển đổi dữ liệu để Agent dễ đọc
-        # Chroma trả về: {'documents': [['text1', 'text2']], 'metadatas': [[{meta1}, {meta2}]]}
-        # Agent cần: [{'content': 'text1', 'metadata': {meta1}}, ...]
-        
-        parsed_results = []
-        if raw_results and raw_results.get('documents'):
-            docs = raw_results['documents'][0]
-            metas = raw_results['metadatas'][0] if raw_results.get('metadatas') else []
-            
-            for i, doc in enumerate(docs):
-                meta_data = metas[i] if i < len(metas) else {}
-                parsed_results.append({
-                    "content": doc,       # Agent sẽ gọi res['content']
-                    "metadata": meta_data # Agent sẽ gọi res['metadata']
-                })
-        
-        return parsed_results
+        return results
 
 def get_retrieval_service(
     chroma_service: ChromaService = Depends(get_chroma_service)
