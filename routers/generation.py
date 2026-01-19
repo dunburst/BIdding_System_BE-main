@@ -1,7 +1,7 @@
 import asyncio
-from typing import Optional
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, BackgroundTasks, Depends, Query
+from typing import Optional, List
 from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, BackgroundTasks, Depends, Query
 import shutil
 import os
 import uuid
@@ -27,7 +27,8 @@ from services.chroma_service import ChromaService, get_chroma_service
 from services.retrieval_service import RetrievalService, get_retrieval_service
 from fastapi.responses import HTMLResponse 
 import markdown 
-
+from services.construction_agent import ConstructionDraftingAgent # Import Agent vừa tạo
+from pydantic import BaseModel
 # --- IMPORT HÀM TIỆN ÍCH (CHUNKING) ---
 from services.ai_pipeline.ingest import chunk_by_chapters 
 
@@ -511,27 +512,71 @@ async def list_collection_files(
     }
     
 
-@router.post("/agent/generate-chapter-1", summary="Agent viết Chương 1 (Retrieve -> Rerank -> Generate)")
+@router.post("/agent/generate-chapter-1", summary="Agent viết Chương 1 (Có chọn file mẫu)")
 async def generate_chapter_1(
     project_name: str = Form(..., description="Tên đầy đủ của dự án/gói thầu"),
+    reference_doc: Optional[str] = Form(None, description="Tên file mẫu trong bidding_docs (Chọn từ API list-template-docs)"),
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
 ):
     try:
         # 1. Khởi tạo OpenAI Client
-        openai_client = OpenAI() # Nó sẽ tự đọc OPENAI_API_KEY từ env
+        openai_client = OpenAI() 
         
         # 2. Khởi tạo Agent
-        # Agent này sẽ tự load model Reranking (sentence-transformers)
         agent = Chapter1Agent(retrieval_service, openai_client)
         
-        # 3. Thực thi
-        # Quá trình này có thể mất 10-20s do phải Rerank và chờ GPT-4o
-        content = agent.write(project_name)
+        # 3. Thực thi (Truyền reference_doc vào)
+        print(f"🚀 Bắt đầu tạo Chương 1. Dự án: {project_name}. File mẫu: {reference_doc}")
+        
+        content = agent.write(project_name, reference_doc=reference_doc)
         
         return {
             "status": "success",
             "project": project_name,
+            "used_template": reference_doc if reference_doc else "Auto (Best match)",
             "data": content
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi Agent: {str(e)}")
+    
+# Tìm đến đoạn class DraftingRequest và endpoint draft_full_proposal cũ, thay thế bằng đoạn này:
+
+# [MODIFIED] Class Request mới hỗ trợ HITL
+class DraftingRequest(BaseModel):
+    project_name: str
+    reference_file: Optional[str] = None
+    thread_id: Optional[str] = None         # Nếu null -> Tạo mới. Nếu có -> Resume.
+    approved_outline: Optional[List[dict]] = None # Nếu có -> User đã duyệt dàn ý này.
+
+@router.post("/agent/draft-full-proposal")
+async def draft_full_proposal(
+    req: DraftingRequest,
+    retrieval_service: RetrievalService = Depends(get_retrieval_service)
+):
+    try:
+        # 1. Tạo hoặc lấy thread_id
+        thread_id = req.thread_id or str(uuid.uuid4())
+        
+        # 2. Khởi tạo Agent
+        agent = ConstructionDraftingAgent(retrieval_service)
+        
+        # 3. Chạy Agent (Hàm run mới đã handle logic Start/Resume)
+        result = agent.run(
+            thread_id=thread_id,
+            project_name=req.project_name,
+            reference_doc=req.reference_file,
+            user_feedback_outline=req.approved_outline or []
+        )
+        
+        return {
+            "success": True,
+            "thread_id": thread_id,         # Frontend cần lưu cái này để gọi lần 2
+            "status": result["status"],     # "paused" (hiện dàn ý) hoặc "completed" (hiện văn bản)
+            "data_type": result["type"],    # "outline_review" hoặc "full_document"
+            "content": result["content"]
+        }
+        
+    except Exception as e:
+        # In lỗi ra console server để dễ debug
+        print(f"❌ Error in draft_full_proposal: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

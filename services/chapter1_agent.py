@@ -1,6 +1,6 @@
 # services/chapter1_agent.py
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict
 from sentence_transformers import CrossEncoder
 from openai import OpenAI
 from services.retrieval_service import RetrievalService
@@ -21,62 +21,71 @@ class Chapter1Agent:
             logger.error(f"Failed to load Reranker: {e}")
             self.reranker = None
 
-    # [UPDATE] Thêm tham số project_name vào hàm này
-    def _smart_retrieve(self, query: str, collection_name: str, project_name: Optional[str], top_k_fetch: int = 50, top_k_final: int = 15) -> str:
+    # [CẬP NHẬT] Thêm tham số filters
+    def _smart_retrieve(self, query: str, collection_name: str, top_k_fetch: int = 50, top_k_final: int = 15, filters: Optional[Dict] = None) -> str:
         """
         Lấy thật nhiều (50) -> Lọc lấy tinh hoa (15).
+        Hỗ trợ filters để lọc theo tên file cụ thể.
         """
-        # 1. Retrieve (Truyền project_name xuống RetrievalService)
+        # 1. Retrieve
         raw_results = self.retriever.search(
             query=query, 
             collection_name=collection_name, 
             top_k=top_k_fetch,
-            project_name=project_name # <--- QUAN TRỌNG: Lọc theo dự án
+            filters=filters # <--- Truyền filter vào đây
         )
-        
-        # Nếu raw_results trả về là list dict, cần lấy content ra
         docs = [res['content'] for res in raw_results]
-        
         if not docs: return ""
 
-        # 2. Rerank (Logic giữ nguyên)
+        # 2. Rerank
         if self.reranker:
             pairs = [[query, doc] for doc in docs]
             scores = self.reranker.predict(pairs)
             scored_docs = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
+            # Lấy nhiều chunk hơn bình thường vì danh sách tiêu chuẩn rất dài
             final_docs = [doc for doc, score in scored_docs[:top_k_final]]
         else:
             final_docs = docs[:top_k_final]
 
         return "\n\n---\n\n".join(final_docs)
 
-    def write(self, project_name: str):
-        logger.info(f"Đang soạn thảo Chương 1 (Chi tiết hóa) cho: {project_name}")
+    # [CẬP NHẬT] Nhận tham số reference_doc
+    def write(self, project_name: str, reference_doc: Optional[str] = None):
+        logger.info(f"Đang soạn thảo Chương 1 cho: {project_name}. File mẫu: {reference_doc if reference_doc else 'Tự động'}")
 
         # --- BƯỚC 1: QUÉT DỮ LIỆU "YÊU CẦU KỸ THUẬT" (Collection: current_requirements) ---
-        # Mẹo: Dùng đúng từ khóa trong header của file PDF để vector search tìm chính xác vị trí.
-
-        # 1.1. Pháp lý & Quy chuẩn chung (Mục 1.1.1 trong PDF)
-        # Tìm các văn bản luật: 06/2021, 14/2014, QCVN 01, 02...
+        # Phần này KHÔNG dùng filter, vì ta cần tìm sự thật từ tất cả các file yêu cầu đã upload
+        
+        # 1.1. Pháp lý & Quy chuẩn chung
         q1 = "1.1.1. Các qui chuẩn, quy định: Nghị định 06/2021, Nghị định 14/2014, QCVN 01:2019, QCVN 02:2022, Quy phạm 11TCN."
-        c1 = self._smart_retrieve(q1, "current_requirements", project_name=project_name, top_k_final=10)
+        c1 = self._smart_retrieve(q1, "current_requirements", top_k_final=10)
 
-        # 1.2. Công tác Đất & Bê tông (Mục 1.1.3 & 1.1.4 trong PDF)
-        # QUAN TRỌNG: Liệt kê rõ các vật liệu để AI tìm được đoạn giữa của danh sách
+        # 1.2. Công tác Đất & Bê tông
         q2 = "1.1.3 Các tiêu chuẩn về công tác đất (TCVN 4447, 9361). 1.1.4 Các tiêu chuẩn về công tác bê tông cốt thép và vữa: TCVN 4453, 9345, 9340, 8828, 9343, 9346, 4506 (Nước), 7570 (Cốt liệu), 2682 (Xi măng), 1651 (Thép), Que hàn, Vữa xây."
-        c2 = self._smart_retrieve(q2, "current_requirements", project_name=project_name, top_k_final=20) # Lấy 20 chunk để bao trọn danh sách dài
+        c2 = self._smart_retrieve(q2, "current_requirements", top_k_final=20) 
 
-        # 1.3. Kết cấu thép & Hoàn thiện (Mục 1.1.5 & 1.1.6 trong PDF)
+        # 1.3. Kết cấu thép & Hoàn thiện
         q3 = "1.1.5 Các tiêu chuẩn về công tác kết cấu thép: TCVN 5575, Bu lông (1916, 1889), Vòng đệm, Mạ kẽm (ASTM A123), Hàn. 1.1.6 Công tác hoàn thiện nghiệm thu (TCVN 9377)."
-        c3 = self._smart_retrieve(q3, "current_requirements", project_name=project_name, top_k_final=15)
+        c3 = self._smart_retrieve(q3, "current_requirements", top_k_final=15)
 
-        # 1.4. Phần Điện (Mục 1.2 trong PDF)
+        # 1.4. Phần Điện
         q4 = "1.2. Quy chuẩn, tiêu chuẩn về phần điện: QCVN QTĐ-5, QTĐ-7, QTĐ-8, IEC 61089, IEC 60305, Quy phạm trang bị điện."
-        c4 = self._smart_retrieve(q4, "current_requirements", project_name=project_name, top_k_final=10)
+        c4 = self._smart_retrieve(q4, "current_requirements", top_k_final=10)
 
         # --- BƯỚC 2: LẤY CẤU TRÚC MẪU (Collection: bidding_docs) ---
+        
+        # [QUAN TRỌNG] Tạo bộ lọc nếu người dùng chọn file
+        style_filters = {"source": reference_doc} if reference_doc else None
+        
         style_query = "Mẫu trình bày Chương I Cơ sở lập phương án tổ chức thi công, mục lục các tiêu chuẩn"
-        style_context = self._smart_retrieve(style_query, "bidding_docs", project_name=project_name, top_k_final=3)
+        
+        # Truyền style_filters vào đây để chỉ lấy mẫu từ file được chọn
+        style_context = self._smart_retrieve(
+            query=style_query, 
+            collection_name="bidding_docs", 
+            top_k_final=3,
+            filters=style_filters 
+        )
 
         # --- BƯỚC 3: PROMPT (CHẾ ĐỘ COPY-PASTE) ---
         prompt = f"""
@@ -90,7 +99,7 @@ class Chapter1Agent:
         3. [Kết cấu thép & Hoàn thiện]: {c3}
         4. [Điện]: {c4}
 
-        CẤU TRÚC TRÌNH BÀY (TEMPLATE):
+        CẤU TRÚC TRÌNH BÀY (TEMPLATE - Hãy học theo cách trình bày của đoạn này):
         {style_context}
 
         YÊU CẦU SOẠN THẢO NGHIÊM NGẶT:

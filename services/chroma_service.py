@@ -309,7 +309,22 @@ class ChromaService:
         """
         try:
             print(f"🗑️ Đang tiến hành quét xóa vectors của: {source_filename} trong {collection_name}...")
+            print(f"🗑️ Đang tiến hành quét xóa vectors của: {source_filename} trong {collection_name}...")
             
+            try:
+                target_collection = self.client.get_collection(name=collection_name)
+            except ValueError:
+                # Lỗi này xảy ra khi collection chưa được tạo -> Coi như đã xóa sạch.
+                print(f"⚠️ Collection '{collection_name}' chưa tồn tại -> Bỏ qua.")
+                return True
+
+            # [CẢI TIẾN] Xóa triệt để các biến thể key metadata
+            # ChromaDB .delete() không báo lỗi nếu where clause không tìm thấy item nào.
+            # Nên cứ gọi thoải mái.
+            
+            target_collection.delete(where={"source": source_filename})
+            target_collection.delete(where={"source_file": source_filename})
+            target_collection.delete(where={"filename": source_filename})
             try:
                 target_collection = self.client.get_collection(name=collection_name)
             except ValueError:
@@ -326,9 +341,13 @@ class ChromaService:
             target_collection.delete(where={"filename": source_filename})
             
             print(f"✅ Đã gửi lệnh xóa vectors (nếu có) cho file {source_filename}.")
+            print(f"✅ Đã gửi lệnh xóa vectors (nếu có) cho file {source_filename}.")
             return True
 
+
         except Exception as e:
+            # Chỉ in log lỗi hệ thống, không làm crash luồng chính
+            print(f"❌ Lỗi ngoại lệ khi gọi ChromaDB (kết nối/timeout...): {e}")
             # Chỉ in log lỗi hệ thống, không làm crash luồng chính
             print(f"❌ Lỗi ngoại lệ khi gọi ChromaDB (kết nối/timeout...): {e}")
             return False
