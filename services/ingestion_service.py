@@ -1,20 +1,26 @@
 import os
 import traceback
-from services.ai_pipeline.llama_service import llama_service
-from services.ai_pipeline.ingest_advanced import process_hierarchical_chunks
-from services.chroma_service import get_chroma_service
-from minio_client import minio_handler
+import uuid
 from typing import Optional
 from sqlalchemy.orm import Session
-from models import DocumentRegistry
 from datetime import datetime
+
+# Import Database Models
 from database import SessionLocal
+from models import DocumentRegistry
+
+# Import MinIO
+from minio_client import minio_handler
+
+# [NEW] Import Services mới
+from services.ai_pipeline.docling_service import get_docling_service
+from services.visual_retrieval_service import get_visual_service
+from services.chroma_service import get_chroma_service
 
 # Biến toàn cục lưu trạng thái task (Thay thế Redis Backend của Celery)
-# Format: { "task_id": { "status": "PROCESSING", "message": "...", "result": ... } }
 ingestion_status_tracker = {}
 
-def update_task_status(task_id: str, status: str, message: Optional[str] = None, result:Optional[dict] = None):
+def update_task_status(task_id: str, status: str, message: Optional[str] = None, result: Optional[dict] = None):
     """Hàm cập nhật trạng thái task vào RAM"""
     if task_id not in ingestion_status_tracker:
         ingestion_status_tracker[task_id] = {}
@@ -24,8 +30,7 @@ def update_task_status(task_id: str, status: str, message: Optional[str] = None,
         ingestion_status_tracker[task_id]["message"] = message
     if result:
         ingestion_status_tracker[task_id]["result"] = result
-        
-# [CHANGE] Thêm tham số collection_name vào hàm
+
 def upsert_document_metadata(db: Session, metadata: dict, status="SUCCESS", total_chunks=0, collection_name="legal_docs"):
     """
     Lưu hoặc cập nhật thông tin file vào SQL.
@@ -38,31 +43,24 @@ def upsert_document_metadata(db: Session, metadata: dict, status="SUCCESS", tota
     save_target = None
 
     if db_doc:
-        # UPDATE: Nếu có rồi thì cập nhật lại thông tin
+        # UPDATE
         db_doc.legal_level = str(metadata.get('legal_level') or 'unknown')
         db_doc.legal_priority = int(metadata.get('legal_priority') or 0)
         db_doc.promulgation_year = int(metadata.get('promulgation_year') or 0)
-        
-        # [CHANGE] Cập nhật collection_name
         db_doc.collection_name = collection_name 
-        
         db_doc.ingest_status = status
         db_doc.total_chunks = total_chunks
         db_doc.created_at = datetime.now() 
-        
         save_target = db_doc
         print(f"🔄 Đã cập nhật SQL: {source_file}")
     else:
-        # INSERT: Nếu chưa có thì tạo mới
+        # INSERT
         new_doc = DocumentRegistry(
             source_file=source_file,
             legal_level=str(metadata.get('legal_level') or 'unknown'),
             legal_priority=int(metadata.get('legal_priority') or 0),
             promulgation_year=int(metadata.get('promulgation_year') or 0),
-            
-            # [CHANGE] Thêm collection_name khi tạo mới
             collection_name=collection_name,
-            
             ingest_status=status,
             total_chunks=total_chunks
         )
@@ -70,68 +68,106 @@ def upsert_document_metadata(db: Session, metadata: dict, status="SUCCESS", tota
         save_target = new_doc
         print(f"➕ Đã thêm mới vào SQL: {source_file}")
 
-    # Commit và Refresh
     db.commit()
     db.refresh(save_target)
     return save_target
 
-# [CHANGE] Thêm tham số manual_metadata vào định nghĩa hàm
 def process_minio_document_background(
     task_id: str, 
     minio_object_name: str, 
     original_filename: str,
-    manual_metadata: dict = {} # <--- Param mới
+    manual_metadata: dict = {} 
 ):
     """
-    Logic xử lý chạy ngầm: Tải MinIO -> LlamaParse -> Chunking -> ChromaDB -> SQL.
+    Logic xử lý chạy ngầm MỚI: 
+    MinIO -> Docling (Text/Markdown) -> ChromaDB
+          -> LitePali (Visual/Image) -> Visual Index
+          -> SQL Metadata
     """
     print(f"🚀 Bắt đầu xử lý background task: {task_id}")
-    collection_name = manual_metadata.get("collection_name", "legal_docs") # Lấy tên collection
     
-    update_task_status(task_id, "PROGRESS", "Đang tải file từ MinIO...")
-    
+    # Lấy các service instance
+    docling_service = get_docling_service()
+    visual_service = get_visual_service()
+    chroma_service = get_chroma_service()
+
+    collection_name = manual_metadata.get("collection_name", "legal_docs")
     local_path = f"temp_{task_id}_{original_filename}"
     
     try:
         # 1. Tải file từ MinIO
+        update_task_status(task_id, "PROGRESS", "Đang tải file từ MinIO...")
         minio_handler.download_file(minio_object_name, local_path)
         
-        # 2. Parse PDF bằng LlamaParse
-        update_task_status(task_id, "PROGRESS", "Đang đọc nội dung PDF (LlamaParse)...")
-        markdown_text = llama_service.parse_pdf_to_markdown(local_path)
+        # --- LUỒNG 1: XỬ LÝ TEXT VỚI DOCLING ---
+        update_task_status(task_id, "PROGRESS", "Đang xử lý cấu trúc văn bản (Docling)...")
         
+        # Convert PDF -> Markdown
+        markdown_text = docling_service.process_pdf_to_markdown(local_path)
         if not markdown_text:
-            raise ValueError("LlamaParse trả về nội dung rỗng.")
+            raise ValueError("Docling không thể trích xuất nội dung văn bản.")
 
-        # 3. Chunking & Extract Metadata
-        update_task_status(task_id, "PROGRESS", "Đang chia nhỏ văn bản & Xử lý Meta...")
+        # Chunking thông minh theo Header
+        chunks = docling_service.chunk_markdown(markdown_text)
         
-        # [CHANGE] Truyền manual_metadata vào hàm chunking để override thông tin tự động
-        chunks, file_metadata = process_hierarchical_chunks(
-            markdown_text, 
-            original_filename,
-            manual_metadata=manual_metadata # <--- Truyền vào đây
+        # Chuẩn bị dữ liệu cho Chroma
+        texts = []
+        metadatas = []
+        ids = []
+        
+        # Merge metadata thủ công vào từng chunk
+        base_metadata = manual_metadata.copy()
+        base_metadata.update({
+            "source": original_filename,
+            "source_file": original_filename, # Để khớp với hàm SQL upsert
+            "processed_by": "docling"
+        })
+
+        for i, chunk in enumerate(chunks):
+            texts.append(chunk.page_content)
+            # Kết hợp metadata từ Docling (header path) và metadata thủ công
+            meta = chunk.metadata.copy() 
+            meta.update(base_metadata)
+            metadatas.append(meta)
+            ids.append(f"{task_id}_{i}")
+
+        # Lưu vào ChromaDB
+        update_task_status(task_id, "PROGRESS", f"Đang lưu {len(texts)} chunks vào Vector DB...")
+        
+        # Xóa dữ liệu cũ nếu có
+        chroma_service.delete_document_vectors(original_filename, collection_name=collection_name)
+        
+        # Lưu mới
+        chroma_service.add_documents(
+            collection_name=collection_name,
+            documents=texts,
+            metadatas=metadatas,
+            ids=ids
         )
-        
-        # 4. Save to Chroma (Vector DB)
-        update_task_status(task_id, "PROGRESS", f"Đang lưu vào Vector DB ({collection_name})...")
-        chroma = get_chroma_service()
-        
-        print(f"🧹 Đang dọn dẹp dữ liệu cũ của: {original_filename} trong {collection_name}")
-        # [CHANGE] Truyền collection_name để xóa và lưu đúng chỗ
-        chroma.delete_document_vectors(original_filename, collection_name=collection_name)
-        chroma.save_hierarchical_chunks(chunks, original_filename, collection_name=collection_name)
-        
-        # 5. Save to SQL Database
+
+        # --- LUỒNG 2: XỬ LÝ HÌNH ẢNH VỚI LITEPALI ---
+        update_task_status(task_id, "PROGRESS", "Đang xử lý hình ảnh/bản vẽ (LitePali)...")
+        try:
+            # Tạo doc_id an toàn từ filename
+            doc_id = original_filename.replace(".", "_").replace(" ", "_")
+            
+            # [QUAN TRỌNG] Truyền Metadata vào Visual Service luôn
+            visual_service.ingest_images_from_pdf(local_path, doc_id, metadata=base_metadata)
+            
+        except Exception as visual_error:
+            print(f"⚠️ Cảnh báo Visual Ingest: {visual_error}")
+            # Không raise lỗi chết chương trình, chỉ log warning vì Text quan trọng hơn
+
+        # --- LUỒNG 3: LƯU METADATA VÀO SQL ---
         update_task_status(task_id, "PROGRESS", "Đang lưu metadata vào SQL...")
         
         db = SessionLocal()
         try:
             upsert_document_metadata(
                 db=db, 
-                metadata=file_metadata, # Metadata này đã được cập nhật thông tin thủ công ở bước 3
+                metadata=base_metadata, 
                 status="SUCCESS", 
-                total_chunks=len(chunks),
+                total_chunks=len(texts),
                 collection_name=collection_name
             )
         except Exception as db_err:
@@ -140,8 +176,8 @@ def process_minio_document_background(
             db.close()
 
         # 6. Hoàn thành
-        result_msg = f"Đã xử lý xong {len(chunks)} đoạn vào collection '{collection_name}'."
-        update_task_status(task_id, "SUCCESS", result_msg, {"chunks_count": len(chunks), "metadata": file_metadata})
+        result_msg = f"Đã xử lý xong. Text: {len(texts)} chunks. Visual: LitePali Indexed."
+        update_task_status(task_id, "SUCCESS", result_msg, {"chunks_count": len(texts), "metadata": base_metadata})
         print(f"✅ Task {task_id} hoàn thành!")
 
     except Exception as e:
@@ -149,12 +185,12 @@ def process_minio_document_background(
         print(f"❌ Task {task_id} lỗi: {error_msg}")
         traceback.print_exc()
         
-        # Cập nhật trạng thái lỗi vào SQL nếu có thể
+        # Cập nhật trạng thái lỗi vào SQL
         try:
             db_fail = SessionLocal()
             upsert_document_metadata(
                 db=db_fail,
-                metadata={"source_file": original_filename}, # Chỉ cần tên file để update status
+                metadata={"source_file": original_filename},
                 status="FAILED"
             )
             db_fail.close()
@@ -166,4 +202,7 @@ def process_minio_document_background(
     finally:
         # Dọn dẹp file tạm
         if os.path.exists(local_path):
-            os.remove(local_path)
+            try:
+                os.remove(local_path)
+            except:
+                pass

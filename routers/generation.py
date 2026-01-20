@@ -16,15 +16,20 @@ from celery import Celery
 from openai import OpenAI 
 from minio_client import minio_handler
 from services.chapter1_agent import Chapter1Agent
+
 # --- IMPORT CÁC SERVICES ĐÃ TẠO ---
 from services.ai_pipeline.llama_service import llama_service
 from services.requirement_service import RequirementService, get_req_service
 from services.drafting_bot import DraftingBot, get_drafting_bot
 from services.chroma_service import ChromaService, get_chroma_service
 from services.retrieval_service import RetrievalService, get_retrieval_service
+
+# [NEW] Import Visual Service (LitePali)
+from services.visual_retrieval_service import VisualRetrievalService, get_visual_service
+
 from fastapi.responses import HTMLResponse 
 import markdown 
-from services.construction_agent import ConstructionDraftingAgent # Import Agent vừa tạo
+from services.construction_agent import ConstructionDraftingAgent # Import Agent
 from pydantic import BaseModel
 # --- IMPORT HÀM TIỆN ÍCH (CHUNKING) ---
 from services.ai_pipeline.ingest import chunk_by_chapters 
@@ -306,6 +311,96 @@ async def ingest_document_async(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi: {str(e)}")
 
+@router.post("/ingest/template", summary="Upload file mẫu vào kho tri thức (bidding_docs)")
+async def ingest_template_doc(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    # Không cần category/doc_type phức tạp nữa, chỉ cần file thôi
+):
+    """
+    Dùng để upload các file mẫu BPTC, TCVN.
+    Sẽ lưu vào collection 'bidding_docs'.
+    """
+    safe_filename = file.filename or "template.pdf"
+    minio_path = f"templates/{safe_filename}" 
+    task_id = str(uuid.uuid4())
+
+    # Metadata đơn giản
+    manual_metadata = {
+        "collection_name": "bidding_docs", # CỐ ĐỊNH
+        "is_template": True,
+        "source": safe_filename # Dùng tên file làm nguồn tham chiếu
+    }
+
+    return await _handle_ingest(background_tasks, file, minio_path, task_id, manual_metadata)
+
+
+# --- API 5.2: Upload Yêu Cầu HSMT (Vào current_requirements) ---
+@router.post("/ingest/requirement", summary="Upload HSMT cho Dự án cụ thể")
+async def ingest_requirement_doc(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    project_name: str = Form(..., description="Tên định danh dự án (VD: du_an_vinh_yen)"),
+):
+    """
+    Dùng để upload HSMT. BẮT BUỘC phải có project_name để lọc.
+    Sẽ lưu vào collection 'current_requirements'.
+    """
+    safe_filename = file.filename or "requirement.pdf"
+    # Lưu MinIO theo folder dự án để dễ quản lý
+    minio_path = f"projects/{project_name}/{safe_filename}" 
+    task_id = str(uuid.uuid4())
+
+    # Metadata quan trọng nhất là project_name
+    manual_metadata = {
+        "collection_name": "current_requirements", # CỐ ĐỊNH
+        "project_name": project_name,              # ĐỂ LỌC
+        "is_template": False,
+        "source": safe_filename
+    }
+
+    return await _handle_ingest(background_tasks, file, minio_path, task_id, manual_metadata)
+
+
+# --- Hàm xử lý chung (Helper để tránh lặp code) ---
+async def _handle_ingest(background_tasks, file, minio_path, task_id, metadata):
+    try:
+        # Đọc file vào RAM
+        file_content = await file.read()
+        file_size = len(file_content)
+        file_stream = io.BytesIO(file_content)
+        
+        # 1. Upload MinIO
+        minio_url = minio_handler.upload_file_obj(
+            file_data=file_stream,
+            length=file_size,
+            object_name=minio_path,
+            content_type=file.content_type or "application/pdf"
+        )
+        
+        if not minio_url:
+            raise HTTPException(status_code=500, detail="Lỗi upload MinIO")
+
+        # 2. Đẩy vào Background Task (Docling + LitePali)
+        background_tasks.add_task(
+            process_minio_document_background, 
+            task_id, 
+            minio_path, 
+            file.filename, # Original Name
+            metadata # Metadata đã được cấu hình chuẩn
+        )
+        
+        return {
+            "status": "queued",
+            "task_id": task_id,
+            "minio_path": minio_path,
+            "metadata_received": metadata,
+            "message": "Đang xử lý ngầm (Text + Visual)."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/tasks/{task_id}", summary="Kiểm tra trạng thái xử lý file")
 async def get_task_status(task_id: str):
     task_info = ingestion_status_tracker.get(task_id)
@@ -548,14 +643,16 @@ class DraftingRequest(BaseModel):
 @router.post("/agent/draft-full-proposal")
 async def draft_full_proposal(
     req: DraftingRequest,
-    retrieval_service: RetrievalService = Depends(get_retrieval_service)
+    retrieval_service: RetrievalService = Depends(get_retrieval_service),
+    # [FIX] Inject Visual Service để Agent có thể "nhìn"
+    visual_service: VisualRetrievalService = Depends(get_visual_service)
 ):
     try:
         # 1. Tạo hoặc lấy thread_id
         thread_id = req.thread_id or str(uuid.uuid4())
         
-        # 2. Khởi tạo Agent
-        agent = ConstructionDraftingAgent(retrieval_service)
+        # 2. Khởi tạo Agent với cả 2 service (Text + Visual)
+        agent = ConstructionDraftingAgent(retrieval_service, visual_service)
         
         # 3. Chạy Agent (Hàm run mới đã handle logic Start/Resume)
         result = agent.run(
