@@ -170,3 +170,151 @@ async def analyze_bidding_package(hsmt_id: int, db: Session):
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
             logger.info("🧹 Đã dọn dẹp file tạm.")
+
+# import os
+# import uuid
+# import logging
+# import re
+# from sqlalchemy.orm import Session
+# from urllib.parse import unquote, urlparse
+
+# # Import Models
+# from models import BiddingPackage, BiddingPackageFile, BiddingReqFinancialAdmin, BiddingReqPersonnel, BiddingReqEquipment
+# from minio_client import minio_handler, MINIO_BUCKET
+
+# # Import Pipeline
+# from services.ai_pipeline.ingest import parse_pdf_to_markdown, chunk_by_chapters
+# from services.ai_pipeline.extract import extract_bid_info
+# from services.ai_pipeline.extract import BiddingData
+
+# # Setup Logger
+# logger = logging.getLogger(__name__)
+
+# async def analyze_bidding_package(hsmt_id: int, db: Session):
+#     temp_path = None
+#     try:
+#         # 1. SETUP & DOWNLOAD FILE (Giữ nguyên logic cũ của bạn)
+#         package = db.query(BiddingPackage).filter(BiddingPackage.hsmt_id == hsmt_id).first()
+#         if not package: raise ValueError(f"Không tìm thấy gói thầu ID: {hsmt_id}")
+
+#         file_record = db.query(BiddingPackageFile)\
+#             .filter(BiddingPackageFile.hsmt_id == hsmt_id)\
+#             .filter(BiddingPackageFile.file_path.like('%.pdf'))\
+#             .first()
+#         if not file_record: raise ValueError(f"Không tìm thấy file PDF")
+
+#         # Xử lý URL & Download
+#         file_url = file_record.file_path
+#         if MINIO_BUCKET in file_url:
+#             object_name = file_url.split(f"/{MINIO_BUCKET}/")[1]
+#         else:
+#             object_name = urlparse(file_url).path.lstrip('/')
+#         object_name = unquote(object_name)
+        
+#         temp_path = f"temp_{uuid.uuid4()}.pdf"
+#         logger.info(f"⬇️ Downloading: {object_name}")
+#         if not minio_handler.download_file(object_name, temp_path):
+#              raise ValueError("Lỗi tải file MinIO")
+
+#         # 2. INGESTION (Đọc & Chia nhỏ)
+#         logger.info("📄 Đang đọc và phân tách file...")
+#         md_text = parse_pdf_to_markdown(temp_path)
+#         chunks = chunk_by_chapters(md_text) # Hàm này bạn đã có trong code cũ
+
+#         # 3. CHIẾN THUẬT: CHIA ĐỂ TRỊ (SPLIT & MERGE)
+#         # Thay vì gửi tất cả, ta lọc chunk theo chủ đề để AI tập trung
+        
+#         # Nhóm A: Tài chính & Admin
+#         finance_chunks = [c['full_content'] for c in chunks if c['category'] in ['financial', 'admin', 'evaluation_criteria', 'general']]
+#         context_fin = "\n".join(finance_chunks)
+        
+#         # Nhóm B: Nhân sự (Quan trọng nhất)
+#         personnel_chunks = [c['full_content'] for c in chunks if c['category'] in ['personnel', 'evaluation_criteria']]
+#         context_per = "\n".join(personnel_chunks)
+
+#         # Nhóm C: Thiết bị & Kỹ thuật
+#         equipment_chunks = [c['full_content'] for c in chunks if c['category'] in ['equipment', 'technical_requirements']]
+#         context_eq = "\n".join(equipment_chunks)
+
+#         # 4. GỌI AI TUẦN TỰ
+#         logger.info("🤖 1/3: Trích xuất Tài chính & Admin...")
+#         data_fin = extract_bid_info(context_fin)
+
+#         logger.info("🤖 2/3: Trích xuất Nhân sự...")
+#         # Debug nhẹ để yên tâm
+#         if "Chỉ huy trưởng" in context_per or "Nhân sự" in context_per:
+#             logger.info("   -> Đã tìm thấy từ khóa nhân sự trong context gửi đi.")
+#         else:
+#             logger.warning("   -> ⚠️ Cảnh báo: Context nhân sự có vẻ thiếu dữ liệu!")
+#         data_per = extract_bid_info(context_per)
+
+#         logger.info("🤖 3/3: Trích xuất Thiết bị...")
+#         data_eq = extract_bid_info(context_eq)
+
+#         # 5. LƯU DATABASE
+#         logger.info("💾 Đang lưu vào DB...")
+        
+#         # Clean cũ
+#         db.query(BiddingReqFinancialAdmin).filter_by(hsmt_id=hsmt_id).delete()
+#         db.query(BiddingReqPersonnel).filter_by(hsmt_id=hsmt_id).delete()
+#         db.query(BiddingReqEquipment).filter_by(hsmt_id=hsmt_id).delete()
+
+#         # Helper clean tiền
+#         def clean_money(val):
+#             if val is None: return None
+#             if isinstance(val, (int, float)): return float(val)
+#             s = re.sub(r'[^\d]', '', str(val))
+#             return float(s) if s else None
+
+#         # A. Lưu Tài chính (Lấy từ data_fin)
+#         req_fin = BiddingReqFinancialAdmin(
+#             hsmt_id=hsmt_id,
+#             bid_validity_days=data_fin.section_2_admin.bid_validity_days,
+#             bid_security_value=clean_money(data_fin.section_2_admin.bid_security_value),
+#             bid_security_duration=data_fin.section_2_admin.bid_security_duration,
+#             submission_fee=clean_money(data_fin.section_2_admin.submission_fee),
+#             contract_duration_text=data_fin.section_2_admin.contract_duration,
+            
+#             req_revenue_avg=clean_money(data_fin.section_3_financial.avg_revenue),
+#             req_working_capital=clean_money(data_fin.section_3_financial.working_capital),
+#             req_similar_contract_qty=data_fin.section_3_financial.similar_contract_qty,
+#             req_similar_contract_value=clean_money(data_fin.section_3_financial.min_contract_value),
+#             req_similar_contract_desc=data_fin.section_3_financial.similar_contract_desc
+#         )
+#         db.add(req_fin)
+
+#         # B. Lưu Nhân sự (Lấy từ data_per)
+#         # Lưu ý: data_per.section_4_personnel mới là nơi chứa dữ liệu đúng
+#         for i, p in enumerate(data_per.section_4_personnel, 1):
+#             db.add(BiddingReqPersonnel(
+#                 hsmt_id=hsmt_id,
+#                 stt=i,
+#                 position_name=p.position, # Giờ đây sẽ là tiếng Việt chuẩn
+#                 quantity=p.quantity,
+#                 min_exp_years=p.experience_years,
+#                 qualification_req=p.qualification,
+#                 similar_project_exp=p.similar_project_exp
+#             ))
+
+#         # C. Lưu Thiết bị (Lấy từ data_eq)
+#         for i, e in enumerate(data_eq.section_5_equipment, 1):
+#             db.add(BiddingReqEquipment(
+#                 hsmt_id=hsmt_id,
+#                 stt=i,
+#                 equipment_name=e.name,
+#                 quantity=e.quantity,
+#                 specifications=e.specs
+#             ))
+
+#         db.commit()
+#         logger.info(f"✅ Hoàn tất! Đã lưu {len(data_per.section_4_personnel)} nhân sự và {len(data_eq.section_5_equipment)} thiết bị.")
+        
+#         return {"status": "success", "personnel_count": len(data_per.section_4_personnel)}
+
+#     except Exception as e:
+#         db.rollback()
+#         logger.error(f"❌ ERROR: {str(e)}")
+#         raise e
+#     finally:
+#         if temp_path and os.path.exists(temp_path):
+#             os.remove(temp_path)

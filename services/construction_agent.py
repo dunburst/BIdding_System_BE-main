@@ -125,7 +125,12 @@ class ConstructionDraftingAgent:
 
         try:
             res = self.planner_llm.invoke(prompt)
-            sections = res['sections'] 
+            # sections = res['sections'] 
+            # Kiểm tra kiểu dữ liệu để chắc chắn
+            if isinstance(res, dict):
+                sections = res['sections'] # Trường hợp hiếm nếu LLM trả về dict
+            else:
+                sections = res.sections    # <--- SỬA THÀNH CÁI NÀY (Dùng dấu chấm)
         except Exception as e:
             print(f"⚠️ Lỗi Planner: {e}. Dùng dàn ý default.")
             sections = [

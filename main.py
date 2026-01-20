@@ -85,6 +85,7 @@ app.include_router(drive_router)
 app.include_router(drafting.router)
 app.include_router(onedrive_router.router)
 app.include_router(generation.router)
+app.include_router(agent_api.router)
 
 # [QUAN TRỌNG] Bật router Agent lên (tôi đã bỏ comment dòng này)
 # Đảm bảo bạn đã có file routers/agent_api.py chứa endpoint
