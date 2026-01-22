@@ -4,3 +4,6 @@ chroma.sqlite3
 /New folder
 __pycache__/
 *.pyc
+visual_index_storage/
+debug_images_output/
+temp_visuals/
