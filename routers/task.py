@@ -4,7 +4,7 @@ from typing import List, Optional, Any
 from fastapi.responses import Response
 
 from database import get_db # Hàm lấy DB session của bạn
-from schemas.task import TaskCreate, TaskResponse, TaskUpdate, TaskStatus, TaskCommentCreate, TaskCommentResponse, TaskCommentUpdate, TaskListResponse
+from schemas.task import TaskCreate, TaskResponse, TaskUpdate, TaskStatus, TaskCommentCreate, TaskCommentResponse, TaskCommentUpdate, TaskListResponse, TaskHistoryResponse
 import cruds.task as task_crud
 from cruds.task import log_task_activity
 from models import User , UserRole
@@ -238,6 +238,23 @@ def export_native_html_doc(
             "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
         }
     )
+    
+@router.get("/{task_id}/history", response_model=List[TaskHistoryResponse])
+def get_task_history_timeline(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Xem lịch sử luồng công việc (Ai làm gì, lúc nào).
+    """
+    # 1. Check quyền (Ai xem được task thì xem được history)
+    from cruds.task import check_access_permission
+    if not check_access_permission(db, task_id, current_user):
+         raise HTTPException(status_code=403, detail="Không có quyền xem.")
+         
+    # 2. Gọi hàm lấy history
+    return task_crud.get_task_workflow(db, task_id)
 
 @router.put("/comments/{comment_id}", response_model=TaskCommentResponse)
 def update_comment(
