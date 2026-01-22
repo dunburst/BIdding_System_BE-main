@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session, joinedload
-from models import User, UserRole
+from models import TaskStatus, User, UserRole
 from schemas.user import UserCreate, UserUpdate
 from sqlalchemy import select
 from utils.security import get_password_hash
@@ -78,40 +78,41 @@ def update_user_status(db: Session, user_id: int, status: bool):
         db.refresh(user)
     return user
 
-def delete_user(db: Session, user_id: int):
+def delete_user_soft(db: Session, user_id: int):
+    """
+    Xóa mềm: Chỉ vô hiệu hóa tài khoản và gỡ bỏ các trách nhiệm hiện tại.
+    Dữ liệu lịch sử và Task cũ vẫn còn nguyên.
+    """
     # 1. Tìm user
     db_user = db.query(User).filter(User.user_id == user_id).first()
     if not db_user:
         return False
-    
-    # 2. Xử lý các Task mà user là Người thực hiện chính (Assignee)
-    # -> Yêu cầu: Xóa luôn Task này.
-    # Ta query ra list object rồi xóa từng cái để đảm bảo Cascade (xóa sub-task, xóa file...) hoạt động tốt ở mức ORM.
-    tasks_assigned = db.query(BiddingTask).filter(BiddingTask.assignee_id == user_id).all()
-    for task in tasks_assigned:
-        db.delete(task)
         
-    # 3. Xử lý bảng phân công phụ (TaskAssignment)
-    # -> Yêu cầu: Xóa user khỏi danh sách phối hợp.
-    db.query(TaskAssignment).filter(TaskAssignment.assigned_user_id == user_id).delete()
+    # 2. Vô hiệu hóa tài khoản
+    db_user.status = False  # Giả sử bạn có cột status hoặc is_active
+    # (Tùy chọn) Đổi password hoặc token để force logout ngay lập tức
+    db_user.hashed_password = "DELETED_USER" 
+
+    # 3. Gỡ bỏ trách nhiệm ở các Task ĐANG CHẠY (Task cũ đã xong thì kệ)
+    # 3.1 Gỡ khỏi vị trí Assignee -> Task trở thành OPEN (Vô chủ) để sếp giao người khác
+    active_tasks = db.query(BiddingTask).filter(
+        BiddingTask.assignee_id == user_id,
+        BiddingTask.status.in_([TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.PENDING_REVIEW])
+    ).all()
     
-    # 4. Xử lý các Task mà user là Người duyệt (Reviewer)
-    # -> Yêu cầu: KHÔNG xóa task (vì người khác đang làm), chỉ set reviewer về NULL.
+    for task in active_tasks:
+        task.assignee_id = None
+        task.status = TaskStatus.OPEN # Reset trạng thái về Open
+        # (Optional) Ghi log hệ thống: "User nghỉ việc, hệ thống tự động gỡ task"
+    
+    # 3.2 Gỡ khỏi vị trí Reviewer
     db.query(BiddingTask).filter(BiddingTask.reviewer_id == user_id).update({BiddingTask.reviewer_id: None})
-
-    # 5. [QUAN TRỌNG] Xử lý trường hợp User là người TẠO task (Created By)
-    # Vì cột created_by thường là nullable=False, nếu xóa user sẽ lỗi khóa ngoại.
-    # Giải pháp: Xóa luôn các task do user này tạo (nếu logic cho phép) HOẶC user này tạo task nào thì task đó cũng bị xóa theo logic Assignee ở trên.
-    # Nếu vẫn còn task do user tạo nhưng giao cho người khác -> Cần xóa nốt hoặc chuyển quyền sở hữu.
-    # Ở đây tôi chọn phương án xóa nốt để tránh lỗi IntegrityError (nếu bạn muốn giữ lại thì cần update created_by sang ID của Admin).
-    tasks_created = db.query(BiddingTask).filter(BiddingTask.created_by == user_id).all()
-    for task in tasks_created:
-        db.delete(task)
-
-    # 6. Cuối cùng: Xóa User
-    db.delete(db_user)
-    db.commit()
     
+    # 3.3 Xóa khỏi các Assignment phụ
+    db.query(TaskAssignment).filter(TaskAssignment.assigned_user_id == user_id).delete()
+
+    # 4. Lưu
+    db.commit()
     return True
 
 # [MỚI] Hàm lưu mật khẩu mới vào DB

@@ -6,11 +6,12 @@ from fastapi.responses import Response
 from database import get_db # Hàm lấy DB session của bạn
 from schemas.task import TaskCreate, TaskResponse, TaskUpdate, TaskStatus, TaskCommentCreate, TaskCommentResponse, TaskCommentUpdate, TaskListResponse
 import cruds.task as task_crud
+from cruds.task import log_task_activity
 from models import User , UserRole
 from utils.abac import check_permission, AbacAction
 from utils.security import get_current_user
 from urllib.parse import quote
-from models import BiddingTask, TaskComment
+from models import BiddingTask, TaskComment, TaskAction
 from datetime import datetime
 from mcp_drive.service import drive_service
 import json
@@ -348,6 +349,9 @@ async def submit_task_files(
 
     if task.assignee_id != current_user.user_id:
         raise HTTPException(status_code=403, detail="Bạn không phải người thực hiện task này.")
+    
+    # Lưu trạng thái cũ để ghi log
+    old_status = task.status
 
     # 2. Tìm Folder đích trên Drive (Logic cũ)
     project = task.project
@@ -428,6 +432,18 @@ async def submit_task_files(
         content=log_content
     )
     db.add(new_comment)
+    
+    # --- [NEW] 7. GHI LOG ACTIVITY VÀO BẢNG TASK_HISTORY ---
+    log_task_activity(
+        db, 
+        task_id=task.id, 
+        actor_id=current_user.user_id,
+        action=TaskAction.SUBMITTED, # Action nộp bài
+        old_status=old_status,
+        new_status=TaskStatus.PENDING_REVIEW,
+        detail=f"Nộp {len(new_submissions)} file đính kèm. {('Ghi chú: ' + comment) if comment else ''}"
+    )
+    # -------------------------------------------------------
 
     db.commit()
     db.refresh(task)

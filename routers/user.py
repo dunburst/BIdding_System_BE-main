@@ -191,7 +191,7 @@ def admin_reset_password(
 # 6. Xóa User
 @router.delete("/{user_id}", status_code=status.HTTP_200_OK)
 def delete_user(user_id: int, db: Session = Depends(get_db)):
-    result = crud_user.delete_user(db=db, user_id=user_id)
+    result = crud_user.delete_user_soft(db=db, user_id=user_id)
     if not result:
         raise HTTPException(status_code=404, detail="User not found")
     return {"message": "Xóa người dùng thành công"}

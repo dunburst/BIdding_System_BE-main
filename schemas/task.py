@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 
 # Import Enum từ model gốc (giả sử bạn để file model là models.py)
-from models import TaskStatus, AssignmentType, TaskPriority, TaskType, TaskTag
+from models import TaskStatus, AssignmentType, TaskPriority, TaskType, TaskTag, TaskAction
 
 
 # Định nghĩa Schema nhỏ để lấy tên
@@ -183,3 +183,23 @@ class TaskListResponse(BaseModel):
 
 # Kích hoạt đệ quy cho schema mới
 TaskListResponse.update_forward_refs()
+
+# Schema hiển thị thông tin người thao tác
+class ActorSimple(BaseModel):
+    user_id: int
+    full_name: str
+    avatar_url: Optional[str] = None
+    class Config:
+        from_attributes = True
+
+class TaskHistoryResponse(BaseModel):
+    id: int
+    action: TaskAction
+    old_status: Optional[str] = None
+    new_status: Optional[str] = None
+    detail: Optional[str] = None
+    created_at: datetime
+    actor: ActorSimple
+
+    class Config:
+        from_attributes = True
