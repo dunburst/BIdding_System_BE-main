@@ -6,4 +6,4 @@ __pycache__/
 *.pyc
 visual_index_storage/
 debug_images_output/
-temp_visuals/
+temp_visuals/   
