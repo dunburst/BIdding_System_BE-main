@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, Form, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional, Any
 from fastapi.responses import Response
 
 from database import get_db # Hàm lấy DB session của bạn
@@ -10,7 +10,23 @@ from models import User , UserRole
 from utils.abac import check_permission, AbacAction
 from utils.security import get_current_user
 from urllib.parse import quote
+from models import BiddingTask, TaskComment
+from datetime import datetime
+from mcp_drive.service import drive_service
+import json
 
+GLOBAL_FOLDER_MAPPING = {
+    "HR": "nhân sự",
+    "LEGAL": "Pháp lý",
+    "TECH": "Biện pháp Thi công",
+    "FINANCE": "tài chính",
+    "DEVICE": "máy móc",
+    "CONTRACT": "hợp đồng",
+    "OTHER": "khác",
+    "DBTC": "BLDT",       # Bảo lãnh dự thầu
+    "VT": "Hồ sơ VT",     # Vật tư
+    "GIA": "Giá"          # Hồ sơ giá
+}
 
 router = APIRouter(prefix="/tasks", tags=["Bidding Tasks"])
 
@@ -309,3 +325,116 @@ def get_user_tasks(
 
     # 2. Truyền object target_user vào hàm crud
     return task_crud.get_my_tasks_as_tree(db, user=target_user)
+
+
+@router.post("/task/{task_id}/submit-files")
+async def submit_task_files(
+    task_id: int,
+    files: List[UploadFile] = File(...),  # <--- Thay đổi: Nhận list file
+    comment: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Nhân viên nộp NHIỀU file cho 1 Task.
+    - File lưu vào submission_data (không đè lên attachment_url).
+    - Tự động lưu vào folder Drive tương ứng.
+    """
+    
+    # 1. Tìm Task & Check quyền
+    task = db.query(BiddingTask).filter(BiddingTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Không tìm thấy nhiệm vụ.")
+
+    if task.assignee_id != current_user.user_id:
+        raise HTTPException(status_code=403, detail="Bạn không phải người thực hiện task này.")
+
+    # 2. Tìm Folder đích trên Drive (Logic cũ)
+    project = task.project
+    if not project or not project.drive_folder_id:
+        raise HTTPException(status_code=400, detail="Dự án chưa có thư mục Drive.")
+
+    target_folder_id = project.drive_folder_id
+    if task.tag:
+        tag_str = task.tag.name if hasattr(task.tag, 'name') else str(task.tag)
+        folder_keyword = GLOBAL_FOLDER_MAPPING.get(tag_str)
+        if folder_keyword:
+            found_id = drive_service.find_deep_folder(project.drive_folder_id, tag_str, folder_keyword)
+            if found_id:
+                target_folder_id = found_id
+
+    # 3. Xử lý Upload danh sách file (Loop)
+    new_submissions = []
+    
+    # Lấy dữ liệu cũ ra (nếu đã từng nộp trước đó)
+    current_submission_data = task.submission_data if task.submission_data else []
+    # Parse JSON nếu nó đang là string (phòng hờ lỗi data cũ)
+    if isinstance(current_submission_data, str):
+        try:
+            current_submission_data = json.loads(current_submission_data)
+        except:
+            current_submission_data = []
+
+    for file in files:
+        # Upload từng file
+        # Có thể đổi tên file để tránh trùng: [User_ID]_filename
+        original_name = file.filename
+        
+        try:
+            upload_result = await drive_service.upload_file_with_security(
+                file, 
+                target_folder_id, 
+                security_level=2 # INTERNAL
+            )
+            
+            if upload_result:
+                file_record = {
+                    "file_id": upload_result.get("id"),
+                    "name": original_name,
+                    "url": upload_result.get("link"),
+                    "download_url": upload_result.get("download_link"),
+                    "uploaded_by": current_user.user_id,
+                    "uploaded_name": current_user.full_name, # Giả sử User có field này
+                    "uploaded_at": str(datetime.now()),
+                    "comment": comment # Gắn comment chung cho đợt upload này
+                }
+                new_submissions.append(file_record)
+                
+        except Exception as e:
+            print(f"❌ Lỗi upload file {original_name}: {e}")
+            # Tùy bạn: Có thể raise lỗi dừng luôn hoặc bỏ qua file lỗi
+            continue
+
+    if not new_submissions:
+        raise HTTPException(status_code=500, detail="Không thể upload file nào thành công.")
+
+    # 4. Lưu vào cột submission_data (Cột MỚI)
+    # Append cái mới vào cái cũ
+    updated_data = current_submission_data + new_submissions
+    task.submission_data = updated_data 
+
+    # 5. Cập nhật trạng thái Task
+    task.status = TaskStatus.PENDING_REVIEW
+    
+    # 6. Log Comment (Trao đổi)
+    file_names = ", ".join([f["name"] for f in new_submissions])
+    log_content = f"Đã nộp {len(new_submissions)} file: {file_names}"
+    if comment:
+        log_content += f". Ghi chú: {comment}"
+
+    new_comment = TaskComment(
+        task_id=task.id,
+        user_id=current_user.user_id,
+        content=log_content
+    )
+    db.add(new_comment)
+
+    db.commit()
+    db.refresh(task)
+
+    return {
+        "message": "Nộp bài thành công",
+        "total_uploaded": len(new_submissions),
+        "files": new_submissions,
+        "current_status": task.status
+    }

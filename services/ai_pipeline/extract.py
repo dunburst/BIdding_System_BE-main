@@ -1,11 +1,16 @@
+import logging
 import os
 from typing import List, Optional, cast
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 import pathlib
 from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
+import json
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # Load biến môi trường
 # Thử load từ file .env ở thư mục gốc (nếu script chạy từ folder con)
@@ -13,6 +18,9 @@ env_path = pathlib.Path(__file__).parent.parent.parent / '.env'
 load_dotenv(dotenv_path=env_path)
 # Fallback: load mặc định
 load_dotenv()
+# --- 1. SETUP LOGGER (Phần còn thiếu) ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ==========================================
 # 1. ĐỊNH NGHĨA DATA MODELS (SCHEMA)
@@ -39,15 +47,15 @@ class FinancialRequirements(BaseModel):
     working_capital: Optional[float] = Field(None, description="Yêu cầu nguồn lực tài chính / vốn lưu động (VNĐ)")
 
 class PersonnelReq(BaseModel):
-    position: str = Field(..., description="Vị trí công việc (Trích nguyên văn tiếng Việt, VD: 'Chỉ huy trưởng', KHÔNG dịch sang tiếng Anh)")#(VD: Chỉ huy trưởng, Cán bộ kỹ thuật)")
-    quantity: int = Field(1, description="Số lượng nhân sự yêu cầu")
+    position: Optional[str] = Field(..., description="Vị trí công việc (Trích nguyên văn tiếng Việt, VD: 'Chỉ huy trưởng', KHÔNG dịch sang tiếng Anh)")#(VD: Chỉ huy trưởng, Cán bộ kỹ thuật)")
+    quantity: Optional[int] = Field(1, description="Số lượng nhân sự yêu cầu")
     qualification: Optional[str] = Field(None, description="Yêu cầu bằng cấp, chứng chỉ chuyên môn(Đại học, Cao đẳng...)")
     experience_years: Optional[int] = Field(None, description="Số năm kinh nghiệm tối thiểu yêu cầu(Chỉ lấy số)")
     similar_project_exp: Optional[int] = Field(None, description="Số lượng dự án tương tự nhân sự đã từng làm")
 
 class EquipmentReq(BaseModel):
-    name: str = Field(..., description="Tên máy móc thiết bị")
-    quantity: int = Field(1, description="Số lượng yêu cầu")
+    name: Optional[str] = Field(..., description="Tên máy móc thiết bị")
+    quantity: Optional[int] = Field(1, description="Số lượng yêu cầu")
     specs: Optional[str] = Field(None, description="Thông số kỹ thuật / Công suất yêu cầu")
 
 # Model tổng hợp (Root)
@@ -57,6 +65,14 @@ class BiddingData(BaseModel):
     section_3_financial: FinancialRequirements
     section_4_personnel: List[PersonnelReq] = []
     section_5_equipment: List[EquipmentReq] = []
+    
+    # section_1_general: Optional[GeneralInfo] = Field(default=None)
+    # section_2_admin: Optional[AdminRequirements] = Field(default=None)
+    # section_3_financial: Optional[FinancialRequirements] = Field(default=None)
+
+    # # List thì default là list rỗng
+    # section_4_personnel: Optional[List[PersonnelReq]] = Field(default_factory=list)
+    # section_5_equipment: Optional[List[EquipmentReq]] = Field(default_factory=list)
 
 # ==========================================
 # 2. HÀM XỬ LÝ CHÍNH
@@ -113,65 +129,156 @@ def extract_bid_info(full_context_text: str) -> BiddingData:
         print(f"❌ [Extract] Lỗi khi gọi Gemini API: {e}")
         raise e
 # --- HÀM TRÍCH XUẤT LOCAL ---
-# def extract_bid_info(full_context_text: str) -> BiddingData:
+# def extract_bid_info(full_context_text: str) -> dict:
 #     """
-#     Sử dụng Ollama (Local LLM) để trích xuất thông tin.
-#     Không tốn phí, bảo mật dữ liệu.
+#     Hàm gọi AI trả về Dict (để dễ xử lý rỗng và merge thủ công).
 #     """
-    
-#     # Cấu hình Model Local
-#     # model: tên model bạn đã pull về (qwen2.5:14b hoặc qwen2.5:7b)
-#     # num_ctx: Quan trọng! Tăng cửa sổ ngữ cảnh để đọc được hồ sơ dài.
-#     llm = ChatOllama(
-#         model="qwen2.5:7b", 
-#         temperature=0,        # Quan trọng: 0 để loại bỏ sự sáng tạo
-#         num_ctx=8192,         # Đảm bảo đọc hết hồ sơ
-#         repeat_penalty=1.1,   # Tránh lặp từ (tùy chọn)
-#         top_k=10,             # Giới hạn không gian lấy mẫu để tập trung vào từ khóa chính xác
-#     )
+#     api_key = os.getenv("DEEPSEEK_API_KEY") 
+#     if not api_key: raise ValueError("❌ Chưa tìm thấy DEEPSEEK_API_KEY!")
 
-#     # Ép kiểu đầu ra JSON
-#     structured_llm = llm.with_structured_output(BiddingData)
+#     llm = ChatOpenAI(
+#         model="deepseek-chat",
+#         api_key=SecretStr(api_key),
+#         base_url="https://api.deepseek.com",
+#         temperature=0.0, 
+#         model_kwargs={
+#             "max_tokens": 4096,
+#             "response_format": {"type": "json_object"}}
+#     )
 
 #     prompt = ChatPromptTemplate.from_messages([
 #         ("system", """
-#         Bạn là một Hệ thống Trích xuất Dữ liệu Hồ sơ thầu (Bidding Data Extractor).
-#         Nhiệm vụ của bạn là đọc văn bản và điền dữ liệu vào khuôn mẫu JSON chính xác từng ký tự.
-
-#         ### QUY TẮC BẤT DI BẤT DỊCH (NGHIÊM CẤM VI PHẠM):
+#         Bạn là Chuyên gia Đấu thầu. Nhiệm vụ là trích xuất dữ liệu JSON từ văn bản.
         
-#         1. NGUYÊN TẮC "COPY-PASTE":
-#            - Tuyệt đối KHÔNG dịch thuật ngữ (Ví dụ: Thấy "Chỉ huy trưởng" -> Ghi "Chỉ huy trưởng". CẤM ghi "Site Manager").
-#            - Tuyệt đối KHÔNG tóm tắt chức danh (Ví dụ: Thấy "Cán bộ kỹ thuật phụ trách thi công phần điện" -> Ghi đầy đủ, không được cắt bớt thành "Cán bộ điện").
+#         ### MỤC TIÊU QUAN TRỌNG:
+#         1. **TÀI CHÍNH**: Doanh thu bình quân, Vốn lưu động.
+#         2. **KINH NGHIỆM**: Tìm "Hợp đồng tương tự", "Công trình tương tự".
+#            - `min_contract_value`: Giá trị hợp đồng (Chuyển "5 tỷ" -> 5000000000).
+#            - `similar_contract_qty`: Số lượng.
+#            - `similar_contract_desc`: Mô tả ngắn gọn (VD: "Giao thông cấp III").
 
-#         2. XỬ LÝ SỐ LIỆU & TIỀN TỆ:
-#            - Với số tiền (Doanh thu, Hợp đồng): Hãy cố gắng loại bỏ chữ (VNĐ, đồng, tỷ), chỉ giữ lại con số thuần túy.
-#            - Nếu văn bản ghi "3 năm" -> trích xuất số: 3.
-#            - Nếu văn bản ghi "01 người" -> trích xuất số: 1.
+#         ### CẤU TRÚC JSON:
+#         {{
+#             "section_2_admin": {{ "bid_security_value": "...", "contract_duration": "..." }},
+#             "section_3_financial": {{ 
+#                 "avg_revenue": "...", 
+#                 "working_capital": "...",
+#                 "min_contract_value": 0.0, 
+#                 "similar_contract_qty": 0,
+#                 "similar_contract_desc": "..."
+#             }},
+#             "section_4_personnel": [ {{ "position": "...", "quantity": 1, "experience_years": 0 }} ],
+#             "section_5_equipment": [ {{ "name": "...", "quantity": 1, "specs": "..." }} ]
+#         }}
 
-#         3. TÍNH TRUNG THỰC:
-#            - Chỉ trích xuất thông tin CÓ trong văn bản.
-#            - Nếu trường nào không tìm thấy thông tin -> Trả về null (hoặc mảng rỗng []).
-#            - KHÔNG được tự ý điền dữ liệu mặc định.
-
-#         ### VÍ DỤ MINH HỌA:
-#         Input: "Yêu cầu 01 Chỉ huy trưởng công trường, có bằng Đại học Xây dựng, kinh nghiệm 5 năm."
-#         Output Đúng: {{ "position": "Chỉ huy trưởng công trường", "quantity": 1, "experience_years": 5, "qualification": "Đại học Xây dựng" }}
-#         Output SAI: {{ "position": "Project Manager", "quantity": 1, "experience_years": 15 ... }} (Sai vì tự dịch và bịa số năm)
+#         ### QUY TẮC:
+#         - Nếu không có dữ liệu: KHÔNG trả về trường đó (hoặc trả về null).
+#         - Nếu đoạn văn vô nghĩa: Trả về object rỗng {{}}.
 #         """),
-#         ("human", "Hãy trích xuất thông tin từ văn bản dưới đây:\n\n{context}")
+#         ("human", "Văn bản hồ sơ thầu:\n\n{context}")
 #     ])
 
-#     chain = prompt | structured_llm
+#     chain = prompt | llm
     
-#     print(f"🤖 [Local-Ollama] Đang phân tích dữ liệu trên máy của bạn (Model: Qwen2.5)...")
 #     try:
-#         # Gọi invoke
-#         result = chain.invoke({"context": full_context_text})
-#         print("✅ [Local-Ollama] Trích xuất thành công!")
-#         return cast(BiddingData, result)
-    
+#         response = chain.invoke({"context": full_context_text})
+#         # --- SỬA LỖI Ở ĐÂY ---
+#         # Lấy content ra
+#         content = response.content
+        
+#         # Nếu content không phải string (hiếm gặp với DeepSeek nhưng để chiều lòng Linter)
+#         if not isinstance(content, str):
+#             content = str(content)
+            
+#         if not content: return {}
+        
+#         return json.loads(content)
 #     except Exception as e:
-#         print(f"❌ [Local-Ollama] Lỗi: {e}")
-#         # Mẹo debug: Đôi khi model local trả về JSON lỗi nhẹ, có thể dùng OutputFixingParser nếu cần
-#         raise e
+#         logger.warning(f"⚠️ [AI Chunk Error] {e}")
+#         return {}
+
+# def extract_list_from_large_context(full_text: str, data_type: str = "personnel") -> BiddingData:
+#     """
+#     Hàm xử lý file lớn: Cắt nhỏ -> Gọi AI -> Gộp kết quả
+#     """
+    
+#     # 1. Cấu hình Chunk Size an toàn (8000 chars)
+#     splitter = RecursiveCharacterTextSplitter(
+#         chunk_size=8000, 
+#         chunk_overlap=500,
+#         separators=["\n\n", "\n", "##", ".", " ", ""]
+#     )
+    
+#     chunks = splitter.split_text(full_text)
+#     logger.info(f"🔪 Đã cắt context thành {len(chunks)} đoạn (8k chars).")
+
+#     final_data = BiddingData()
+#     final_data.section_4_personnel = []
+#     final_data.section_5_equipment = []
+
+#     for i, chunk in enumerate(chunks):
+#         logger.info(f"🔄 Đang xử lý đoạn {i+1}/{len(chunks)} ({data_type})...")
+        
+#         try:
+#             # --- ĐỊNH NGHĨA BIẾN raw_data Ở ĐÂY ---
+#             raw_data = extract_bid_info(chunk)
+            
+#             # Nếu kết quả rỗng, bỏ qua
+#             if not raw_data: 
+#                 continue
+
+#             # --- LOGIC GỘP DỮ LIỆU ---
+            
+#             # 1. Gộp Nhân sự
+#             if data_type == "personnel" and "section_4_personnel" in raw_data:
+#                 items = raw_data["section_4_personnel"]
+#                 if items and isinstance(items, list):
+#                     for item in items:
+#                         # Convert dict -> Pydantic Object
+#                         final_data.section_4_personnel.append(PersonnelReq(**item))
+
+#             # 2. Gộp Thiết bị
+#             elif data_type == "equipment" and "section_5_equipment" in raw_data:
+#                 items = raw_data["section_5_equipment"]
+#                 if items and isinstance(items, list):
+#                     for item in items:
+#                         final_data.section_5_equipment.append(EquipmentReq(**item))
+            
+#             # 3. Gộp Tài chính (Logic Merge thông minh)
+#             elif data_type == "financial":
+                
+#                 # Merge Admin Section
+#                 if "section_2_admin" in raw_data and raw_data["section_2_admin"]:
+#                     new_admin = raw_data["section_2_admin"]
+#                     if not final_data.section_2_admin:
+#                         final_data.section_2_admin = AdminRequirements(**new_admin)
+#                     else:
+#                         # Chỉ update các trường có dữ liệu
+#                         current = final_data.section_2_admin.model_dump(exclude_unset=True)
+#                         for k, v in new_admin.items():
+#                             if v is not None and v != "":
+#                                 current[k] = v
+#                         final_data.section_2_admin = AdminRequirements(**current)
+
+#                 # Merge Financial Section
+#                 if "section_3_financial" in raw_data and raw_data["section_3_financial"]:
+#                     new_fin = raw_data["section_3_financial"]
+#                     if not final_data.section_3_financial:
+#                         final_data.section_3_financial = FinancialRequirements(**new_fin)
+#                     else:
+#                         current_fin = final_data.section_3_financial.model_dump(exclude_unset=True)
+#                         for k, v in new_fin.items():
+#                             # Logic: Chỉ ghi đè nếu giá trị mới khác None và khác 0
+#                             if v is not None and v != "" and v != 0:
+#                                 current_fin[k] = v
+#                         final_data.section_3_financial = FinancialRequirements(**current_fin)
+                
+#         except Exception as e:
+#             logger.error(f"⚠️ Lỗi xử lý đoạn {i+1}: {e}")
+#             continue
+
+#     total_p = len(final_data.section_4_personnel or [])
+#     total_e = len(final_data.section_5_equipment or [])
+#     logger.info(f"✅ Hoàn tất. Tổng: {total_p} NS, {total_e} TB.")
+    
+#     return final_data

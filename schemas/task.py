@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, validator
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 from enum import Enum
 
@@ -19,6 +19,16 @@ class SimpleUnit(BaseModel):
     unit_name: str
     class Config:
         from_attributes = True
+        
+class SubmissionFile(BaseModel):
+    file_id: str
+    name: str
+    url: str
+    download_url: Optional[str] = None
+    uploaded_by: int
+    uploaded_name: Optional[str] = None
+    uploaded_at: str
+    comment: Optional[str] = None
 # --- 1. SCHEMAS CHO ASSIGNMENT ---
 class TaskAssignmentBase(BaseModel):
     assigned_unit_id: Optional[int] = None
@@ -89,6 +99,8 @@ class TaskBase(BaseModel):
     # --- [NEW] ---
     description: Optional[str] = None
     attachment_url: Optional[List[str]] = []
+    # Chứa danh sách file nhân viên nộp bài
+    submission_data: Optional[List[SubmissionFile]] = []
     source_type: Optional[str] = None 
 
 class TaskCreate(TaskBase):

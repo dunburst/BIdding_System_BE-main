@@ -1,227 +1,321 @@
+import operator
 import os
 import json
-import math
-from openai import OpenAI
-# [FIX 1] Import các kiểu dữ liệu cần thiết từ openai
-from openai.types.chat import ChatCompletionMessageParam, ChatCompletionSystemMessageParam, ChatCompletionUserMessageParam
-from dotenv import load_dotenv
-from typing import List, Dict, Any
+from typing import Annotated, List, TypedDict, Optional, Dict, Any, Union
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver 
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage, AIMessage
+from pydantic import BaseModel, Field, SecretStr
+from langchain_core.runnables import RunnableConfig
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.exceptions import OutputParserException
 
-# Import service của bạn
-from services.chroma_service import get_chroma_service
+# --- IMPORT SERVICES ---
+# Đảm bảo bạn đã có các file này
+from services.retrieval_service import RetrievalService
+from services.visual_retrieval_service import VisualRetrievalService
 
-load_dotenv()
+# ==========================================
+# 1. SCHEMA
+# ==========================================
 
-class PlanningAgent:
-    def __init__(self):
-        # 1. Cấu hình DeepSeek Client
-        self.client = OpenAI(
-            api_key=os.getenv("DEEPSEEK_API_KEY"), 
-            base_url="https://api.deepseek.com"
+class Section(BaseModel):
+    id: int
+    title: str = Field(description="Tên chương/mục")
+    search_query: str = Field(description="Từ khóa tìm kiếm")
+    content: str = Field(default="", description="Nội dung chi tiết")
+
+class ProposalOutline(BaseModel):
+    sections: List[Section] = Field(description="Danh sách các mục")
+
+class ReviewFeedback(BaseModel):
+    is_approved: bool = Field(description="True nếu đạt")
+    score: int = Field(description="Điểm /10")
+    critique: str = Field(description="Nhận xét lỗi")
+    suggestions: str = Field(description="Gợi ý sửa")
+
+class RequirementsAnalysis(BaseModel):
+    is_sufficient: bool = Field(description="True nếu đủ thông tin")
+    missing_info_question: Optional[str] = Field(description="Câu hỏi nếu thiếu")
+    extracted_details: Optional[str] = Field(description="Tóm tắt thông tin")
+
+# ==========================================
+# 2. STATE
+# ==========================================
+
+class AgentState(TypedDict):
+    messages: Annotated[List[BaseMessage], operator.add] 
+    requirements_gathered: bool
+    project_name: str
+    project_details: str
+    reference_doc_name: Optional[str]        
+    outline: List[Section]         
+    current_section_idx: int       
+    final_document: str            
+    revision_count: int      
+    current_feedback: str          
+
+# ==========================================
+# 3. CLASS AGENT (FIXED TYPES)
+# ==========================================
+
+global_memory = MemorySaver()
+
+class ConstructionDraftingAgent:
+    def __init__(self, retrieval_service: RetrievalService, visual_service: VisualRetrievalService):
+        self.retriever = retrieval_service
+        self.visual_retriever = visual_service
+        
+        print("🤖 Initializing DeepSeek Agent...")
+        
+        deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "sk-b2086419ba0a4219b7d322ae0c45db26")
+        
+        self.llm = ChatOpenAI(
+            model="deepseek-chat",
+            api_key=SecretStr(deepseek_api_key) if deepseek_api_key else None,
+            base_url="https://api.deepseek.com",
+            temperature=0.1,
+            model_kwargs={
+                "max_tokens": 4096 
+            } 
         )
         
-        self.db = get_chroma_service()
+        self.analyst_parser = PydanticOutputParser(pydantic_object=RequirementsAnalysis)
+        self.planner_parser = PydanticOutputParser(pydantic_object=ProposalOutline)
+        self.reviewer_parser = PydanticOutputParser(pydantic_object=ReviewFeedback)
+
+        self.memory = global_memory 
+        self.app = self._build_graph()
+
+    def _build_graph(self):
+        workflow = StateGraph(AgentState)
         
-        # [FIX 2] Khai báo rõ ràng kiểu dữ liệu cho history là list các MessageParam
-        self.history: List[ChatCompletionMessageParam] = []
+        workflow.add_node("requirements_analyst", self.requirements_node)
+        workflow.add_node("planner", self.planner_node)
+        workflow.add_node("writer", self.writer_node)
+        workflow.add_node("reviewer", self.reviewer_node) 
+
+        workflow.set_entry_point("requirements_analyst")
+
+        workflow.add_conditional_edges("requirements_analyst", self.route_requirements, {"ask_user": END, "proceed": "planner"})
+        workflow.add_edge("planner", "writer")
+        workflow.add_edge("writer", "reviewer")
+        workflow.add_conditional_edges("reviewer", self.route_review, {"revise": "writer", "next": "writer", "completed": END})
+
+        return workflow.compile(checkpointer=self.memory)
+
+    # ==========================================
+    # 4. HELPERS (QUAN TRỌNG: FIX LỖI TYPE)
+    # ==========================================
+    
+    def _get_text_content(self, content: Union[str, List[Union[str, Dict]]]) -> str:
+        """Hàm an toàn để lấy text từ content (xử lý cả multimodal list)"""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text = ""
+            for item in content:
+                if isinstance(item, str):
+                    text += item
+                elif isinstance(item, dict):
+                    text += item.get("text", "")
+            return text
+        return str(content)
+
+    def _safe_parse(self, raw_content: Union[str, List], parser: PydanticOutputParser):
+        """Hàm parse JSON an toàn"""
+        text_content = self._get_text_content(raw_content).strip()
         
-        # System prompt chính (Dùng cho bước cuối cùng)
-        
-        self.system_prompt = """
-        Bạn là một Chuyên gia Lập kế hoạch và Hồ sơ Dự thầu (Project Planning & Bidding Expert).
-        Kỹ năng đặc biệt của bạn là "Reverse Engineering" (Dịch ngược cấu trúc) từ các đoạn văn bản rời rạc.
-
-        NHIỆM VỤ CỐT LÕI:
-        Bạn phải giúp người dùng lập kế hoạch dựa trên cấu trúc của "Tài liệu tham khảo" (file PDF mẫu).
-        Tuy nhiên, tài liệu mẫu có thể không có Mục lục (Table of Contents) rõ ràng. Bạn phải tự quét và tái tạo nó.
-
-        QUY TRÌNH XỬ LÝ (TUÂN THỦ NGHIÊM NGẶT):
-
-        1. GIAI ĐOẠN QUÉT (SCANNING & RECONSTRUCTION):
-           - Đọc kỹ phần dữ liệu được cung cấp (Structure Context & Detail Context).
-           - Tìm các dòng đóng vai trò là TIÊU ĐỀ (Headings). Dấu hiệu nhận biết:
-             + Các dòng viết in hoa toàn bộ (Ví dụ: "BIỆN PHÁP THI CÔNG...", "PHẦN I: GIỚI THIỆU").
-             + Các dòng bắt đầu bằng số La Mã (I., II., III...) hoặc A, B, C...
-             + Các dòng được định dạng đậm hoặc đứng riêng lẻ làm tiêu đề.
-           - Sắp xếp các tiêu đề này lại thành một CẤU TRÚC ĐỀ CƯƠNG (Outline) hoàn chỉnh.
-
-        2. GIAI ĐOẠN PHÂN TÍCH THIẾU HỤT (GAP ANALYSIS):
-           - Đối chiếu "Yêu cầu của người dùng" vào "Cấu trúc đề cương" vừa tạo.
-           - Xác định xem để viết nội dung cho các mục đó, ta còn thiếu thông tin cụ thể nào (Ví dụ: Tên công trình, Địa điểm, Quy mô, Tiến độ, Nhân sự...).
-
-        3. GIAI ĐOẠN PHẢN HỒI (OUTPUT FORMAT):
-           - Bước 1: In ra "**I. CẤU TRÚC ĐỀ XUẤT (DỰA TRÊN FILE MẪU)**" 
-             (Liệt kê chi tiết các chương/mục bạn đã quét được dưới dạng Markdown List).
-           - Bước 2: In ra "**II. CÁC THÔNG TIN CẦN LÀM RÕ**"
-             (Đặt câu hỏi cho người dùng về những dữ liệu còn thiếu để lấp đầy cấu trúc trên).
-           - Bước 3: Chỉ bắt đầu viết nội dung chi tiết (Lời văn) sau khi người dùng đã cung cấp đủ thông tin ở lượt chat sau.
-
-        LƯU Ý:
-        - Tuyệt đối không tự bịa ra một cấu trúc mới nếu trong file đã có dấu hiệu của cấu trúc cũ.
-        - Trả lời bằng tiếng Việt chuyên nghiệp, văn phong hồ sơ thầu.
-        """
-
-    def retrieve_raw_chunks(self, query: str, n_results: int = 15) -> List[str]:
-        """
-        Lấy danh sách các đoạn văn bản thô từ DB (Trả về List để dễ chia nhỏ)
-        """
-        print(f"🔍 Đang tìm raw chunks cho: '{query}' (Lấy {n_results} chunks)...")
+        # Clean Markdown
+        if "```json" in text_content:
+            text_content = text_content.split("```json")[1].split("```")[0].strip()
+        elif "```" in text_content:
+            text_content = text_content.split("```")[1].strip()
+            
         try:
-            results = self.db.query_collection(
-                collection_name="bidding_docs",
-                query_texts=[query],
-                n_results=n_results 
-            )
-            chunks = []
-            if results:
-                for idx, item in enumerate(results):
-                    content = item.get('content', '')
-                    chunks.append(content)
-            return chunks
-        except Exception as e:
-            print(f"⚠️ Lỗi query DB: {e}")
-            return []
-
-    def scan_structure_in_batches(self, chunks: List[str]) -> str:
-        """
-        Hàm cốt lõi: CHIA NHỎ VÀ QUÉT (MAP-REDUCE)
-        """
-        if not chunks:
-            return ""
-
-        # 1. Gộp các chunk lại thành 1 chuỗi lớn
-        full_text = "\n\n".join(chunks)
-        total_len = len(full_text)
-        
-        # 2. Chia nhỏ thành các batch an toàn (ví dụ: 15.000 ký tự / batch ~ 4000 tokens)
-        BATCH_SIZE = 15000 
-        num_batches = math.ceil(total_len / BATCH_SIZE)
-        
-        print(f"📦 Dữ liệu quá lớn ({total_len} chars). Chia thành {num_batches} phần để quét lần lượt...")
-        
-        collected_headings = []
-
-        # 3. Vòng lặp xử lý từng phần (MAP STEP)
-        for i in range(num_batches):
-            start = i * BATCH_SIZE
-            end = start + BATCH_SIZE
-            batch_text = full_text[start:end]
-            
-            print(f"   🔄 Đang quét phần {i+1}/{num_batches}...")
-            
-            # Dùng model 'deepseek-chat' (V3) để quét cho nhanh và rẻ (không cần R1 để quét)
-            # Prompt chuyên biệt để chỉ trích xuất tiêu đề
-            scan_prompt = f"""
-            Nhiệm vụ: Đọc đoạn văn bản sau và CHỈ TRÍCH XUẤT các dòng Tiêu đề (Headings).
-            Dấu hiệu: Các dòng viết hoa (CHƯƠNG, PHẦN), số La Mã (I., II.), số thứ tự (1., 2.).
-            Nếu không có tiêu đề, trả về "Không có". Đừng giải thích gì thêm.
-            
-            Văn bản:
-            {batch_text}
-            """
-            
+            return parser.parse(text_content)
+        except:
             try:
-                response = self.client.chat.completions.create(
-                    model="deepseek-chat", # Dùng V3 cho nhanh
-                    messages=[{"role": "user", "content": scan_prompt}],
-                    stream=False
-                )
-                result = response.choices[0].message.content or ""
-                collected_headings.append(f"--- KẾT QUẢ QUÉT PHẦN {i+1} ---\n{result}")
-            except Exception as e:
-                print(f"   ❌ Lỗi quét phần {i+1}: {e}")
+                data = json.loads(text_content)
+                return parser.pydantic_object(**data)
+            except:
+                return None
 
-        # 4. Gộp kết quả (REDUCE STEP)
-        final_scan_result = "\n".join(collected_headings)
-        print("✅ Đã quét xong toàn bộ!")
-        return final_scan_result
+    # ==========================================
+    # 5. NODES (FIXED LOGIC)
+    # ==========================================
 
-    def chat(self, user_input: str):
-        # 1. Lấy dữ liệu thô (Lấy hẳn 20 chunks cho máu, vì giờ đã có cơ chế chia nhỏ rồi)
-        structure_query = "Mục lục Chương I Chương II Chương III Phần 1 Phần 2 Tổng quan Biện pháp"
-        raw_chunks = self.retrieve_raw_chunks(structure_query, n_results=20)
-        
-        # 2. Chạy quy trình Chia nhỏ & Quét (Map-Reduce)
-        # Kết quả trả về sẽ là một danh sách các tiêu đề đã được lọc gọn gàng
-        scanned_structure = self.scan_structure_in_batches(raw_chunks)
-        
-        # 3. Lấy thêm context chi tiết cho câu hỏi user (Vẫn giới hạn nhỏ cho nhẹ)
-        # (Hàm retrieve_context cũ bạn có thể bỏ hoặc giữ để lấy text ngắn, ở đây tôi gọi trực tiếp raw cho nhanh)
-        detail_chunks = self.retrieve_raw_chunks(user_input, n_results=3)
-        detail_context = "\n".join(detail_chunks)[:10000] # Cắt bớt nếu phần chi tiết quá dài
+    def requirements_node(self, state: AgentState):
+        print("🕵️ [Analyst] Checking requirements...")
+        if state.get("requirements_gathered") and not state.get("current_feedback"): return {} 
 
-        # 4. Gửi cho DeepSeek R1 để "Lắp ráp" (Reasoning)
-        augmented_input = f"""
-        YÊU CẦU CỦA NGƯỜI DÙNG:
-        {user_input}
+        messages = state['messages']
+        last_msg_content = self._get_text_content(messages[-1].content) if messages else ""
         
-        ===============================================================
-        DỮ LIỆU CẤU TRÚC (ĐÃ ĐƯỢC QUÉT VÀ GỘP TỪ NHIỀU PHẦN):
-        {scanned_structure}
-        ===============================================================
+        format_instructions = self.analyst_parser.get_format_instructions()
+        prompt = f"""
+        Nhiệm vụ: Phân tích xem User đã cung cấp 'Tên dự án' chưa.
         
-        DỮ LIỆU CHI TIẾT BỔ SUNG:
-        {detail_context}
-        ===============================================================
+        User Input: "{last_msg_content}"
         
-        NHIỆM VỤ CUỐI CÙNG:
-        1. Từ danh sách tiêu đề lộn xộn bên trên, hãy SẮP XẾP LẠI thành một MỤC LỤC logic, mạch lạc.
-        2. Loại bỏ các tiêu đề trùng lặp hoặc rác.
-        3. In ra: "**I. CẤU TRÚC ĐỀ XUẤT (TỔNG HỢP TỪ FILE)**".
-        4. Sau đó hỏi các thông tin còn thiếu.
+        {format_instructions}
         """
         
-        user_msg: ChatCompletionUserMessageParam = {
-            "role": "user", 
-            "content": augmented_input
-        }
-        
-        current_messages: List[ChatCompletionMessageParam] = []
-        sys_msg: ChatCompletionSystemMessageParam = {
-            "role": "system",
-            "content": self.system_prompt
-        }
-        current_messages.append(sys_msg)
-        
-        # Giới hạn history
-        if len(self.history) > 6:
-             current_messages.extend(self.history[-6:])
-        else:
-             current_messages.extend(self.history)
-             
-        current_messages.append(user_msg)
-
-        print("🧠 DeepSeek R1 đang suy nghĩ & Lắp ráp mảnh ghép...")
-        
         try:
-            # Bước cuối này dùng R1 (deepseek-reasoner) để nó tư duy sắp xếp
-            response = self.client.chat.completions.create(
-                model="deepseek-reasoner", 
-                messages=current_messages,
-                stream=False
-            )
-            
-            bot_message_content = response.choices[0].message.content or ""
-            reasoning_content = getattr(response.choices[0].message, 'reasoning_content', '')
-            
-            if reasoning_content:
-                print("\n" + "="*20 + " SUY NGHĨ (REASONING) " + "="*20)
-                print(reasoning_content)
-                print("="*60 + "\n")
-            
-            # Lưu history (clean)
-            self.history.append({"role": "user", "content": user_input})
-            if bot_message_content:
-                # Ép kiểu dict để tránh lỗi pylance strict
-                bot_msg: Dict[str, Any] = {"role": "assistant", "content": bot_message_content}
-                self.history.append(bot_msg) # type: ignore
-            
-            return bot_message_content
+            res = self.llm.invoke([SystemMessage(content=prompt)] + messages)
+            analysis = self._safe_parse(res.content, self.analyst_parser)
+        except:
+            analysis = None
 
-        except Exception as e:
-            print(f"❌ Lỗi API R1: {e}")
-            return "Có lỗi khi tổng hợp dữ liệu. Vui lòng thử lại."
+        # --- FALLBACK LOGIC (ĐÃ FIX LỖI .lower()) ---
+        if not analysis:
+            # Bây giờ last_msg_content chắc chắn là string nên .lower() an toàn
+            if len(last_msg_content) > 5 and "dự án" in last_msg_content.lower():
+                print(f"⚠️ Auto-accepting project name from text: {last_msg_content[:20]}...")
+                return {
+                    "requirements_gathered": True,
+                    "project_name": last_msg_content,
+                    "project_details": last_msg_content,
+                    "current_feedback": ""
+                }
+            else:
+                return {
+                    "requirements_gathered": False, 
+                    "messages": [AIMessage(content="Tôi chưa rõ tên dự án. Vui lòng ghi 'Dự án: [Tên]'")]
+                }
 
-    def reset_memory(self):
-        self.history = []
-        print("🧹 Đã xóa bộ nhớ hội thoại.")
+        if analysis.is_sufficient:
+            print(f"✅ [Analyst] OK: {analysis.extracted_details}")
+            return {
+                "requirements_gathered": True,
+                "project_name": analysis.extracted_details or "Project",
+                "project_details": analysis.extracted_details or "",
+                "current_feedback": "" 
+            }
+        else:
+            return {"requirements_gathered": False, "messages": [AIMessage(content=str(analysis.missing_info_question))]}
+
+    def planner_node(self, state: AgentState):
+        print(f"🏗️ [Planner] Planning...")
+        prompt = f"Lập Dàn ý cho: {state['project_details']}.\n{self.planner_parser.get_format_instructions()}"
+        res = self.llm.invoke(prompt)
+        plan = self._safe_parse(res.content, self.planner_parser)
+        
+        if not plan:
+            default_sections = [Section(id=1, title="Tổng quan", search_query=state['project_name'])]
+            return {"outline": default_sections, "current_section_idx": 0}
+
+        return {"outline": plan.sections, "current_section_idx": 0, "final_document": "", "revision_count": 0}
+
+    def writer_node(self, state: AgentState):
+        idx = state['current_section_idx']
+        outline = state.get('outline', [])
+        if not outline or idx >= len(outline): return {}
+
+        current_section = outline[idx]
+        feedback = state.get('current_feedback', "")
+        print(f"✍️ [Writer] Writing: {current_section.title}")
+
+        req_docs = self.retriever.search(current_section.search_query, "current_requirements", top_k=3)
+        context_str = "\n".join([d['content'] for d in req_docs]) if req_docs else ""
+        
+        sys_msg = SystemMessage(content=f"Bạn là Kỹ sư xây dựng. Viết mục: '{current_section.title}'.")
+        text_content = f"DỰ ÁN: {state['project_details']}\nCTX: {context_str}\n"
+        if feedback: text_content += f"SỬA THEO FEEDBACK: {feedback}"
+
+        user_content: List[Any] = [{"type": "text", "text": text_content}]
+        try:
+            visual_docs = self.visual_retriever.search_visuals(current_section.search_query, top_k=1)
+            for doc in visual_docs:
+                user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{doc['base64']}"}})
+        except: pass
+
+        msg = self.llm.invoke([sys_msg, HumanMessage(content=user_content)])
+        
+        current_section.content = self._get_text_content(msg.content) # Dùng helper an toàn
+        new_outline = list(outline)
+        new_outline[idx] = current_section
+        
+        return {"outline": new_outline}
+
+    def reviewer_node(self, state: AgentState):
+        idx = state['current_section_idx']
+        outline = state.get('outline', [])
+        if not outline or idx >= len(outline): return {}
+        
+        current_section = outline[idx]
+        print(f"🧐 [Reviewer] Checking: {current_section.title}")
+        
+        prompt = f"Review bài viết:\n{current_section.content}\n{self.reviewer_parser.get_format_instructions()}"
+        res = self.llm.invoke(prompt)
+        feedback = self._safe_parse(res.content, self.reviewer_parser)
+        
+        if not feedback: 
+            feedback = ReviewFeedback(is_approved=True, score=10, critique="", suggestions="") # Auto pass if parse fail
+
+        rev_count = state.get('revision_count') or 0
+        if not feedback.is_approved and rev_count >= 2:
+            feedback.is_approved = True # Max retries
+
+        if feedback.is_approved:
+            doc_chunk = f"\n\n## {current_section.title}\n\n{current_section.content}"
+            return {"current_section_idx": idx + 1, "revision_count": 0, "current_feedback": "", "final_document": state.get('final_document', "") + doc_chunk}
+        else:
+            return {"revision_count": rev_count + 1, "current_feedback": f"{feedback.critique}"}
+
+    # ==========================================
+    # 6. RUN (FIXED RESPONSE LOGIC)
+    # ==========================================
+
+    def route_requirements(self, state: AgentState):
+        return "proceed" if state.get("requirements_gathered") else "ask_user"
+
+    def route_review(self, state: AgentState):
+        if state.get("current_feedback"): return "revise"
+        idx = state.get('current_section_idx', 0)
+        outline = state.get('outline', [])
+        return "completed" if idx >= len(outline) else "next"
+
+    def run(self, user_input: str, thread_id: str):
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
+        current_state = self.app.get_state(config)
+        
+        if not current_state.values:
+            print(f"🚀 [New Session] {thread_id}")
+            initial_state: AgentState = {
+                "messages": [HumanMessage(content=user_input)],
+                "requirements_gathered": False,
+                "project_name": "", "project_details": "",
+                "outline": [], "current_section_idx": 0,
+                "final_document": "", "revision_count": 0, "current_feedback": "", "reference_doc_name": None
+            }
+            final_state = self.app.invoke(initial_state, config=config)
+        else:
+            vals = current_state.values
+            is_done = vals.get("final_document") and vals.get("current_section_idx", 0) >= len(vals.get("outline", []))
+            
+            if is_done:
+                print("🔄 [Feedback Loop]")
+                self.app.update_state(config, {"messages": [HumanMessage(content=user_input)], "current_feedback": f"USER: {user_input}", "current_section_idx": 0, "final_document": ""})
+                final_state = self.app.invoke(None, config=config) # type: ignore
+            else:
+                print("▶️ [Continuing]")
+                self.app.update_state(config, {"messages": [HumanMessage(content=user_input)]})
+                final_state = self.app.invoke(None, config=config) # type: ignore
+
+        # --- RESPONSE HANDLING ---
+        if not final_state.get("requirements_gathered"):
+            msgs = final_state.get("messages", [])
+            # Lấy tin nhắn AI cuối cùng, bỏ qua User Message
+            last_ai_msg = "..."
+            for m in reversed(msgs):
+                if isinstance(m, AIMessage):
+                    last_ai_msg = self._get_text_content(m.content)
+                    break
+            return {"status": "interaction_needed", "message": last_ai_msg, "data": None}
+            
+        elif final_state.get("final_document") and not final_state.get("current_feedback"):
+            return {"status": "completed", "message": "Hoàn thành.", "data": final_state["final_document"]}
+        else:
+            return {"status": "processing", "message": "Đang xử lý...", "data": None}

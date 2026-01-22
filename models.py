@@ -581,6 +581,9 @@ class BiddingTask(Base):
     tag: Mapped[Optional[TaskTag]] = mapped_column(Enum(TaskTag), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True)
     attachment_url: Mapped[Optional[List[str]]] = mapped_column(JSON, default=list, nullable=True)
+    # --- [CỘT MỚI] ---
+    # Cột chứa tài liệu NỘP BÀI (Nhân viên up lên)
+    submission_data: Mapped[Optional[List[dict]]] = mapped_column(JSON, default=list, nullable=True)
     
     source_type: Mapped[Optional[str]] = mapped_column(String(50))
     ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)

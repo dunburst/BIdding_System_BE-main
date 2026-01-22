@@ -1,3 +1,5 @@
+import os
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from sqlalchemy.orm import Session
 from datetime import timedelta # <--- Import để tính thời gian
@@ -19,6 +21,19 @@ from utils.security import SECRET_KEY, ALGORITHM, get_current_user
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 REMEMBER_ME_DAYS = 30 # Nếu chọn ghi nhớ thì lưu 30 ngày
+
+# Cấu hình từ môi trường
+CLIENT_ID = os.getenv("MS_CLIENT_ID")
+CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
+TENANT_ID = os.getenv("MS_TENANT_ID", "common")
+REDIRECT_URI = os.getenv("MS_REDIRECT_URI")
+
+# URL của Microsoft
+AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
+AUTH_URL = f"{AUTHORITY}/oauth2/v2.0/authorize"
+TOKEN_URL = f"{AUTHORITY}/oauth2/v2.0/token"
+USER_INFO_URL = "https://graph.microsoft.com/v1.0/me"
+
 
 router = APIRouter(
     prefix="/auth",
@@ -297,3 +312,85 @@ def get_me(current_user: User = Depends(get_current_user)):
         message="Lấy thông tin thành công",
         data=user_data
     )
+    
+    # 1. API tạo đường dẫn để Frontend nhấn vào "Login with Microsoft"
+@router.get("/microsoft/login")
+def get_microsoft_auth_url():
+    scope = "User.Read"
+    params = (
+        f"client_id={CLIENT_ID}"
+        f"&response_type=code"
+        f"&redirect_uri={REDIRECT_URI}"
+        f"&response_mode=query"
+        f"&scope={scope}"
+    )
+    return {"url": f"{AUTH_URL}?{params}"}
+
+# 2. Callback xử lý dữ liệu Microsoft trả về
+@router.get("/microsoft/callback")
+async def microsoft_callback(code: str, response: Response, db: Session = Depends(get_db)):
+    # A. Đổi code lấy Access Token của Microsoft
+    async with httpx.AsyncClient() as client:
+        token_data = {
+            "client_id": CLIENT_ID,
+            "scope": "User.Read",
+            "code": code,
+            "redirect_uri": REDIRECT_URI,
+            "grant_type": "authorization_code",
+            "client_secret": CLIENT_SECRET,
+        }
+        token_res = await client.post(TOKEN_URL, data=token_data)
+        ms_tokens = token_res.json()
+        
+        if "error" in ms_tokens:
+            raise HTTPException(status_code=400, detail=ms_tokens.get("error_description"))
+
+        # B. Lấy thông tin User từ Microsoft Graph API
+        headers = {'Authorization': f'Bearer {ms_tokens["access_token"]}'}
+        user_res = await client.get(USER_INFO_URL, headers=headers)
+        ms_user = user_res.json()
+
+    # C. Xử lý User trong Database của mình
+    email = ms_user.get("mail") or ms_user.get("userPrincipalName")
+    full_name = ms_user.get("displayName")
+
+    user_obj = db.query(User).filter(User.email == email).first()
+
+    if not user_obj:
+        # Nếu chưa có thì tự động tạo account mới (JIT Provisioning)
+        user_obj = User(
+            email=email,
+            full_name=full_name,
+            role=UserRole.ENGINEER, # Role mặc định
+            auth_provider="microsoft",
+            status=True
+        )
+        db.add(user_obj)
+        db.commit()
+        db.refresh(user_obj)
+    
+    if not user_obj.status:
+        raise HTTPException(status_code=403, detail="Tài khoản đã bị khóa")
+
+    # D. Tạo JWT của hệ thống mình (giống hệt logic login cũ)
+    access_token = create_access_token(
+        data={"sub": user_obj.email, "user_id": user_obj.user_id, "role": user_obj.role.value}
+    )
+    
+    # Set cookie (Tùy chọn)
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=SECURE_COOKIE,
+        samesite="lax"
+    )
+
+    return {
+        "message": "Login successful",
+        "access_token": access_token,
+        "user": {
+            "email": user_obj.email,
+            "full_name": user_obj.full_name
+        }
+    }
