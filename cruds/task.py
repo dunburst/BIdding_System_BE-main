@@ -11,7 +11,7 @@ import shutil
 import logging
 from typing import Optional, List, Dict, Set # <--- [FIX] Thêm Set
 from minio_client import minio_handler
-from datetime import datetime
+from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 # --- HÀM HELPER: XỬ LÝ KẾ THỪA TAG KHI HIỂN THỊ (VIEW ONLY) ---
@@ -234,7 +234,26 @@ def get_task_workflow(db: Session, task_id: int):
         .all()
     
     return histories
+def should_log_view(db: Session, task_id: int, user_id: int, cooldown_minutes: int = 5) -> bool:
+    """
+    Kiểm tra xem user có vừa xem task này gần đây không.
+    Trả về False nếu user đã xem trong khoảng thời gian cooldown (tránh spam log).
+    """
+    # Tìm log VIEWED gần nhất của user này tại task này
+    last_view = db.query(TaskHistory).filter(
+        TaskHistory.task_id == task_id,
+        TaskHistory.actor_id == user_id,
+        TaskHistory.action == TaskAction.VIEWED
+    ).order_by(TaskHistory.created_at.desc()).first()
 
+    if last_view:
+        # Tính khoảng cách thời gian
+        time_diff = datetime.now() - last_view.created_at
+        # Nếu chưa qua 'cooldown_minutes' phút -> Không log nữa
+        if time_diff < timedelta(minutes=cooldown_minutes):
+            return False
+            
+    return True
 # --- CREATE ---
 def create_task(db: Session, task_in: TaskCreate, current_user: User):
     # Trường hợp A: Tạo Task Con (Sub-task)
@@ -474,6 +493,18 @@ def get_task_detail(db: Session, task_id: int, user: User):
         )
         db.commit()
         db.refresh(task) # Refresh để trả về status mới nhất cho FE
+    else:
+        # 2. [ĐÃ SỬA] Logic ghi log VIEWED có điều kiện
+        # Chỉ ghi log nếu người xem KHÔNG PHẢI là người tạo (đỡ rác) 
+        # VÀ chưa xem trong 5 phút gần đây
+        if user.user_id != task.created_by:
+            if should_log_view(db, task.id, user.user_id, cooldown_minutes=5):
+                log_task_activity(
+                    db, task_id=task.id, actor_id=user.user_id,
+                    action=TaskAction.VIEWED,
+                    detail="Xem chi tiết công việc"
+                )
+                db.commit()
     return task
 #Cập nhật Status
 def update_task_status(db: Session, task_id: int, status_in: TaskStatus, user: User):
@@ -1123,12 +1154,14 @@ def get_task_detail_for_reviewer(db: Session, task_id: int, user: User):
             detail="Bạn không có quyền duyệt công việc này (Sai Reviewer)."
         )
         
-    # [LOG LOGIC]
-    log_task_activity(
-        db, task_id=task.id, actor_id=user.user_id,
-        action=TaskAction.VIEWED,
-        detail="Người duyệt (Reviewer) vào xem công việc"
-    )
-    db.commit()
+    # [ĐÃ SỬA] Thêm check should_log_view
+    # Nếu vừa Approve xong (vừa có tương tác) hoặc vừa F5 trong 5 phút -> Không log
+    if should_log_view(db, task.id, user.user_id, cooldown_minutes=5):
+        log_task_activity(
+            db, task_id=task.id, actor_id=user.user_id,
+            action=TaskAction.VIEWED,
+            detail="Người duyệt (Reviewer) vào xem công việc"
+        )
+        db.commit()
 
     return task
