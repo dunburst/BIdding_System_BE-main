@@ -229,7 +229,8 @@ def get_task_workflow(db: Session, task_id: int):
     """
     histories = db.query(TaskHistory)\
         .filter(TaskHistory.task_id == task_id)\
-        .order_by(TaskHistory.created_at.desc())\
+        .order_by(TaskHistory.created_at.desc(),
+                  TaskHistory.id.desc())\
         .options(joinedload(TaskHistory.actor))\
         .all()
     
@@ -493,18 +494,6 @@ def get_task_detail(db: Session, task_id: int, user: User):
         )
         db.commit()
         db.refresh(task) # Refresh để trả về status mới nhất cho FE
-    else:
-        # 2. [ĐÃ SỬA] Logic ghi log VIEWED có điều kiện
-        # Chỉ ghi log nếu người xem KHÔNG PHẢI là người tạo (đỡ rác) 
-        # VÀ chưa xem trong 5 phút gần đây
-        if user.user_id != task.created_by:
-            if should_log_view(db, task.id, user.user_id, cooldown_minutes=5):
-                log_task_activity(
-                    db, task_id=task.id, actor_id=user.user_id,
-                    action=TaskAction.VIEWED,
-                    detail="Xem chi tiết công việc"
-                )
-                db.commit()
     return task
 #Cập nhật Status
 def update_task_status(db: Session, task_id: int, status_in: TaskStatus, user: User):
@@ -1154,14 +1143,5 @@ def get_task_detail_for_reviewer(db: Session, task_id: int, user: User):
             detail="Bạn không có quyền duyệt công việc này (Sai Reviewer)."
         )
         
-    # [ĐÃ SỬA] Thêm check should_log_view
-    # Nếu vừa Approve xong (vừa có tương tác) hoặc vừa F5 trong 5 phút -> Không log
-    if should_log_view(db, task.id, user.user_id, cooldown_minutes=5):
-        log_task_activity(
-            db, task_id=task.id, actor_id=user.user_id,
-            action=TaskAction.VIEWED,
-            detail="Người duyệt (Reviewer) vào xem công việc"
-        )
-        db.commit()
 
     return task
