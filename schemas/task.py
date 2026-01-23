@@ -198,8 +198,10 @@ class TaskHistoryResponse(BaseModel):
     old_status: Optional[str] = None
     new_status: Optional[str] = None
     detail: Optional[str] = None
-    created_at: datetime
-    actor: ActorSimple
+    created_at: Optional[datetime] = None
+    actor: Optional[ActorSimple] = None
+    # [THÊM MỚI] Cờ để FE nhận biết đây là bước tiếp theo
+    is_future: bool = False
 
     class Config:
         from_attributes = True

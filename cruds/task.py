@@ -225,16 +225,81 @@ def log_task_activity(
 # --- HÀM 2: LẤY LUỒNG GIAO VIỆC (API bạn cần) ---
 def get_task_workflow(db: Session, task_id: int):
     """
-    Trả về timeline toàn bộ các sự kiện của Task
+    Trả về timeline: Lịch sử quá khứ + 1 Bước dự kiến (Next Step)
     """
+    
+    # 1. Lấy thông tin Task hiện tại để biết Assignee/Reviewer
+    task = db.query(BiddingTask).get(task_id)
+    if not task:
+        return []
+
+    # 2. Lấy lịch sử quá khứ (Sắp xếp Tăng dần như bạn yêu cầu)
     histories = db.query(TaskHistory)\
         .filter(TaskHistory.task_id == task_id)\
-        .order_by(TaskHistory.created_at.desc(),
-                  TaskHistory.id.desc())\
+        .order_by(TaskHistory.created_at.desc(), TaskHistory.id.desc())\
         .options(joinedload(TaskHistory.actor))\
         .all()
     
-    return histories
+    # Chuyển đổi ORM object sang Dict hoặc Object có thuộc tính is_future = False
+    # (Vì chúng ta cần append một object ảo vào list này)
+    results = []
+    for h in histories:
+        # Hack nhẹ: Gán attribute is_future vào object ORM (Python cho phép làm việc này dynamic)
+        setattr(h, "is_future", False)
+        results.append(h)
+
+    # 3. [LOGIC MỚI] TẠO BƯỚC TIẾP THEO (VIRTUAL STEP)
+    future_step = None
+    
+    # Tình huống 1: Mới tạo hoặc Đã giao -> Người được giao cần "Bắt đầu làm"
+    if task.status in [TaskStatus.OPEN, TaskStatus.ASSIGNED]:
+        actor = None
+        if task.assignee_id:
+            actor = db.get(User, task.assignee_id)
+        
+        future_step = TaskHistory(
+            id=-1, # ID ảo
+            action=TaskAction.IN_PROGRESS, # Hành động tiếp theo dự kiến
+            detail="Đang chờ bắt đầu...",
+            actor=actor, # Hiện avatar người được giao
+            created_at=None # Chưa diễn ra
+        )
+
+    # Tình huống 2: Đang thực hiện -> Người được giao cần "Nộp bài"
+    elif task.status == TaskStatus.IN_PROGRESS:
+        actor = None
+        if task.assignee_id:
+            actor = db.get(User, task.assignee_id)
+
+        future_step = TaskHistory(
+            id=-1,
+            action=TaskAction.SUBMITTED,
+            detail="Đang thực hiện & chờ nộp bài...", # Giống dòng "Đang cập nhật..." trong ảnh
+            actor=actor,
+            created_at=None
+        )
+
+    # Tình huống 3: Chờ duyệt -> Reviewer cần "Duyệt/Từ chối"
+    elif task.status == TaskStatus.PENDING_REVIEW:
+        actor = None
+        if task.reviewer_id:
+            actor = db.get(User, task.reviewer_id)
+
+        future_step = TaskHistory(
+            id=-1,
+            action=TaskAction.APPROVED, # Hoặc REJECTED
+            detail="Đang chờ duyệt...",
+            actor=actor, # Hiện avatar Reviewer
+            created_at=None
+        )
+
+    # 4. Nếu có bước tiếp theo, gán cờ is_future và thêm vào list
+    if future_step:
+        setattr(future_step, "is_future", True)
+        results.append(future_step)
+
+    return results
+    
 def should_log_view(db: Session, task_id: int, user_id: int, cooldown_minutes: int = 5) -> bool:
     """
     Kiểm tra xem user có vừa xem task này gần đây không.

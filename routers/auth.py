@@ -35,7 +35,7 @@ CLIENT_ID = os.getenv("MS_CLIENT_ID")
 CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 TENANT_ID = os.getenv("MS_TENANT_ID", "common")
 REDIRECT_URI = os.getenv("MS_REDIRECT_URI")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://10.11.1.58:3000")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://ai-dauthau-lab.pc1group.vn")
 IS_PROD = os.getenv("ENV") == "production"
 
 # URL của Microsoft
