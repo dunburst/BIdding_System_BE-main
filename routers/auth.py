@@ -1,12 +1,15 @@
+import logging
 import os
 import httpx
+import base64
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from datetime import timedelta # <--- Import để tính thời gian
 
 from cruds import user
 from database import get_db
-from models import User, UserRole
+from models import SecurityLevel, User, UserRole
 from cruds.user import get_user_by_email
 from utils.security import verify_password, create_access_token, get_password_hash, SECURE_COOKIE
 
@@ -15,6 +18,10 @@ from schemas.base import BaseResponse
 from jose import JWTError, jwt
 from schemas.auth import RefreshTokenRequest
 from utils.security import SECRET_KEY, ALGORITHM, get_current_user
+
+# Thiết lập log để debug
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- CẤU HÌNH THỜI GIAN ---
 # Bạn có thể để số này trong file config, ở đây tôi để tạm 60 phút
@@ -33,6 +40,9 @@ AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 AUTH_URL = f"{AUTHORITY}/oauth2/v2.0/authorize"
 TOKEN_URL = f"{AUTHORITY}/oauth2/v2.0/token"
 USER_INFO_URL = "https://graph.microsoft.com/v1.0/me"
+# Link API Microsoft Graph
+USER_INFO_URL = "https://graph.microsoft.com/v1.0/me"
+USER_PHOTO_URL = "https://graph.microsoft.com/v1.0/me/photo/$value"
 
 
 router = APIRouter(
@@ -313,27 +323,71 @@ def get_me(current_user: User = Depends(get_current_user)):
         data=user_data
     )
     
-    # 1. API tạo đường dẫn để Frontend nhấn vào "Login with Microsoft"
+def map_ms_job_to_role(job_title: str) -> UserRole:
+    if not job_title:
+        return UserRole.ENGINEER
+    
+    jt = job_title.lower()
+    # Nếu trong jobTitle có chữ "quản trị" hoặc "admin" -> ADMIN
+    if "admin" in jt or "quản trị" in jt: 
+        return UserRole.ADMIN
+    # Nếu có chữ "giám đốc" hoặc "manager" -> MANAGER
+    if "giám đốc" in jt or "manager" in jt: 
+        return UserRole.MANAGER
+    if "thầu" in jt : 
+        return UserRole.BID_MANAGER
+    # Nếu có chữ "trưởng phòng"
+    if "trưởng" in jt or "lead" in jt: 
+        return UserRole.SPECIALIST
+    # Mặc định còn lại (bao gồm "nhân viên") -> ENGINEER
+    return UserRole.ENGINEER
+    
+async def get_ms_user_photo(access_token: str) -> str:
+    """Lấy ảnh đại diện và chuyển sang Base64"""
+    # Endpoint lấy nội dung ảnh (binary)
+    PHOTO_URL = "https://graph.microsoft.com/v1.0/me/photo/$value"
+    
+    async with httpx.AsyncClient() as client:
+        headers = {'Authorization': f'Bearer {access_token}'}
+        try:
+            photo_res = await client.get(PHOTO_URL, headers=headers)
+            
+            if photo_res.status_code == 200:
+                # Nếu thành công, chuyển binary sang base64
+                encoded_string = base64.b64encode(photo_res.content).decode("utf-8")
+                logger.info("Lấy ảnh Microsoft thành công!")
+                return f"data:image/jpeg;base64,{encoded_string}"
+            else:
+                # Thường trả về 404 nếu người dùng chưa bao giờ upload ảnh lên Office 365
+                logger.warning(f"Không tìm thấy ảnh (Status: {photo_res.status_code})")
+                return None # type: ignore
+        except Exception as e:
+            logger.error(f"Lỗi khi gọi API lấy ảnh: {str(e)}")
+            return None # type: ignore
+# 1. API tạo đường dẫn để Frontend nhấn vào "Login with Microsoft"
 @router.get("/microsoft/login")
 def get_microsoft_auth_url():
-    scope = "User.Read"
+    # Sửa lỗi: scope phải cách nhau bằng dấu cách
+    # Thêm openid và profile để lấy đầy đủ thông tin định danh
+    scopes = ["User.Read", "profile", "openid"]
+    scope_param = " ".join(scopes)
+    
     params = (
         f"client_id={CLIENT_ID}"
         f"&response_type=code"
         f"&redirect_uri={REDIRECT_URI}"
         f"&response_mode=query"
-        f"&scope={scope}"
+        f"&scope={scope_param}"
     )
     return {"url": f"{AUTH_URL}?{params}"}
 
-# 2. Callback xử lý dữ liệu Microsoft trả về
 @router.get("/microsoft/callback")
-async def microsoft_callback(code: str, response: Response, db: Session = Depends(get_db)):
-    # A. Đổi code lấy Access Token của Microsoft
+async def microsoft_callback(code: str, db: Session = Depends(get_db)):
+    # 1. Đổi code lấy Access Token
     async with httpx.AsyncClient() as client:
         token_data = {
             "client_id": CLIENT_ID,
-            "scope": "User.Read",
+            "scope": "User.Read profile openid",
             "code": code,
             "redirect_uri": REDIRECT_URI,
             "grant_type": "authorization_code",
@@ -345,52 +399,75 @@ async def microsoft_callback(code: str, response: Response, db: Session = Depend
         if "error" in ms_tokens:
             raise HTTPException(status_code=400, detail=ms_tokens.get("error_description"))
 
-        # B. Lấy thông tin User từ Microsoft Graph API
-        headers = {'Authorization': f'Bearer {ms_tokens["access_token"]}'}
+        ms_access_token = ms_tokens["access_token"]
+
+        # 2. Lấy thông tin User & Ảnh
+        headers = {'Authorization': f'Bearer {ms_access_token}'}
         user_res = await client.get(USER_INFO_URL, headers=headers)
         ms_user = user_res.json()
+        avatar_base64 = await get_ms_user_photo(ms_access_token)
 
-    # C. Xử lý User trong Database của mình
+    # 3. Trích xuất và Map thông tin
     email = ms_user.get("mail") or ms_user.get("userPrincipalName")
     full_name = ms_user.get("displayName")
+    ms_job_title = ms_user.get("jobTitle") or "Nhân viên"
+    
+    # Thực hiện MAP sang hệ thống Role của mình
+    assigned_role = map_ms_job_to_role(ms_job_title)
 
+    # 4. Xử lý Database
     user_obj = db.query(User).filter(User.email == email).first()
 
     if not user_obj:
-        # Nếu chưa có thì tự động tạo account mới (JIT Provisioning)
+        # Tạo mới: Job Title giữ nguyên tiếng Việt, Role lưu Enum
         user_obj = User(
             email=email,
             full_name=full_name,
-            role=UserRole.ENGINEER, # Role mặc định
+            job_title=ms_job_title,    # Lưu: "Nhân viên" hoặc "Quản trị viên"
+            role=assigned_role,        # Lưu: UserRole.ENGINEER hoặc UserRole.ADMIN
+            avatar_url=avatar_base64,
             auth_provider="microsoft",
+            security_clearance=SecurityLevel.PUBLIC,
             status=True
         )
         db.add(user_obj)
-        db.commit()
-        db.refresh(user_obj)
+    else:
+        # Cập nhật thông tin mới nhất khi login lại
+        user_obj.full_name = full_name
+        user_obj.job_title = ms_job_title
+        user_obj.role = assigned_role 
+        if avatar_base64:
+            user_obj.avatar_url = avatar_base64
     
-    if not user_obj.status:
-        raise HTTPException(status_code=403, detail="Tài khoản đã bị khóa")
+    db.commit()
+    db.refresh(user_obj)
 
-    # D. Tạo JWT của hệ thống mình (giống hệt logic login cũ)
-    access_token = create_access_token(
-        data={"sub": user_obj.email, "user_id": user_obj.user_id, "role": user_obj.role.value}
-    )
-    
-    # Set cookie (Tùy chọn)
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        secure=SECURE_COOKIE,
-        samesite="lax"
-    )
-
-    return {
-        "message": "Login successful",
-        "access_token": access_token,
-        "user": {
-            "email": user_obj.email,
-            "full_name": user_obj.full_name
+    # --- [BƯỚC 5: TẠO TOKEN NỘI BỘ] ---
+    internal_token = create_access_token(
+        data={
+            "sub": user_obj.email, 
+            "user_id": user_obj.user_id, 
+            "role": user_obj.role.value
         }
-    }
+    )
+
+    # --- [BƯỚC 6: TẠO REDIRECT VÀ SET COOKIE] ---
+    
+    # 1. Đích đến mong muốn của Frontend (trang chủ hoặc dashboard)
+    frontend_dashboard_url = "http://10.10.0.158:3000/dashboard"
+    
+    # 2. Khởi tạo đối tượng RedirectResponse (Mã 302)
+    response = RedirectResponse(url=frontend_dashboard_url)
+
+    # 3. Gói token vào Cookie
+    response.set_cookie(
+        key="access_token",        # Tên cookie phải khớp với bên xử lý Auth
+        value=internal_token,      # Giá trị token JWT
+        httponly=True,             # JavaScript không thể đọc được (Chống XSS)
+        secure=False,              # Để False nếu đang chạy HTTP (localhost), True nếu chạy HTTPS
+        samesite="lax",            # Giúp cookie gửi được khi chuyển hướng từ Microsoft về
+        max_age=3600 * 24,          # Thời hạn 1 ngày (tùy chỉnh)
+        path="/"     # Đảm bảo cookie có hiệu lực trên toàn bộ trang web
+    )
+    
+    return response

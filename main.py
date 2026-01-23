@@ -57,7 +57,7 @@ origins = [
     "http://localhost:3000",
     "http://26.152.34.61:3000",
     "http://10.10.0.158:3000",
-    "https://bidding-management.vercel.app",
+    "http://10.11.1.26:3000",
     "https://baptist-nerve-coupled-evaluating.trycloudflare.com"
 ]
 
