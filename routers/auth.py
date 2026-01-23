@@ -2,6 +2,7 @@ import logging
 import os
 import httpx
 import base64
+import secrets
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -11,13 +12,13 @@ from cruds import user
 from database import get_db
 from models import SecurityLevel, User, UserRole
 from cruds.user import get_user_by_email
-from utils.security import verify_password, create_access_token, get_password_hash, SECURE_COOKIE
+from utils.security import create_refresh_token, verify_password, create_access_token, get_password_hash, SECURE_COOKIE
 
 from schemas.auth import LoginRequest, LoginResponse, RegisterRequest, UserMeResponse, UserInfo
 from schemas.base import BaseResponse
 from jose import JWTError, jwt
 from schemas.auth import RefreshTokenRequest
-from utils.security import SECRET_KEY, ALGORITHM, get_current_user
+from utils.security import SECRET_KEY, ALGORITHM, get_current_user, decode_token
 
 # Thiết lập log để debug
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +35,8 @@ CLIENT_ID = os.getenv("MS_CLIENT_ID")
 CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 TENANT_ID = os.getenv("MS_TENANT_ID", "common")
 REDIRECT_URI = os.getenv("MS_REDIRECT_URI")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://10.11.1.58:3000")
+IS_PROD = os.getenv("ENV") == "production"
 
 # URL của Microsoft
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
@@ -366,108 +369,167 @@ async def get_ms_user_photo(access_token: str) -> str:
             return None # type: ignore
 # 1. API tạo đường dẫn để Frontend nhấn vào "Login with Microsoft"
 @router.get("/microsoft/login")
-def get_microsoft_auth_url():
-    # Sửa lỗi: scope phải cách nhau bằng dấu cách
-    # Thêm openid và profile để lấy đầy đủ thông tin định danh
-    scopes = ["User.Read", "profile", "openid"]
-    scope_param = " ".join(scopes)
+def login_microsoft(request: Request, remember: bool = True):
+    # 1. Tạo State ngẫu nhiên để chống CSRF
+    state = secrets.token_urlsafe(32)
     
-    params = (
-        f"client_id={CLIENT_ID}"
-        f"&response_type=code"
-        f"&redirect_uri={REDIRECT_URI}"
-        f"&response_mode=query"
-        f"&scope={scope_param}"
+    # 2. Scope yêu cầu
+    scopes = ["User.Read", "profile", "openid", "email"]
+    
+    # 3. Tạo URL Authorization của Microsoft
+    params = {
+        "client_id": CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": REDIRECT_URI,
+        "response_mode": "query",
+        "scope": " ".join(scopes),
+        "state": state,
+    }
+    
+    url_params = "&".join([f"{k}={v}" for k, v in params.items()])
+    auth_url = f"{AUTH_URL}?{url_params}"
+    
+    # 4. Redirect user và lưu state vào cookie tạm (5 phút)
+    response = RedirectResponse(url=auth_url)
+    
+    response.set_cookie(
+        key="oauth_state",
+        value=state,
+        httponly=True,
+        secure=IS_PROD,
+        samesite="lax",
+        max_age=300 # 5 phút
     )
-    return {"url": f"{AUTH_URL}?{params}"}
+    
+    # Lưu trạng thái 'remember' vào cookie tạm để dùng ở bước callback
+    response.set_cookie(
+        key="oauth_remember",
+        value=str(remember).lower(),
+        httponly=True,
+        secure=IS_PROD,
+        samesite="lax",
+        max_age=300
+    )
+
+    return response
 
 @router.get("/microsoft/callback")
-async def microsoft_callback(code: str, db: Session = Depends(get_db)):
-    # 1. Đổi code lấy Access Token
+async def microsoft_callback(
+    request: Request, 
+    code: str, 
+    state: str, 
+    db: Session = Depends(get_db)
+):
+    # --- BƯỚC 1: VERIFY STATE (BẢO MẬT) ---
+    cookie_state = request.cookies.get("oauth_state")
+    remember_cookie = request.cookies.get("oauth_remember")
+    
+    if not cookie_state or cookie_state != state:
+        return RedirectResponse(f"{FRONTEND_URL}/auth/callback?error=InvalidState")
+
+    # Xác định thời gian hết hạn cookie dựa trên 'remember'
+    remember = remember_cookie == 'true'
+    refresh_max_age = REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60 if remember else 24 * 60 * 60
+
+    # --- BƯỚC 2: TRAO ĐỔI CODE LẤY TOKEN MICROSOFT ---
     async with httpx.AsyncClient() as client:
         token_data = {
             "client_id": CLIENT_ID,
-            "scope": "User.Read profile openid",
+            "client_secret": CLIENT_SECRET,
             "code": code,
             "redirect_uri": REDIRECT_URI,
             "grant_type": "authorization_code",
-            "client_secret": CLIENT_SECRET,
         }
+        
         token_res = await client.post(TOKEN_URL, data=token_data)
         ms_tokens = token_res.json()
         
         if "error" in ms_tokens:
-            raise HTTPException(status_code=400, detail=ms_tokens.get("error_description"))
+             return RedirectResponse(f"{FRONTEND_URL}/auth/callback?error={ms_tokens.get('error_description')}")
 
         ms_access_token = ms_tokens["access_token"]
 
-        # 2. Lấy thông tin User & Ảnh
+        # --- BƯỚC 3: LẤY THÔNG TIN USER TỪ GRAPH API ---
         headers = {'Authorization': f'Bearer {ms_access_token}'}
         user_res = await client.get(USER_INFO_URL, headers=headers)
         ms_user = user_res.json()
-        avatar_base64 = await get_ms_user_photo(ms_access_token)
+        
+        # (Optional) Hàm lấy avatar riêng
+        # avatar_base64 = await get_ms_user_photo(ms_access_token) 
 
-    # 3. Trích xuất và Map thông tin
+    # --- BƯỚC 4: TÌM HOẶC TẠO USER TRONG DB ---
     email = ms_user.get("mail") or ms_user.get("userPrincipalName")
     full_name = ms_user.get("displayName")
-    ms_job_title = ms_user.get("jobTitle") or "Nhân viên"
+    ms_job_title = ms_user.get("jobTitle") or "Staff"
     
-    # Thực hiện MAP sang hệ thống Role của mình
-    assigned_role = map_ms_job_to_role(ms_job_title)
+    # Map role (Ví dụ)
+    assigned_role = UserRole.ADMIN if "Admin" in ms_job_title else UserRole.ENGINEER
 
-    # 4. Xử lý Database
     user_obj = db.query(User).filter(User.email == email).first()
 
     if not user_obj:
-        # Tạo mới: Job Title giữ nguyên tiếng Việt, Role lưu Enum
         user_obj = User(
             email=email,
             full_name=full_name,
-            job_title=ms_job_title,    # Lưu: "Nhân viên" hoặc "Quản trị viên"
-            role=assigned_role,        # Lưu: UserRole.ENGINEER hoặc UserRole.ADMIN
-            avatar_url=avatar_base64,
+            job_title=ms_job_title,
+            role=assigned_role,
             auth_provider="microsoft",
             security_clearance=SecurityLevel.PUBLIC,
-            status=True
+            status=True,
+            # avatar_url=avatar_base64
         )
         db.add(user_obj)
+        db.commit()
+        db.refresh(user_obj)
     else:
-        # Cập nhật thông tin mới nhất khi login lại
+        # Update thông tin nếu cần
         user_obj.full_name = full_name
-        user_obj.job_title = ms_job_title
-        user_obj.role = assigned_role 
-        if avatar_base64:
-            user_obj.avatar_url = avatar_base64
-    
-    db.commit()
-    db.refresh(user_obj)
+        db.commit()
 
-    # --- [BƯỚC 5: TẠO TOKEN NỘI BỘ] ---
-    internal_token = create_access_token(
-        data={
-            "sub": user_obj.email, 
-            "user_id": user_obj.user_id, 
-            "role": user_obj.role.value
-        }
+    # --- BƯỚC 5: TẠO ACCESS TOKEN & REFRESH TOKEN ---
+    # Access Token (Ngắn hạn - 1h)
+    access_token = create_access_token(
+        data={"sub": user_obj.email, "id": user_obj.user_id, "role": user_obj.role.value},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    
+    # Refresh Token (Dài hạn - 30 ngày)
+    refresh_token = create_refresh_token(
+        data={"sub": user_obj.email, "id": user_obj.user_id, "type": "refresh"},
+        expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     )
 
-    # --- [BƯỚC 6: TẠO REDIRECT VÀ SET COOKIE] ---
+    # --- BƯỚC 6: REDIRECT VỀ FRONTEND VÀ SET COOKIES ---
     
-    # 1. Đích đến mong muốn của Frontend (trang chủ hoặc dashboard)
-    frontend_dashboard_url = "http://10.10.0.158:3000/dashboard"
-    
-    # 2. Khởi tạo đối tượng RedirectResponse (Mã 302)
-    response = RedirectResponse(url=frontend_dashboard_url)
+    # Redirect về trang xử lý của Frontend (theo hướng dẫn)
+    # Frontend sẽ tự gọi /auth/me để lấy user info sau khi thấy state=success
+    frontend_callback = f"{FRONTEND_URL}/auth/callback?state=success"
+    response = RedirectResponse(url=frontend_callback)
 
-    # 3. Gói token vào Cookie
+    # 1. Set Access Token Cookie
     response.set_cookie(
-        key="access_token",        # Tên cookie phải khớp với bên xử lý Auth
-        value=internal_token,      # Giá trị token JWT
-        httponly=True,             # JavaScript không thể đọc được (Chống XSS)
-        secure=False,              # Để False nếu đang chạy HTTP (localhost), True nếu chạy HTTPS
-        samesite="lax",            # Giúp cookie gửi được khi chuyển hướng từ Microsoft về
-        max_age=3600 * 24,          # Thời hạn 1 ngày (tùy chỉnh)
-        path="/"     # Đảm bảo cookie có hiệu lực trên toàn bộ trang web
+        key="access_token",
+        value=access_token, # Không cần prefix "Bearer " trong cookie value
+        httponly=True,      # JS không đọc được
+        secure=IS_PROD,     # True nếu HTTPS
+        samesite="lax",
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/"
+    )
+
+    # 2. Set Refresh Token Cookie
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=IS_PROD,
+        samesite="lax",
+        max_age=refresh_max_age, # Dựa vào remember me
+        path="/"
     )
     
+    # 3. Xóa cookie state tạm
+    response.delete_cookie("oauth_state")
+    response.delete_cookie("oauth_remember")
+
     return response

@@ -85,6 +85,11 @@ async def get_current_user(
 
     if not token:
         raise credentials_exception
+    
+    # --- [QUAN TRỌNG] Xử lý tiền tố Bearer ---
+    # Cookie có thể chứa "Bearer eyJ...", cần lọc bỏ
+    if token.startswith("Bearer "):
+        token = token.split(" ")[1]
 
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -103,3 +108,33 @@ async def get_current_user(
         raise HTTPException(status_code=403, detail="Tài khoản đã bị khóa")
         
     return user
+
+# --- BỔ SUNG 1: HÀM TẠO REFRESH TOKEN ---
+def create_refresh_token(data: dict, expires_delta: Union[timedelta, None] = None) -> str:
+    """Tạo Refresh Token (thời hạn dài hơn Access Token)"""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        # Mặc định 7 ngày hoặc 30 ngày tùy config
+        expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    
+    to_encode.update({"exp": expire, "type": "refresh"}) # Thêm type để phân biệt
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+# --- BỔ SUNG 2: HÀM DECODE TOKEN (Dùng cho Refresh Flow) ---
+def decode_token(token: str) -> dict:
+    """
+    Giải mã token mà không check DB. Dùng để verify refresh token.
+    Ném lỗi nếu token hết hạn hoặc không hợp lệ.
+    """
+    try:
+        # Xử lý nếu token có prefix "Bearer "
+        if token.startswith("Bearer "):
+            token = token.split(" ")[1]
+            
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None #type: ignore
