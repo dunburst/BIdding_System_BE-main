@@ -68,6 +68,29 @@ def update_user(user_id: int, user_in: schemas.UserUpdate, db: Session = Depends
         raise HTTPException(status_code=404, detail="User not found")
     return db_user
 
+@router.patch("/{user_id}/status", response_model=schemas.UserResponse)
+def update_status(
+    user_id: int, 
+    status_data: schemas.UserStatusUpdate, 
+    db: Session = Depends(get_db)
+    # current_user = Depends(get_current_user) # Bỏ comment nếu muốn yêu cầu phải có token mới được đổi
+):
+    """
+    API Cập nhật trạng thái của người dùng (Khóa/Mở khóa tài khoản)
+    """
+    # Gọi hàm CRUD
+    updated_user = crud_user.update_user_status(db=db, user_id=user_id, status=status_data.status)
+    
+    # Bắt lỗi nếu user không tồn tại
+    if not updated_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy người dùng với ID {user_id}"
+        )
+        
+    # Trả về format BaseResponse chuẩn của hệ thống
+    return updated_user
+
 # 5. [ĐÃ CHỈNH SỬA] Upload Avatar vào bucket FILES, thư mục AVATARS
 @router.post("/me/avatar", response_model=schemas.UserResponse)
 def upload_my_avatar(

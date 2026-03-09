@@ -92,7 +92,7 @@ def delete_user_soft(db: Session, user_id: int):
     # 2. Vô hiệu hóa tài khoản
     db_user.status = False  # Giả sử bạn có cột status hoặc is_active
     # (Tùy chọn) Đổi password hoặc token để force logout ngay lập tức
-    db_user.hashed_password = "DELETED_USER" 
+    db_user.hashed_password = "$2b$12$.nk6.RmZXQkTaTk7Li6GieNj5pPFCEvB0AtnhmRWXqD6Iq0DACvVu" 
 
     # 3. Gỡ bỏ trách nhiệm ở các Task ĐANG CHẠY (Task cũ đã xong thì kệ)
     # 3.1 Gỡ khỏi vị trí Assignee -> Task trở thành OPEN (Vô chủ) để sếp giao người khác

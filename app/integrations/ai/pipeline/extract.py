@@ -96,7 +96,7 @@ def extract_bid_info(full_context_text: str) -> BiddingData:
     # Cấu hình Model
     # Dùng gemini-2.5-flash hoặc gemini-2.5-pro (nếu bạn có quyền truy cập)
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-pro", 
+        model="gemini-2.5-flash", 
         temperature=0, # Temperature = 0 để đảm bảo tính nhất quán, không sáng tạo
         google_api_key=api_key,
         convert_system_message_to_human=True

@@ -180,6 +180,64 @@ def get_packages(
         message="Lấy danh sách gói thầu thành công",
         data=pagination_data
     )
+
+@router.get("/status/pending-review", response_model=BaseResponse[schemas.BiddingPackagePagination])
+def get_pending_review_packages(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1),
+    search: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    API lấy danh sách các gói thầu đang ở trạng thái CHỜ DUYỆT (PENDING_REVIEW)
+    """
+    # --- [THÊM MỚI] CHECK QUYỀN ABAC ---
+    is_allowed = check_permission(
+        db=db, 
+        user=current_user, 
+        resource="bidding_packages", 
+        action=AbacAction.LIST_PENDING
+    )
+
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Chỉ Lãnh đạo mới có quyền xem danh sách chờ duyệt."
+        )
+    # -----------------------------------
+    # Gọi hàm CRUD dùng chung, ép cứng status = PENDING_REVIEW
+    packages, total_count = crud_bidding.get_packages(
+        db=db, 
+        skip=skip, 
+        limit=limit, 
+        search_query=search, 
+        status=PackageStatus.PENDING_REVIEW # Truyền cứng trạng thái cần lọc
+    )
+    
+    results = []
+    for pkg in packages:
+        pkg_response = schemas.BiddingPackageResponse.model_validate(pkg)
+        pkg_response.allowed_actions = get_allowed_actions(db, current_user, pkg)
+        results.append(pkg_response)
+        
+    current_page = (skip // limit) + 1
+    total_pages = ceil(total_count / limit) if limit > 0 else 0
+    
+    pagination_data = schemas.BiddingPackagePagination(
+        items=results,
+        total=total_count,
+        page=current_page,
+        size=limit,
+        pages=total_pages
+    )
+    
+    return BaseResponse(
+        success=True,
+        status=200,
+        message="Lấy danh sách gói thầu chờ duyệt thành công",
+        data=pagination_data
+    )
 # ==========================================
 # 3. LẤY CHI TIẾT (GET DETAIL)
 # ==========================================
@@ -338,6 +396,72 @@ def get_package_files(
         message="Lấy danh sách file thành công",
         data=files
     )
+
+@router.put("/{hsmt_id}/submit-review", response_model=BaseResponse[schemas.BiddingPackageResponse])
+def submit_package_for_review(
+    hsmt_id: int,
+    req: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    API Trình lãnh đạo: Chuyển gói thầu từ NEW/INTERESTED sang PENDING_REVIEW (Chờ duyệt)
+    """
+    # 1. Lấy gói thầu
+    package = crud_bidding.get_package(db, hsmt_id=hsmt_id)
+    if not package:
+        raise HTTPException(status_code=404, detail="Không tìm thấy gói thầu")
+        
+    old_status = package.trang_thai.value
+
+    # 2. Validate trạng thái (Chỉ được trình duyệt khi đang ở NEW hoặc INTERESTED)
+    if package.trang_thai not in [PackageStatus.NEW, PackageStatus.INTERESTED]:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Không thể trình duyệt. Gói thầu đang ở trạng thái '{package.trang_thai.value}'"
+        )
+        
+    # Policy SQL: Chỉ MANAGER mới có quyền này. BID_MANAGER sẽ bị chặn.
+    is_allowed = check_permission(
+        db=db, 
+        user=current_user, 
+        resource=package, 
+        action=AbacAction.SUBMIT_REVIEW
+    )
+
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Chỉ trưởng thầu mới có quyền trình gói thầu."
+        )
+
+    # 3. Cập nhật trạng thái
+    package.trang_thai = PackageStatus.PENDING_REVIEW
+    db.commit()
+    db.refresh(package)
+    
+    # 4. Ghi Audit Log
+    create_audit_log(
+        db=db,
+        user=current_user,
+        action="SUBMIT_REVIEW", 
+        entity_table=BiddingPackage.__tablename__,
+        entity_id=hsmt_id,
+        old_value={"status": old_status},
+        new_value={"status": package.trang_thai.value},
+        ip_address=get_client_ip(req)
+    )
+
+    # 5. Build Response
+    pkg_response = schemas.BiddingPackageResponse.model_validate(package)
+    pkg_response.allowed_actions = get_allowed_actions(db, current_user, package)
+
+    return BaseResponse(
+        success=True,
+        status=200,
+        message="Đã trình lãnh đạo thành công",
+        data=pkg_response
+    )
     
 # ==========================================
 # 7. PHÊ DUYỆT / TỪ CHỐI DỰ THẦU (GO / NO-GO)
@@ -374,14 +498,14 @@ def make_bid_decision(
             detail="Chỉ Lãnh đạo (Giám đốc) mới có quyền phê duyệt/từ chối."
         )
     
-    allowed_statuses = [PackageStatus.NEW, PackageStatus.INTERESTED]
+    allowed_statuses = [PackageStatus.NEW, PackageStatus.INTERESTED, PackageStatus.PENDING_REVIEW]
 
     # 2. KIỂM TRA LOGIC NGHIỆP VỤ (State Transition)
     # Chỉ được duyệt khi đang ở trạng thái 'INTERESTED'
     if package.trang_thai not in allowed_statuses:
         raise HTTPException(
             status_code=400, 
-            detail=f"Không thể duyệt. Gói thầu đang ở trạng thái '{package.trang_thai.value}', yêu cầu phải là 'NEW' hoặc 'INTERESTED'."
+            detail=f"Không thể duyệt. Gói thầu đang ở trạng thái '{package.trang_thai.value}', yêu cầu phải là 'NEW' hoặc 'INTERESTED' hoặc 'PENDING_REVIEW'."
         )
 
     # 3. CHECK QUYỀN ABAC (Action: APPROVE)

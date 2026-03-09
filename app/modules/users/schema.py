@@ -80,3 +80,7 @@ class UserResponse(UserBase):
         ):
             return self.org_unit.parent.unit_name
         return None
+
+# Thêm class này vào file schema.py
+class UserStatusUpdate(BaseModel):
+    status: bool

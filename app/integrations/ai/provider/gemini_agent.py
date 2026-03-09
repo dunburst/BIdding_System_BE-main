@@ -1,5 +1,7 @@
 import os
-import google.generativeai as genai
+# import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 from app.integrations.google.mcp_drive.service import drive_service
 
@@ -16,7 +18,8 @@ class GeminiAgent:
             self.chat_session = None
             return
 
-        genai.configure(api_key=api_key)
+        # Khởi tạo Client mới thay cho genai.configure()
+        self.client = genai.Client(api_key=api_key)
 
         # 2. Định nghĩa Tools (Các hàm AI được phép gọi)
         self.tools = [
@@ -27,8 +30,7 @@ class GeminiAgent:
         ]
 
         # 3. Khởi tạo Model với Tools
-        self.model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash', # Dùng bản Flash mới nhất để gọi tool nhanh
+        config = types.GenerateContentConfig(
             tools=self.tools,
             system_instruction="""
             Bạn là Trợ lý Ảo quản lý Hệ thống Đấu thầu (Bidding AI).
@@ -44,7 +46,10 @@ class GeminiAgent:
         
         # 4. Khởi tạo Chat Session (để nhớ ngữ cảnh hội thoại)
         # enable_automatic_function_calling=True giúp AI tự chạy hàm Python và lấy kết quả trả về
-        self.chat_session = self.model.start_chat(enable_automatic_function_calling=True)
+        self.chat_session = self.client.chats.create(
+            model='gemini-2.5-flash',
+            config=config
+        )
 
     # --- PUBLIC METHOD ĐỂ GỌI TỪ BÊN NGOÀI ---
     def chat(self, prompt: str) -> str:
@@ -58,7 +63,7 @@ class GeminiAgent:
         try:
             # Gửi tin nhắn -> AI tự gọi tool (nếu cần) -> Trả về text cuối cùng
             response = self.chat_session.send_message(prompt)
-            return response.text
+            return response.text or "Hệ thống AI không trả về phản hồi (có thể do vi phạm chính sách an toàn nội dung)."
         except Exception as e:
             print(f"❌ Lỗi gọi Gemini: {e}")
             return f"Đã xảy ra lỗi khi xử lý yêu cầu: {str(e)}"

@@ -15,6 +15,7 @@ class PackageStatus(str, enum.Enum):
     BIDDING = "BIDDING" # Dự thầu
     SUBMITTED = "SUBMITTED" # Đã nộp
     CLOSED = "CLOSED"
+    PENDING_REVIEW = "PENDING_REVIEW" # <--- THÊM MỚI: Chờ duyệt
 
 class UnitType(str, enum.Enum):
     GROUP = "GROUP"           # Tập đoàn
@@ -98,3 +99,5 @@ class AbacAction(str, enum.Enum):
     APPROVE = "APPROVE"     # Phê duyệt (Action đặc biệt)
     REJECT = "REJECT"       # Từ chối
     ASSIGN = "ASSIGN"       # Giao việc
+    SUBMIT_REVIEW = "SUBMIT_REVIEW" # Trình lãnh đạo
+    LIST_PENDING = "LIST_PENDING"  # Danh sách trình duyệt

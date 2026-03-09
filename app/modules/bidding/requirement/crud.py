@@ -7,9 +7,11 @@ import app.modules.bidding.requirement.schema as schemas
 from decimal import Decimal
 from app.modules.bidding.requirement import crud
 import os
-import google.generativeai as genai
+# import google.generativeai as genai
 import json
 from fastapi import HTTPException
+from google import genai
+from google.genai import types
 
 # --- 1. FINANCIAL (1-1) ---
 def get_financial_req_by_hsmt(db: Session, hsmt_id: int) -> Optional[BiddingReqFinancialAdmin]:
@@ -46,7 +48,7 @@ def get_bidding_package_by_id(db: Session, hsmt_id: int) -> Optional[BiddingPack
 
 # Cấu hình API Key cho Gemini (Nên lấy từ file .env)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "ĐIỀN_API_KEY_CỦA_BẠN_VÀO_ĐÂY")
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 # ==========================================================
 # 1. DỮ LIỆU FIX CỨNG (MOCK DATA) NĂNG LỰC CỦA CÔNG TY
 # Sau này sẽ thay thế bằng việc query từ bảng CompanyProfile
@@ -158,17 +160,20 @@ def perform_health_check(db: Session, hsmt_id: int) -> schemas.HealthCheckRespon
 
     # 4. GỌI GEMINI API VỚI JSON MODE
     try:
-        # Sử dụng model gemini-1.5-flash vì nó nhanh và hỗ trợ JSON mode rất tốt
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        
-        # Ép AI trả về JSON chuẩn
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json"
-            )
+        # Cấu hình JSON mode thông qua google.genai.types
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.2 # Thêm temperature thấp để output JSON ổn định hơn (tuỳ chọn)
         )
         
+        # Gọi trực tiếp hàm generate_content từ client
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=config
+        )
+        if not response.text:
+            raise HTTPException(status_code=500, detail="AI không trả về kết quả (có thể do lỗi nội dung hoặc bộ lọc an toàn).")
         # 5. PARSE KẾT QUẢ VÀ TRẢ VỀ THEO SCHEMA
         result_json = json.loads(response.text)
         return schemas.HealthCheckResponse(**result_json)

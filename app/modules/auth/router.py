@@ -540,7 +540,13 @@ async def microsoft_callback(
         # Cập nhật thông tin mới nhất từ Microsoft
         user_obj.full_name = full_name
         user_obj.job_title = ms_job_title
-        user_obj.avatar_url = avatar_base64 # Update avatar nếu cần
+        # [CẬP NHẬT] Logic giữ lại avatar người dùng tự thay
+        # Nếu avatar_url chứa "avatars/" -> Đây là ảnh tự upload lên hệ thống MinIO.
+        # Chỉ cập nhật ảnh mới từ Microsoft nếu người dùng CHƯA từng tự đổi ảnh.
+        is_custom_avatar = user_obj.avatar_url and "avatars/" in user_obj.avatar_url
+        
+        if not is_custom_avatar and avatar_base64:
+            user_obj.avatar_url = avatar_base64
         db.commit()
 
     # --- BƯỚC 5: TẠO TOKEN ---
