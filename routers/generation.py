@@ -6,6 +6,9 @@ import shutil
 import os
 import uuid
 import io
+import logging
+logging.basicConfig(level=logging.INFO) 
+logger = logging.getLogger(__name__) # <--- THÊM DÒNG NÀY
 from database import get_db, engine, Base
 from models import DocumentRegistry
 from sqlalchemy.orm import Session
@@ -659,7 +662,7 @@ async def draft_full_proposal(
             thread_id=thread_id,
             project_name=req.project_name,
             reference_doc=req.reference_file,
-            user_feedback_outline=req.approved_outline
+            user_feedback_outline=req.approved_outline or []
         )
         
         return {

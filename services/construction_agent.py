@@ -1,15 +1,26 @@
 import operator
+import os
+import re
 from typing import Annotated, List, TypedDict, Optional, Dict, Any
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver 
-from langchain_openai import ChatOpenAI
+# --- THAY ĐỔI: Import Google ---
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
+from langchain_core.runnables import RunnableConfig
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 
 # Import các service
 from services.retrieval_service import RetrievalService
 from services.chroma_service import ChromaService
 from services.visual_retrieval_service import VisualRetrievalService
+
+# --- CẤU HÌNH API KEY ---
+google_key = os.getenv("GEMINI_API_KEY")
+if not google_key:
+    raise ValueError("❌ Google API Key not found! Vui lòng set biến môi trường GEMINI_API_KEY.")
 
 # --- 1. ĐỊNH NGHĨA STATE & SCHEMA ---
 
@@ -47,10 +58,25 @@ class ConstructionDraftingAgent:
     def __init__(self, retrieval_service: RetrievalService, visual_service: VisualRetrievalService):
         self.retriever = retrieval_service
         self.visual_retriever = visual_service
-        self.llm = ChatOpenAI(model="gpt-4o", temperature=0)
         
-        self.planner_llm = self.llm.with_structured_output(ProposalOutline)
-        self.reviewer_llm = self.llm.with_structured_output(ReviewFeedback)
+        # --- THAY ĐỔI: Cấu hình Gemini ---
+        self.llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            temperature=0,
+            google_api_key=google_key,
+            max_retries=2,
+            # Tắt bộ lọc an toàn để tránh block nội dung xây dựng
+            safety_settings={
+                "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
+                "HARM_CATEGORY_HATE_SPEECH": "BLOCK_NONE",
+                "HARM_CATEGORY_SEXUALLY_EXPLICIT": "BLOCK_NONE",
+                "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE",
+            }
+        )
+        
+        # Sử dụng Parser để xử lý JSON output (Ổn định hơn native tool calling)
+        self.outline_parser = JsonOutputParser(pydantic_object=ProposalOutline)
+        self.review_parser = JsonOutputParser(pydantic_object=ReviewFeedback)
 
         self.memory = global_memory 
         self.app = self._build_graph()
@@ -84,33 +110,121 @@ class ConstructionDraftingAgent:
     # --- 3. LOGIC CÁC NODE ---
 
     def planner_node(self, state: AgentState):
-        """Bước 1: Lập dàn ý"""
+        """Bước 1: Lập dàn ý dựa trên thứ tự thực tế của tài liệu và Regex chuẩn"""
         print(f"🏗️ [Planner] Đang lập dàn ý: {state['project_name']}...")
         
-        sample_filter = {"source": state['reference_doc_name']} if state['reference_doc_name'] else None
-        context_str = ""
-        if state['reference_doc_name']:
+        detected_headers = []
+        full_context_str = ""
+
+        if state.get('reference_doc_name'):
+            print(f"   --> Quét cấu trúc từ: {state['reference_doc_name']}")
             try:
-                # Tìm mục lục từ kho mẫu (bidding_docs)
-                sample_docs = self.retriever.search("Mục lục danh sách chương", "bidding_docs", 5, filters=sample_filter)
-                context_str = "\n".join([doc['content'] for doc in sample_docs])
-            except: pass
+                # 1. Tăng top_k để lấy nhiều mảnh ghép hơn
+                sample_filter = {"source": state['reference_doc_name']}
+                sample_docs = self.retriever.search(
+                    query="Chương mục quy định biện pháp thi công", 
+                    collection_name="bidding_docs", 
+                    top_k=600,  # Lấy rộng để bao phủ đủ các chương
+                    filters=sample_filter
+                )
+                
+                # --- LOGIC MỚI: SẮP XẾP THEO CHUNK ID ---
+                # Chunk ID của Docling/Langchain thường có dạng "filename_0", "filename_1"
+                # Sắp xếp theo cái đuôi số này sẽ ra đúng thứ tự Mục lục gốc của sách/file
+                def get_chunk_index(doc):
+                    try:
+                        # Giả sử ID là "fc6f9..._0". Lấy số cuối cùng.
+                        # Nếu ID object không có thuộc tính id, thử lấy từ metadata
+                        doc_id = getattr(doc, 'id', "") or doc.get('metadata', {}).get('id', "") or ""
+                        if "_" in str(doc_id):
+                            return int(str(doc_id).split("_")[-1])
+                    except:
+                        pass
+                    return 0
+                
+                # Sắp xếp docs theo thứ tự trang/chunk
+                sorted_docs = sorted(sample_docs, key=get_chunk_index)
 
-        prompt = f"""
-        Lập Dàn ý Biện pháp thi công cho dự án: "{state['project_name']}".
-        THAM KHẢO CẤU TRÚC MẪU:
-        {context_str}
-        
-        NHIỆM VỤ:
-        1. Tạo danh sách các mục chính.
-        2. Sinh 'search_query' dùng để tìm cả Text (TCVN) và Ảnh (Bản vẽ).
-        """
+                seen_headers = set()
+                
+                # Regex bắt buộc: Phải bắt đầu bằng (Chương/Phần) hoặc (Số La Mã + chấm) hoặc (Số thường + chấm)
+                # Ví dụ hợp lệ: "Chương 1", "I. Giới thiệu", "1.1. Tổng quan", "4. An toàn"
+                valid_pattern = re.compile(r'^(?:chương|phần|mục|[ivx]+\.|\d+(?:\.\d+)*[\.\s])', re.IGNORECASE)
+
+                for doc in sorted_docs:
+                    metadata = doc.get('metadata', {})
+                    # Ưu tiên lấy Header từ metadata
+                    header_val = metadata.get('Header 2') or metadata.get('header_2') or metadata.get('Header 1')
+                    
+                    if header_val and isinstance(header_val, str):
+                        clean = header_val.strip()
+                        # Chỉ lấy nếu khớp Regex và chưa trùng
+                        if valid_pattern.match(clean) and clean not in seen_headers:
+                            seen_headers.add(clean)
+                            detected_headers.append(clean) # Append theo thứ tự sorted_docs
+                
+                if detected_headers:
+                    print(f"   --> Đã tìm thấy {len(detected_headers)} header theo đúng thứ tự tài liệu.")
+                    
+            except Exception as e:
+                print(f"⚠️ Lỗi trích xuất Header: {e}")
+
+        # 2. Tạo Prompt ép buộc phân cấp
+        if detected_headers:
+            structure_input = "DANH SÁCH MỤC LỤC TÌM THẤY (Đã sắp xếp theo thứ tự trang):\n" + "\n".join([f"- {h}" for h in detected_headers])
+        else:
+            structure_input = f"NỘI DUNG THAM KHẢO:\n{full_context_str}"
+
+        # Prompt được tinh chỉnh để hiểu luật "Mẹ bồng Con"
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """Bạn là Kỹ sư trưởng lập kế hoạch hồ sơ thầu.
+            Nhiệm vụ: Sắp xếp lại danh sách các đầu mục thành một Dàn ý phân cấp logic.
+            
+            QUY TẮC PHÂN CẤP QUAN TRỌNG:
+            1. Cấp to nhất: "CHƯƠNG" hoặc "PHẦN".
+            2. Cấp 2: Số La Mã (I., II., III....). -> Nằm trong Chương.
+            3. Cấp 3: Số tự nhiên (1., 2., 3....). -> Nằm trong La Mã.
+            4. Cấp 4: Số thập phân (1.1, 1.2...). -> Nằm trong Số tự nhiên.
+            
+            Ví dụ đúng:
+            - CHƯƠNG I: TỔNG QUAN
+              - I. CĂN CỨ PHÁP LÝ
+                 - 1. Tiêu chuẩn áp dụng
+                 - 2. Quy chuẩn
+              - II. GIỚI THIỆU DỰ ÁN
+                 - 1. Vị trí
+                    - 1.1. Địa hình
+            
+            HÃY TRẢ VỀ JSON:
+            {format_instructions}
+            """),
+            ("human", """Dự án: "{project_name}"
+            
+            {structure_input}
+            
+            YÊU CẦU:
+            1. Giữ nguyên nội dung text của header tìm thấy, chỉ sắp xếp lại vị trí cho đúng luồng thi công.
+            2. Loại bỏ các mục không liên quan (như Lời cảm ơn, Mục lục...).
+            3. Tạo 'search_query' thông minh cho từng mục.
+            """)
+        ]).partial(format_instructions=self.outline_parser.get_format_instructions())
+
+        # 3. Gọi LLM
         try:
-            res = self.planner_llm.invoke(prompt)
-            sections = res.sections 
-        except:
-            sections = [Section(id=1, title="Giới thiệu", search_query="Tổng quan dự án")]
+            chain = prompt | self.llm | self.outline_parser
+            res = chain.invoke({
+                "project_name": state['project_name'],
+                "structure_input": structure_input
+            })
+            
+            raw_sections = res.get('sections', [])
+            sections = [Section(**s) for s in raw_sections]
+            
+        except Exception as e:
+            print(f"⚠️ Lỗi Planner LLM: {e}")
+            sections = [] # Handle fallback here if needed
 
+        print(f"✅ Đã lập {len(sections)} mục.")
         return {
             "outline": sections,
             "current_section_idx": 0,
@@ -120,7 +234,7 @@ class ConstructionDraftingAgent:
         }
 
     def writer_node(self, state: AgentState):
-        """Bước 2: Viết nội dung (Multimodal: Text + Vision)"""
+        """Bước 2: Viết nội dung (Gemini Multimodal)"""
         idx = state['current_section_idx']
         if idx >= len(state['outline']): return {"current_section_idx": idx}
 
@@ -128,84 +242,69 @@ class ConstructionDraftingAgent:
         feedback = state.get('current_feedback', "")
         
         if feedback:
-            print(f"✍️ [Writer] Đang SỬA LẠI mục: {current_section.title} (Lần {state['revision_count']})")
+            print(f"✍️ [Writer] SỬA LẠI: {current_section.title} (Lần {state['revision_count']})")
         else:
-            print(f"✍️ [Writer] Viết mới mục: {current_section.title}")
+            print(f"✍️ [Writer] Viết mới: {current_section.title}")
 
-        # --- LOGIC TÌM KIẾM KÉP (QUAN TRỌNG) ---
-        
-        # 1. Tìm trong HSMT (Bắt buộc phải lọc theo đúng Project Name)
+        # --- LOGIC TÌM KIẾM ---
         project_filter = {"project_name": state['project_name']}
+        req_docs = self.retriever.search(current_section.search_query, "current_requirements", top_k=4, filters=project_filter)
+        template_docs = self.retriever.search(current_section.search_query, "bidding_docs", top_k=2)
         
-        req_docs = self.retriever.search(
-            query=current_section.search_query,
-            collection_name="current_requirements", # Tìm trong yêu cầu
-            top_k=4,
-            filters=project_filter # <--- LỌC CHÍNH XÁC DỰ ÁN
-        )
-        
-        # 2. Tìm trong Mẫu (Bidding Docs) - Không cần lọc project, để lấy kiến thức chung
-        template_docs = self.retriever.search(
-            query=current_section.search_query,
-            collection_name="bidding_docs", # Tìm trong kho mẫu
-            top_k=2
-        )
-        
-        # Gộp context lại
         context_parts = []
         if req_docs:
-            context_parts.append("=== YÊU CẦU TỪ HỒ SƠ MỜI THẦU (QUAN TRỌNG NHẤT) ===")
+            context_parts.append("=== YÊU CẦU CỤ THỂ ===")
             context_parts.extend([f"- {r['content']}" for r in req_docs])
-            
         if template_docs:
-            context_parts.append("=== THAM KHẢO BIỆN PHÁP MẪU ===")
+            context_parts.append("=== BIỆN PHÁP MẪU ===")
             context_parts.extend([f"- {r['content']}" for r in template_docs])
             
         text_context = "\n\n".join(context_parts)
 
-        # 3. Tìm Hình ảnh (LitePali)
-        # (LitePali hiện tại tìm chung trong index, LLM sẽ tự lọc ngữ cảnh qua hình ảnh)
+        # 3. Tìm Ảnh (Gemini xem được ảnh!)
         visual_docs = self.visual_retriever.search_visuals(current_section.search_query, top_k=2)
 
-        # Cấu trúc Message
+        # Cấu trúc Message cho Gemini
         messages = []
         messages.append(SystemMessage(content=f"""
         Bạn là Kỹ sư Biện pháp thi công chuyên nghiệp.
         Dự án: "{state['project_name']}". Mục: "{current_section.title}".
         
-        DỮ LIỆU THAM KHẢO:
+        DỮ LIỆU THAM KHẢO (TEXT):
         {text_context}
         """))
 
-        user_content = [
+        user_content_blocks: List[Any] = [
             {"type": "text", "text": f"""
             Hãy viết nội dung chi tiết cho mục này.
             
             YÊU CẦU:
-            1. Ưu tiên tuân thủ các yêu cầu trong HSMT (nếu có).
-            2. Sử dụng văn phong từ tài liệu mẫu để viết cho chuyên nghiệp.
-            3. Nếu có bản vẽ/hình ảnh đính kèm, hãy mô tả phương án thi công dựa trên đó.
-            4. Trình bày Markdown chuyên nghiệp.
+            1. Ưu tiên tuân thủ các yêu cầu trong HSMT.
+            2. Sử dụng văn phong chuyên nghiệp.
+            3. Nếu có hình ảnh được cung cấp, hãy PHÂN TÍCH HÌNH ẢNH để mô tả biện pháp thi công sát thực tế.
+            4. Trình bày Markdown đẹp.
             """}
         ]
         
         if feedback:
-            user_content[0]["text"] += f"\n\n!!! CẢNH BÁO TỪ REVIEWER: Bài trước bị chê vì: '{feedback}'. HÃY SỬA LẠI."
+            user_content_blocks[0]["text"] += f"\n\n!!! REVIEWER YÊU CẦU SỬA: '{feedback}'."
 
         if visual_docs:
-            print(f"   📷 Tìm thấy {len(visual_docs)} ảnh minh họa.")
+            print(f"   📷 Gửi {len(visual_docs)} ảnh cho Gemini phân tích.")
             for doc in visual_docs:
-                user_content.append({
+                # LangChain Google Adapter tự động xử lý format này
+                user_content_blocks.append({
                     "type": "image_url",
                     "image_url": {"url": f"data:image/jpeg;base64,{doc['base64']}"}
                 })
 
-        messages.append(HumanMessage(content=user_content))
+        messages.append(HumanMessage(content=user_content_blocks))
 
-        # Invoke LLM
+        # Invoke Gemini
         msg = self.llm.invoke(messages)
-        current_section.content = msg.content
+        current_section.content = str(msg.content)
         
+        # Update list
         new_outline = list(state['outline'])
         new_outline[idx] = current_section
         
@@ -219,15 +318,30 @@ class ConstructionDraftingAgent:
         current_section = state['outline'][idx]
         print(f"🧐 [Reviewer] Đang chấm: {current_section.title}...")
 
-        criteria = """
-        1. **Tuân thủ:** Có bám sát yêu cầu kỹ thuật (nếu có trong context) không?
-        2. **Chuyên nghiệp:** Văn phong có giống hồ sơ thầu xây dựng không?
-        3. **Chi tiết:** Có đưa ra số liệu/quy trình cụ thể không? (Tránh viết chung chung).
-        """
-        prompt = f"{criteria}\n\nNỘI DUNG:\n{current_section.content}"
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """Bạn là Chuyên gia thẩm định hồ sơ thầu (QA/QC).
+            Tiêu chí chấm:
+            1. Tuân thủ yêu cầu kỹ thuật.
+            2. Văn phong chuyên nghiệp, không văn nói.
+            3. Chi tiết, có số liệu/quy trình cụ thể.
 
-        feedback: ReviewFeedback = self.reviewer_llm.invoke(prompt)
+            HÃY TRẢ VỀ JSON:
+            {format_instructions}
+            """),
+            ("human", """BÀI VIẾT CẦN THẨM ĐỊNH:
+            ---
+            {content}
+            ---
+            """)
+        ]).partial(format_instructions=self.review_parser.get_format_instructions())
 
+        chain = prompt | self.llm | self.review_parser
+        feedback_data = chain.invoke({"content": current_section.content})
+
+        # Convert Dict -> Pydantic
+        feedback = ReviewFeedback(**feedback_data)
+
+        # Logic chống lặp
         if not feedback.is_approved and state['revision_count'] >= 2:
             print(f"⚠️ [Reviewer] Duyệt tạm (Hết lượt sửa).")
             feedback.is_approved = True
@@ -253,25 +367,16 @@ class ConstructionDraftingAgent:
         if state['current_section_idx'] >= len(state['outline']): return "end"
         return "next"
 
-    def run(self, thread_id: str, project_name: str = "", reference_doc: Optional[str] = None, user_feedback_outline: List[Dict] = None):
-        config = {
+    # --- 4. HÀM RUN ---
+    def run(self, thread_id: str, project_name: str = "", reference_doc: Optional[str] = None, user_feedback_outline: Optional[List[Dict]] = None):
+        config: RunnableConfig = {
             "configurable": {"thread_id": thread_id},
-            "recursion_limit": 150 
+            "recursion_limit": 150
         }
         
         if user_feedback_outline:
             print(f"▶️ [Resume] Thread: {thread_id}...")
-            current_state = self.app.get_state(config)
-            if not current_state.values:
-                print("⚠️ Khôi phục session...")
-                self.app.update_state(config, {
-                    "project_name": project_name,
-                    "requirements_collection": "current_requirements",
-                    "reference_doc_name": reference_doc,
-                    "current_section_idx": 0,
-                    "final_document": ""
-                })
-
+            # Cập nhật state khi resume
             updated_sections = [Section(**s) for s in user_feedback_outline]
             self.app.update_state(config, {
                 "outline": updated_sections,
@@ -283,8 +388,8 @@ class ConstructionDraftingAgent:
             return {"status": "completed", "type": "full_document", "content": result['final_document']}
             
         else:
-            print(f"🚀 [Start] Thread: {thread_id}...")
-            initial_state = {
+            print(f"🚀 [Start] Bắt đầu mới (Thread: {thread_id})...")
+            initial_state : AgentState= {
                 "project_name": project_name,
                 "requirements_collection": "current_requirements",
                 "reference_doc_name": reference_doc,
@@ -296,4 +401,7 @@ class ConstructionDraftingAgent:
             }
             self.app.invoke(initial_state, config=config)
             snapshot = self.app.get_state(config)
-            return {"status": "paused", "type": "outline_review", "content": [s.model_dump() for s in snapshot.values.get("outline", [])]}
+            
+            # Serialize outline để trả về cho FE
+            outline_data = [s.dict() for s in snapshot.values.get("outline", [])]
+            return {"status": "paused", "type": "outline_review", "content": outline_data}

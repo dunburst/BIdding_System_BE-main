@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select, or_, and_, case
 from fastapi import HTTPException, status, UploadFile
-from models import BiddingTask, TaskAssignment, User, UserRole, TaskStatus, TaskPriority, TaskComment, OrganizationalUnit
+from models import BiddingTask, TaskAssignment, User, UserRole, TaskStatus, TaskPriority, TaskComment, OrganizationalUnit, TaskHistory, TaskAction
 from schemas.task import TaskCreate, TaskListResponse, TaskUpdate, TaskCommentCreate, TaskCommentUpdate, TaskResponse, TaskAssignmentResponse
 from utils.abac import check_permission, AbacAction
 from sqlalchemy.orm import selectinload
@@ -11,7 +11,7 @@ import shutil
 import logging
 from typing import Optional, List, Dict, Set # <--- [FIX] Thêm Set
 from minio_client import minio_handler
-from datetime import datetime
+from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 # --- HÀM HELPER: XỬ LÝ KẾ THỪA TAG KHI HIỂN THỊ (VIEW ONLY) ---
@@ -198,6 +198,128 @@ def check_access_permission(db: Session, task_id: int, user: User) -> bool:
     result = db.execute(query).first()
     return result is not None
 
+
+# --- HÀM 1: GHI LOG (Dùng nội bộ trong các hàm CRUD khác) ---
+def log_task_activity(
+    db: Session, 
+    task_id: int, 
+    actor_id: int, 
+    action: TaskAction, 
+    old_status: Optional[str] = None, 
+    new_status: Optional[str] = None, 
+    detail: Optional[str] = None
+):
+    history = TaskHistory(
+        task_id=task_id,
+        actor_id=actor_id,
+        action=action,
+        old_status=old_status,
+        new_status=new_status,
+        detail=detail
+    )
+    db.add(history)
+    # Lưu ý: Không cần db.commit() ở đây nếu hàm gọi nó sẽ commit sau. 
+    # Nếu muốn chắc chắn lưu ngay lập tức thì uncomment dòng dưới.
+    # db.commit() 
+
+# --- HÀM 2: LẤY LUỒNG GIAO VIỆC (API bạn cần) ---
+def get_task_workflow(db: Session, task_id: int):
+    """
+    Trả về timeline: Lịch sử quá khứ + 1 Bước dự kiến (Next Step)
+    """
+    
+    # 1. Lấy thông tin Task hiện tại để biết Assignee/Reviewer
+    task = db.query(BiddingTask).get(task_id)
+    if not task:
+        return []
+
+    # 2. Lấy lịch sử quá khứ (Sắp xếp Tăng dần như bạn yêu cầu)
+    histories = db.query(TaskHistory)\
+        .filter(TaskHistory.task_id == task_id)\
+        .order_by(TaskHistory.created_at.desc(), TaskHistory.id.desc())\
+        .options(joinedload(TaskHistory.actor))\
+        .all()
+    
+    # Chuyển đổi ORM object sang Dict hoặc Object có thuộc tính is_future = False
+    # (Vì chúng ta cần append một object ảo vào list này)
+    results = []
+    for h in histories:
+        # Hack nhẹ: Gán attribute is_future vào object ORM (Python cho phép làm việc này dynamic)
+        setattr(h, "is_future", False)
+        results.append(h)
+
+    # 3. [LOGIC MỚI] TẠO BƯỚC TIẾP THEO (VIRTUAL STEP)
+    future_step = None
+    
+    # Tình huống 1: Mới tạo hoặc Đã giao -> Người được giao cần "Bắt đầu làm"
+    if task.status in [TaskStatus.OPEN, TaskStatus.ASSIGNED]:
+        actor = None
+        if task.assignee_id:
+            actor = db.get(User, task.assignee_id)
+        
+        future_step = TaskHistory(
+            id=-1, # ID ảo
+            action=TaskAction.IN_PROGRESS, # Hành động tiếp theo dự kiến
+            detail="Đang chờ bắt đầu...",
+            actor=actor, # Hiện avatar người được giao
+            created_at=None # Chưa diễn ra
+        )
+
+    # Tình huống 2: Đang thực hiện -> Người được giao cần "Nộp bài"
+    elif task.status == TaskStatus.IN_PROGRESS:
+        actor = None
+        if task.assignee_id:
+            actor = db.get(User, task.assignee_id)
+
+        future_step = TaskHistory(
+            id=-1,
+            action=TaskAction.SUBMITTED,
+            detail="Đang thực hiện & chờ nộp bài...", # Giống dòng "Đang cập nhật..." trong ảnh
+            actor=actor,
+            created_at=None
+        )
+
+    # Tình huống 3: Chờ duyệt -> Reviewer cần "Duyệt/Từ chối"
+    elif task.status == TaskStatus.PENDING_REVIEW:
+        actor = None
+        if task.reviewer_id:
+            actor = db.get(User, task.reviewer_id)
+
+        future_step = TaskHistory(
+            id=-1,
+            action=TaskAction.APPROVED, # Hoặc REJECTED
+            detail="Đang chờ duyệt...",
+            actor=actor, # Hiện avatar Reviewer
+            created_at=None
+        )
+
+    # 4. Nếu có bước tiếp theo, gán cờ is_future và thêm vào list
+    if future_step:
+        setattr(future_step, "is_future", True)
+        results.append(future_step)
+
+    return results
+    
+def should_log_view(db: Session, task_id: int, user_id: int, cooldown_minutes: int = 5) -> bool:
+    """
+    Kiểm tra xem user có vừa xem task này gần đây không.
+    Trả về False nếu user đã xem trong khoảng thời gian cooldown (tránh spam log).
+    """
+    # Tìm log VIEWED gần nhất của user này tại task này
+    last_view = db.query(TaskHistory).filter(
+        TaskHistory.task_id == task_id,
+        TaskHistory.actor_id == user_id,
+        TaskHistory.action == TaskAction.VIEWED
+    ).order_by(TaskHistory.created_at.desc()).first()
+
+    if last_view:
+        # Tính khoảng cách thời gian
+        time_diff = datetime.now() - last_view.created_at
+        # Nếu chưa qua 'cooldown_minutes' phút -> Không log nữa
+        if time_diff < timedelta(minutes=cooldown_minutes):
+            return False
+            
+    return True
 # --- CREATE ---
 def create_task(db: Session, task_in: TaskCreate, current_user: User):
     # Trường hợp A: Tạo Task Con (Sub-task)
@@ -318,7 +440,23 @@ def create_task(db: Session, task_in: TaskCreate, current_user: User):
                 is_accepted=True
             )
             db.add(new_assign)
-    
+    # Log 1: Tạo mới
+    log_task_activity(
+        db, task_id=new_task.id, actor_id=current_user.user_id, 
+        action=TaskAction.CREATED, 
+        new_status=final_status,
+        detail=f"Khởi tạo công việc: {new_task.task_name}"
+    )
+
+    # Log 2: Nếu có người nhận ngay lập tức -> Log giao việc
+    if new_task.assignee_id:
+        assignee = db.get(User, new_task.assignee_id)
+        name = assignee.full_name if assignee else str(new_task.assignee_id)
+        log_task_activity(
+            db, task_id=new_task.id, actor_id=current_user.user_id,
+            action=TaskAction.ASSIGNED, 
+            detail=f"Đã giao trực tiếp cho: {name}"
+        )
     db.commit()
     db.refresh(new_task)
     return new_task
@@ -407,8 +545,18 @@ def get_task_detail(db: Session, task_id: int, user: User):
     task = db.execute(query).unique().scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    # Logic đổi trạng thái từ ASSIGNED -> IN_PROGRESS khi chính chủ vào xem
+    old_status = task.status
     if task.status == TaskStatus.ASSIGNED and task.assignee_id == user.user_id:
         task.status = TaskStatus.IN_PROGRESS
+        
+        # [LOG LOGIC] Tự động bắt đầu
+        log_task_activity(
+            db, task_id=task.id, actor_id=user.user_id,
+            action=TaskAction.IN_PROGRESS,
+            old_status=old_status, new_status=TaskStatus.IN_PROGRESS,
+            detail="Người được giao đã xem và bắt đầu thực hiện"
+        )
         db.commit()
         db.refresh(task) # Refresh để trả về status mới nhất cho FE
     return task
@@ -434,19 +582,30 @@ def update_task_status(db: Session, task_id: int, status_in: TaskStatus, user: U
             detail="Bạn không phải là người duyệt (Reviewer) của công việc này."
         )
 
-    # 3. [LOGIC NGHIỆP VỤ] Xử lý trạng thái
+    old_status = task.status
+    detail_log = ""
+    action_log = TaskAction.UPDATED
+
     if status_in == TaskStatus.COMPLETED:
-        # Trường hợp Đồng ý duyệt
         task.status = TaskStatus.COMPLETED
-        # (Optional) Có thể set luôn tiến độ là 100% nếu có cột progress
-        
+        action_log = TaskAction.APPROVED
+        detail_log = "Đã duyệt hoàn thành"
     elif status_in == TaskStatus.REJECTED:
-        # Trường hợp Từ chối -> Quay về trạng thái Đang làm để nhân viên sửa
         task.status = TaskStatus.IN_PROGRESS
-        
+        action_log = TaskAction.REJECTED
+        detail_log = "Đã từ chối duyệt, yêu cầu làm lại"
     else:
-        # Các trạng thái khác (nếu có logic update thủ công khác)
         task.status = status_in
+        detail_log = f"Cập nhật trạng thái thủ công: {status_in}"
+
+    # [LOG LOGIC]
+    log_task_activity(
+        db, task_id=task.id, actor_id=user.user_id,
+        action=action_log,
+        old_status=old_status,
+        new_status=task.status,
+        detail=detail_log
+    )
 
     db.commit()
     db.refresh(task)
@@ -474,12 +633,21 @@ def submit_task_for_review(db: Session, task_id: int, user: User):
             status_code=status.HTTP_400_BAD_REQUEST, 
             detail=f"Chỉ có thể nộp duyệt khi công việc đang thực hiện (Hiện tại: {task.status})."
         )
-
+        
+    old_status = task.status
     # 4. Cập nhật
     task.status = TaskStatus.PENDING_REVIEW
     
     # (Tùy chọn) Lưu thời điểm hoàn thành thực tế nếu cần
     # task.actual_finish_date = func.now()
+    # [LOG LOGIC]
+    log_task_activity(
+        db, task_id=task.id, actor_id=user.user_id,
+        action=TaskAction.SUBMITTED,
+        old_status=old_status,
+        new_status=TaskStatus.PENDING_REVIEW,
+        detail="Đã nộp bài và chờ duyệt"
+    )
 
     db.commit()
     db.refresh(task)
@@ -487,7 +655,15 @@ def submit_task_for_review(db: Session, task_id: int, user: User):
 # --- UPDATE ---
 def update_task(db: Session, task_id: int, task_in: TaskUpdate, user: User):
     # 1. Lấy task và check quyền (dùng lại hàm get_task_detail đã có check quyền)
-    task = get_task_detail(db, task_id, user)
+    task = db.query(BiddingTask).get(task_id)
+    if not task: raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Snapshot dữ liệu cũ để so sánh
+    old_data_summary = f"Deadline: {task.deadline}, Priority: {task.priority}"
+
+    # 2. Cập nhật
+    update_data = task_in.model_dump(exclude_unset=True)
+    if "assignments" in update_data: del update_data["assignments"]
     
     # 2. Cập nhật các trường thông tin cơ bản (chỉ cập nhật trường khác None)
     update_data = task_in.model_dump(exclude_unset=True)
@@ -496,10 +672,14 @@ def update_task(db: Session, task_id: int, task_in: TaskUpdate, user: User):
     if "assignments" in update_data:
         del update_data["assignments"]
 
+    updated_fields = []
     for field, value in update_data.items():
-        setattr(task, field, value)
+        if getattr(task, field) != value:
+            updated_fields.append(field)
+            setattr(task, field, value)
 
     # 3. Xử lý cập nhật Assignments (Nếu có gửi kèm)
+    assignments_changed = False
     if task_in.assignments is not None:
         # A. Xóa toàn bộ phân công cũ của task này
         db.query(TaskAssignment).filter(TaskAssignment.task_id == task.id).delete()
@@ -522,6 +702,20 @@ def update_task(db: Session, task_id: int, task_in: TaskUpdate, user: User):
                 is_accepted=True
             )
             db.add(new_assign)
+        assignments_changed = True
+            
+    # [LOG LOGIC]
+    log_detail = "Cập nhật thông tin công việc."
+    if updated_fields:
+        log_detail += f" Các trường thay đổi: {', '.join(updated_fields)}."
+    if assignments_changed:
+        log_detail += " Có thay đổi phân công (Assignments)."
+
+    log_task_activity(
+        db, task_id=task.id, actor_id=user.user_id,
+        action=TaskAction.UPDATED,
+        detail=log_detail
+    )
 
     db.commit()
     db.refresh(task)
@@ -1013,5 +1207,6 @@ def get_task_detail_for_reviewer(db: Session, task_id: int, user: User):
             status_code=status.HTTP_403_FORBIDDEN, 
             detail="Bạn không có quyền duyệt công việc này (Sai Reviewer)."
         )
+        
 
     return task

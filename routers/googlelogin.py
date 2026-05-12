@@ -10,7 +10,7 @@ import os
 
 from database import get_db
 from models import User, UserRole 
-from utils.security import create_access_token # Import hàm tạo JWT ở trên
+from utils.security import create_access_token
 
 router = APIRouter(
     prefix="/googlelogin",

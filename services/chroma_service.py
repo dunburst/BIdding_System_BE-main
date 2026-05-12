@@ -242,7 +242,7 @@ class ChromaService:
             collection = self.get_or_create_collection(collection_name)
             collection.add(
                 documents=documents,
-                metadatas=metadatas,
+                metadatas=metadatas,#type: ignore
                 ids=ids
             )
             print(f"💾 [Chroma] Đã lưu {len(documents)} bản ghi vào '{collection_name}'.")
@@ -286,6 +286,7 @@ class ChromaService:
         """
         try:
             print(f"🗑️ Đang tiến hành quét xóa vectors của: {source_filename} trong {collection_name}...")
+            print(f"🗑️ Đang tiến hành quét xóa vectors của: {source_filename} trong {collection_name}...")
             
             try:
                 target_collection = self.client.get_collection(name=collection_name)
@@ -293,15 +294,37 @@ class ChromaService:
                 print(f"⚠️ Collection '{collection_name}' chưa tồn tại -> Bỏ qua.")
                 return True
 
-            # Xóa theo nhiều key metadata phổ biến để đảm bảo sạch
+            # [CẢI TIẾN] Xóa triệt để các biến thể key metadata
+            # ChromaDB .delete() không báo lỗi nếu where clause không tìm thấy item nào.
+            # Nên cứ gọi thoải mái.
+            
+            target_collection.delete(where={"source": source_filename})
+            target_collection.delete(where={"source_file": source_filename})
+            target_collection.delete(where={"filename": source_filename})
+            try:
+                target_collection = self.client.get_collection(name=collection_name)
+            except ValueError:
+                # Lỗi này xảy ra khi collection chưa được tạo -> Coi như đã xóa sạch.
+                print(f"⚠️ Collection '{collection_name}' chưa tồn tại -> Bỏ qua.")
+                return True
+
+            # [CẢI TIẾN] Xóa triệt để các biến thể key metadata
+            # ChromaDB .delete() không báo lỗi nếu where clause không tìm thấy item nào.
+            # Nên cứ gọi thoải mái.
+            
             target_collection.delete(where={"source": source_filename})
             target_collection.delete(where={"source_file": source_filename})
             target_collection.delete(where={"filename": source_filename})
             
             print(f"✅ Đã gửi lệnh xóa vectors (nếu có) cho file {source_filename}.")
+            print(f"✅ Đã gửi lệnh xóa vectors (nếu có) cho file {source_filename}.")
             return True
 
+
         except Exception as e:
+            # Chỉ in log lỗi hệ thống, không làm crash luồng chính
+            print(f"❌ Lỗi ngoại lệ khi gọi ChromaDB (kết nối/timeout...): {e}")
+            # Chỉ in log lỗi hệ thống, không làm crash luồng chính
             print(f"❌ Lỗi ngoại lệ khi gọi ChromaDB (kết nối/timeout...): {e}")
             return False
 
@@ -356,6 +379,39 @@ class ChromaService:
         except Exception as e:
             print(f"❌ Lỗi khi list file: {str(e)}")
             return []
+        
+    def get_file_structure(self, filename: str, collection_name: str = "bidding_docs") -> str:
+        """
+        Lấy danh sách các chương (Chapter Titles) từ metadata của file cụ thể
+        """
+        try:
+            collection = self.client.get_collection(collection_name)
+            
+            # Lấy tất cả chunks của file này (chỉ lấy metadata)
+            results = collection.get(
+                where={"source": filename},
+                include=["metadatas"]
+            )
+            
+            if not results['metadatas']:
+                return ""
+
+            # Trích xuất và sắp xếp lại các unique chapters
+            chapters = set()
+            # Vì Chroma lưu lộn xộn, ta cố gắng giữ thứ tự nếu có thể (nhưng set thì không order)
+            # Một mẹo là dùng dict để giữ insertion order nếu python 3.7+
+            chapters_dict = {} 
+            
+            for meta in results['metadatas']:
+                if meta and 'chapter' in meta:
+                    chapters_dict[meta['chapter']] = None
+            
+            structure_str = "\n".join([f"- {title}" for title in chapters_dict.keys()])
+            return structure_str
+
+        except Exception as e:
+            print(f"❌ Lỗi lấy cấu trúc file: {e}")
+            return ""
 
 # Singleton Lazy Load
 @lru_cache()

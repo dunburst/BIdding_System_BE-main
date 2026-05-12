@@ -100,25 +100,59 @@ class VisualRetrievalService:
             processed_results = []
             for res in results:
                 image_obj = res['image']
-                if isinstance(image_obj, str):
-                    pil_img = Image.open(image_obj)
-                elif hasattr(image_obj, 'path'):
-                    pil_img = Image.open(image_obj.path)
-                else:
-                    pil_img = image_obj
-
-                buffered = BytesIO()
-                pil_img.save(buffered, format="JPEG")
-                img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                pil_img = None
                 
-                processed_results.append({
-                    "score": res['score'],
-                    "base64": img_b64,
-                    "metadata": res.get('metadata', {})
-                })
+                try:
+                    # --- PHẦN SỬA LỖI QUAN TRỌNG ---
+                    
+                    # Trường hợp 1: image_obj là instance của ImageFile (LitePali wrapper)
+                    if isinstance(image_obj, ImageFile):
+                        if hasattr(image_obj, 'path') and image_obj.path:
+                            pil_img = Image.open(image_obj.path)
+                        else:
+                            print(f"⚠️ ImageFile object bị thiếu path.")
+                            continue
+
+                    # Trường hợp 2: image_obj là đường dẫn string
+                    elif isinstance(image_obj, str):
+                        if os.path.exists(image_obj):
+                            pil_img = Image.open(image_obj)
+                        else:
+                            print(f"⚠️ Không tìm thấy file ảnh: {image_obj}")
+                            continue
+
+                    # Trường hợp 3: image_obj đã là PIL Image (ít gặp nhưng có thể)
+                    elif isinstance(image_obj, Image.Image):
+                        pil_img = image_obj
+                    
+                    # Trường hợp 4: Lọc bỏ nhiễu (float, int, None...)
+                    else:
+                        # Bỏ qua nếu gặp float hoặc các kiểu lạ
+                        continue
+
+                    # --- XỬ LÝ ẢNH SANG BASE64 ---
+                    if pil_img:
+                        buffered = BytesIO()
+                        # Convert sang RGB để tránh lỗi nếu ảnh gốc là RGBA khi lưu JPEG
+                        if pil_img.mode in ("RGBA", "P"): 
+                            pil_img = pil_img.convert("RGB")
+                            
+                        pil_img.save(buffered, format="JPEG")
+                        img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                        
+                        processed_results.append({
+                            "score": res['score'],
+                            "base64": img_b64,
+                            "metadata": res.get('metadata', {})
+                        })
+                        
+                except Exception as inner_e:
+                    print(f"⚠️ Lỗi khi xử lý 1 ảnh trong kết quả tìm kiếm: {inner_e}")
+                    continue
+
             return processed_results
         except Exception as e:
-            print(f"⚠️ Lỗi Visual Search: {e}")
+            print(f"⚠️ Lỗi Visual Search (Tổng quát): {e}")
             return []
 
 # Singleton

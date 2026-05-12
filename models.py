@@ -61,6 +61,18 @@ class TaskTag(str, enum.Enum):
     VT = "VT"                 # Hồ sơ Vật tư
     GIA = "GIA"               # Hồ sơ Giá
     
+# 1. Định nghĩa các hành động có thể xảy ra
+class TaskAction(str, enum.Enum):
+    CREATED = "CREATED"         # Tạo mới / Giao việc
+    VIEWED = "VIEWED"           # Đã xem (Cần cân nhắc ghi log này vì sẽ rất nhiều)
+    ASSIGNED = "ASSIGNED"       # Phân công lại
+    IN_PROGRESS = "IN_PROGRESS" # Bắt đầu làm
+    SUBMITTED = "SUBMITTED"     # Nộp bài
+    APPROVED = "APPROVED"       # Duyệt
+    REJECTED = "REJECTED"       # Từ chối / Yêu cầu sửa
+    COMMENTED = "COMMENTED"     # Bình luận
+    UPDATED = "UPDATED"         # Cập nhật thông tin khác
+    
 class SecurityLevel(int, enum.Enum):
     PUBLIC = 1          # Công khai / Nhân viên thường
     INTERNAL = 2        # Nội bộ phòng ban
@@ -581,6 +593,9 @@ class BiddingTask(Base):
     tag: Mapped[Optional[TaskTag]] = mapped_column(Enum(TaskTag), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True)
     attachment_url: Mapped[Optional[List[str]]] = mapped_column(JSON, default=list, nullable=True)
+    # --- [CỘT MỚI] ---
+    # Cột chứa tài liệu NỘP BÀI (Nhân viên up lên)
+    submission_data: Mapped[Optional[List[dict]]] = mapped_column(JSON, default=list, nullable=True)
     
     source_type: Mapped[Optional[str]] = mapped_column(String(50))
     ai_reasoning: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
@@ -603,6 +618,11 @@ class BiddingTask(Base):
         back_populates="task", 
         cascade="all, delete-orphan",
         order_by="TaskComment.created_at.asc()"
+    )
+    # 4. [QUAN TRỌNG] Thêm dòng này để xóa luôn History khi xóa Task
+    histories: Mapped[List["TaskHistory"]] = relationship(
+        back_populates="task", 
+        cascade="all, delete-orphan"
     )
 
     assignee: Mapped[Optional["User"]] = relationship(foreign_keys=[assignee_id])
@@ -651,6 +671,34 @@ class TaskComment(Base):
     
     parent: Mapped[Optional["TaskComment"]] = relationship(remote_side=[id], back_populates="replies")
     replies: Mapped[List["TaskComment"]] = relationship(back_populates="parent", cascade="all, delete-orphan")
+    
+# 2. Bảng lưu lịch sử
+class TaskHistory(Base):
+    __tablename__ = "task_histories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # [QUAN TRỌNG] Thêm ondelete="CASCADE" để Database tự xử lý nếu SQLAlchemy hụt
+    task_id: Mapped[int] = mapped_column(ForeignKey("bidding_task.id", ondelete="CASCADE"), nullable=False)
+    
+    # Người thực hiện hành động (Actor)
+    actor_id: Mapped[int] = mapped_column(ForeignKey("users.user_id"), nullable=False)
+    
+    action: Mapped[TaskAction] = mapped_column(Enum(TaskAction), nullable=False)
+    
+    # Lưu trạng thái cũ và mới (để so sánh sự thay đổi)
+    old_status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    new_status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    
+    # Ghi chú hệ thống hoặc lý do (VD: Lý do từ chối)
+    detail: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True)
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    # [QUAN TRỌNG] Sửa backref thành back_populates
+    task: Mapped["BiddingTask"] = relationship(back_populates="histories")
+    # Relationship đơn giản, KHÔNG có cascade
+    actor: Mapped[Optional["User"]] = relationship(foreign_keys=[actor_id])
 
 # ==========================================
 # 4. PHÂN HỆ BẢO MẬT & ABAC (SECURITY POLICIES)
