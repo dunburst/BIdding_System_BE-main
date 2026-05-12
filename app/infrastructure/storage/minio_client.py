@@ -8,13 +8,13 @@ from urllib.parse import quote
 # Nếu chạy bot trên cùng máy cài MinIO thì để localhost.
 # Nếu bot chạy máy khác thì thay bằng IP máy chứa MinIO (VD: 192.168.1.xxx)
 # --- CẤU HÌNH MINIO (Ưu tiên lấy từ biến môi trường Docker, nếu không có mới lấy giá trị mặc định) ---
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "rebecca-insertion-colony-forestry.trycloudflare.com")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin_user")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "MinioStrongPassword2024!")
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000").strip()
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin_user").strip()
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "MinioStrongPassword2024!").strip()
+MINIO_PUBLIC_URL = os.getenv("MINIO_PUBLIC_URL", "").strip()  # URL public cho frontend truy cập
 MINIO_BUCKET = "files"
 MINIO_BUCKET_JKANCON = "jkancon"
-# Chuyển chuỗi "true"/"false" từ env thành boolean
-MINIO_SECURE = True
+MINIO_SECURE = os.getenv("MINIO_SECURE", "false").strip().lower() == "true"
 
 logger = logging.getLogger("MinIO")
 
@@ -56,8 +56,9 @@ class MinIOHandler:
 
             # Mã hóa URL
             safe_object_name = quote(object_name, safe='/')
-            protocol = "https" #if MINIO_SECURE else "http"
-            url = f"{protocol}://{MINIO_ENDPOINT}/{target_bucket}/{safe_object_name}"
+            protocol = "https" if MINIO_SECURE else "http"
+            base = MINIO_PUBLIC_URL if MINIO_PUBLIC_URL else f"{protocol}://{MINIO_ENDPOINT}"
+            url = f"{base}/{target_bucket}/{safe_object_name}"
             return url
         except Exception as e:
             logger.error(f"-> MinIO Upload Lỗi: {e}")
@@ -111,6 +112,29 @@ class MinIOHandler:
             logger.error(f"-> MinIO Download Lỗi: {e}")
             return False
     
+    def extract_object_name_from_url(self, file_url: str, bucket_name: str = None) -> str | None:
+        """Trích xuất object_name từ URL đã lưu trong DB."""
+        target_bucket = bucket_name or MINIO_BUCKET
+        marker = f"/{target_bucket}/"
+        idx = file_url.find(marker)
+        if idx == -1:
+            return None
+        from urllib.parse import unquote
+        return unquote(file_url[idx + len(marker):])
+
+    def get_object_stream(self, object_name: str, bucket_name: str = None):
+        """Trả về (response, stat) để streaming file qua backend."""
+        if not self.client:
+            return None, None
+        try:
+            target_bucket = bucket_name or MINIO_BUCKET
+            stat = self.client.stat_object(target_bucket, object_name)
+            response = self.client.get_object(target_bucket, object_name)
+            return response, stat
+        except Exception as e:
+            logger.error(f"-> MinIO GetObject Error: {e}")
+            return None, None
+
     def delete_file(self, object_name, bucket_name="jkancon"):
         """
         Xóa file trên MinIO.

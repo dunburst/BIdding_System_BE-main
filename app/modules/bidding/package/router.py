@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from fastapi import status as http_status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
+import mimetypes
 from app.integrations.ai.agent.bid_analysis import analyze_bidding_package
 from app.infrastructure.database.database import get_db
 from app.modules.bidding.package.model import BiddingPackage
@@ -9,15 +11,16 @@ from app.modules.users.model import User
 from app.core.utils.enum import PackageStatus
 from app.core.security import get_current_user
 from app.core.logging import create_audit_log, get_client_ip
-from app.core.utils.base_model import BaseResponse # Giả sử bạn có class bọc response chuẩn
+from app.core.utils.base_model import BaseResponse
 from app.modules.bidding.package import schema as schemas
-from app.modules.bidding.package import crud as crud_bidding # Thống nhất dùng tên này
+from app.modules.bidding.package import crud as crud_bidding
 from app.core.permission.abac import check_permission, get_allowed_actions
 from app.core.permission.constants import AbacAction
 from app.modules.bidding.package.schema import CountdownResponse
 from app.modules.bidding.result.schema import BiddingResultSummaryResponse, BiddingResultFullResponse
 import app.modules.bidding.result.crud as result_crud
-from app.modules.bidding.package.crud import calculate_time_remaining, get_closing_time
+from app.modules.bidding.package.crud import calculate_time_remaining, get_closing_time, get_file_by_id
+from app.infrastructure.storage.minio_client import minio_handler
 from math import ceil
 
 router = APIRouter(
@@ -634,7 +637,7 @@ def get_bidding_result_summary(
 # --- API 2: Lấy chi tiết ---
 @router.get("/{hsmt_id}/result-full", response_model=BiddingResultFullResponse)
 def get_bidding_result_full(
-    hsmt_id: int, 
+    hsmt_id: int,
     db: Session = Depends(get_db)
 ):
     """
@@ -645,3 +648,71 @@ def get_bidding_result_full(
     - Danh sách hàng hóa
     """
     return result_crud.get_result_full_detail(db, hsmt_id)
+
+
+# ==========================================
+# 8. DOWNLOAD / PREVIEW FILE (qua backend proxy, tránh AccessDenied)
+# ==========================================
+def _stream_file(file_id: int, disposition: str, db: Session, current_user: User):
+    """Helper dùng chung cho download và preview."""
+    file_record = get_file_by_id(db, file_id)
+    if not file_record:
+        raise HTTPException(status_code=404, detail="Không tìm thấy file")
+
+    package = crud_bidding.get_package(db, hsmt_id=file_record.hsmt_id)
+    if not package:
+        raise HTTPException(status_code=404, detail="Không tìm thấy gói thầu")
+
+    is_allowed = check_permission(db=db, user=current_user, resource=package, action=AbacAction.VIEW)
+    if not is_allowed:
+        raise HTTPException(status_code=403, detail="Bạn không có quyền truy cập file này")
+
+    object_name = minio_handler.extract_object_name_from_url(file_record.file_path)
+    if not object_name:
+        raise HTTPException(status_code=422, detail="Không thể xác định đường dẫn file trong MinIO")
+
+    response, stat = minio_handler.get_object_stream(object_name)
+    if response is None:
+        raise HTTPException(status_code=502, detail="Không thể lấy file từ MinIO")
+
+    content_type = stat.content_type if stat and stat.content_type else (
+        mimetypes.guess_type(file_record.file_name)[0] or "application/octet-stream"
+    )
+    content_length = stat.size if stat else None
+
+    safe_name = file_record.file_name.encode("utf-8").decode("latin-1", errors="replace")
+    headers = {
+        "Content-Disposition": f'{disposition}; filename="{safe_name}"',
+    }
+    if content_length:
+        headers["Content-Length"] = str(content_length)
+
+    def iter_content():
+        try:
+            for chunk in response.stream(65536):
+                yield chunk
+        finally:
+            response.close()
+            response.release_conn()
+
+    return StreamingResponse(iter_content(), media_type=content_type, headers=headers)
+
+
+@router.get("/files/{file_id}/download")
+def download_file(
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Tải file về máy (Content-Disposition: attachment)."""
+    return _stream_file(file_id, "attachment", db, current_user)
+
+
+@router.get("/files/{file_id}/preview")
+def preview_file(
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Xem file trực tiếp trong trình duyệt (Content-Disposition: inline) — hỗ trợ PDF preview."""
+    return _stream_file(file_id, "inline", db, current_user)

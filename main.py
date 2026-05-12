@@ -1,4 +1,3 @@
-import os
 from dotenv import load_dotenv
 # import antigravity
 
@@ -30,12 +29,12 @@ from app.modules.ai_bidding.router import router as ai_bidding_router
 load_dotenv()
 
 # [DEBUG] Kiểm tra xem Key LangSmith đã nhận chưa
-ls_key = os.getenv("LANGCHAIN_API_KEY")
-ls_proj = os.getenv("LANGCHAIN_PROJECT")
-if ls_key:
-    print(f"✅ LangSmith Configured: Project='{ls_proj}' | Key='{ls_key[:5]}...'")
-else:
-    print("❌ CẢNH BÁO: Chưa tìm thấy LANGCHAIN_API_KEY trong .env. Trace sẽ không hoạt động!")
+# ls_key = os.getenv("LANGCHAIN_API_KEY")
+# ls_proj = os.getenv("LANGCHAIN_PROJECT")
+# if ls_key:
+#     print(f"✅ LangSmith Configured: Project='{ls_proj}' | Key='{ls_key[:5]}...'")
+# else:
+#     print("❌ CẢNH BÁO: Chưa tìm thấy LANGCHAIN_API_KEY trong .env. Trace sẽ không hoạt động!")
 
 # --- 2. SAU ĐÓ MỚI IMPORT CÁC THƯ VIỆN KHÁC ---
 from fastapi import FastAPI, Depends, HTTPException, Request, status
@@ -56,12 +55,12 @@ from app.integrations.crawlers.crawler_bot import start_scheduler_service
 
 # 3. Tự động tạo các bảng trong Database nếu chưa tồn tại
 Base.metadata.create_all(bind=engine)
-sentry_sdk.init(
-    dsn="https://ab7ffbb2dcf35915b8401d9a4b5ee942@o4510781631102976.ingest.de.sentry.io/4510781632675920",
-    # Add data like request headers and IP for users,
-    # see https://docs.sentry.io/platforms/python/data-management/data-collected/ for more info
-    send_default_pii=True,
-)
+# sentry_sdk.init(
+#     dsn="https://ab7ffbb2dcf35915b8401d9a4b5ee942@o4510781631102976.ingest.de.sentry.io/4510781632675920",
+#     # Add data like request headers and IP for users,
+#     # see https://docs.sentry.io/platforms/python/data-management/data-collected/ for more info
+#     send_default_pii=True,
+# )
 # 4. Khởi tạo App
 app = FastAPI(
     title="PC1 Bidding Management System",
@@ -84,6 +83,7 @@ origins = [
     "http://26.152.34.61:3000",
     "http://10.10.0.158:3000",
     "http://10.11.1.26:3000",
+    "http://10.31.1.85:3001"
     "https://baptist-nerve-coupled-evaluating.trycloudflare.com"
 ]
 
@@ -174,9 +174,9 @@ async def scalar_html(request: Request):
 if __name__ == "__main__":
     import uvicorn
     # In ra key lần nữa lúc khởi động uvicorn để chắc chắn
-    if os.getenv("LANGCHAIN_API_KEY"):
-        print("🚀 LangSmith Tracing: ENABLED")
-    else:
-        print("⚠️ LangSmith Tracing: DISABLED")
+    # if os.getenv("LANGCHAIN_API_KEY"):
+    #     print("🚀 LangSmith Tracing: ENABLED")
+    # else:
+    #     print("⚠️ LangSmith Tracing: DISABLED")
         
     uvicorn.run(app, host="0.0.0.0", port=43210, timeout_keep_alive=120)

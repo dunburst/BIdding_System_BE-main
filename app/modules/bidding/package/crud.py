@@ -134,6 +134,9 @@ def delete_package(db: Session, hsmt_id: int):
 def get_files_by_package_id(db: Session, hsmt_id: int):
     return db.query(BiddingPackageFile).filter(BiddingPackageFile.hsmt_id == hsmt_id).all()
 
+def get_file_by_id(db: Session, file_id: int):
+    return db.query(BiddingPackageFile).filter(BiddingPackageFile.file_id == file_id).first()
+
 # ==========================================
 # NHIỆM VỤ (Task)
 # ==========================================
