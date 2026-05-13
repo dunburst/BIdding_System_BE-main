@@ -34,7 +34,7 @@ def json_dumps_vietnamese(data):
 # 3. Khởi tạo Engine
 engine = create_engine(DATABASE_URL, 
                        json_serializer=json_dumps_vietnamese,
-                       echo=True) # echo=True để log câu SQL ra màn hình debug
+                       echo=False) # echo=True để log câu SQL ra màn hình debug
 
 # 4. Tạo Session
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
