@@ -15,7 +15,7 @@ EXCLUDE_EXTENSIONS = {
     ".pyc", ".log", ".tmp",
     ".jpg", ".jpeg", ".png"
 }
-
+ 
 wb = Workbook()
 ws = wb.active
 ws.title = "Project Structure"
