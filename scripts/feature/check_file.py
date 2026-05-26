@@ -30,4 +30,4 @@ def check_file_location(file_id):
         print(f"Lỗi: {e}")
 
 # Chạy thử với ID file vừa upload
-check_file_location("1tcr_1HaLfXWJV652Fifb3v4WjzN3yRq1")
+check_file_location("1tcr_1HaLfXWJV652Fifb3v4WjzN3yRq1") 
